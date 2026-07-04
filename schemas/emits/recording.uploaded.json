@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "recording.uploaded",
+  "description": "A recording's media landed in storage; the pipeline driver starts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recording_id", "workspace_id", "source_type"],
+  "properties": {
+    "recording_id": {"type": "string"},
+    "workspace_id": {"type": "string"},
+    "owner_id": {"type": ["string", "null"]},
+    "storage_key": {"type": ["string", "null"]},
+    "file_size_bytes": {"type": ["integer", "null"]},
+    "source_type": {"type": "string"}
+  }
+}

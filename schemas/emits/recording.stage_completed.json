@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "recording.stage_completed",
+  "description": "A pipeline stage finished (informational for observers).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recording_id", "workspace_id", "stage", "stage_index", "status"],
+  "properties": {
+    "recording_id": {"type": "string"},
+    "workspace_id": {"type": "string"},
+    "stage": {"type": "string"},
+    "stage_index": {"type": "integer", "minimum": 0},
+    "status": {"type": "string"}
+  }
+}

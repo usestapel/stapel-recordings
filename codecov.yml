@@ -1,0 +1,27 @@
+# Coverage gate policy (codified in the stapel workspace,
+# docs/system-design.md §7.13.5):
+#
+# - `project` is the RATCHET: total coverage must not degrade silently.
+# - `patch` is a FLOOR, not a ratchet: new code needs solid coverage, but
+#   a diff is not judged against the historical project average.
+#
+# Migrations and test scaffolding are excluded from coverage entirely.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.5%
+    patch:
+      default:
+        target: 80%
+
+ignore:
+  - "**/migrations/**"
+  - "**/tests/**"
+  - "conftest.py"
+  - "setup-hooks.sh"
+
+comment:
+  layout: "condensed_header, diff, files"
+  require_changes: true

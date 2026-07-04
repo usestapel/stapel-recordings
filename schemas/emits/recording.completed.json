@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "recording.completed",
+  "description": "The pipeline finished; the recording is ready to view.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recording_id", "workspace_id"],
+  "properties": {
+    "recording_id": {"type": "string"},
+    "workspace_id": {"type": "string"},
+    "owner_id": {"type": ["string", "null"]},
+    "duration_seconds": {"type": ["number", "null"]},
+    "segments_count": {"type": "integer"},
+    "speakers_count": {"type": "integer"},
+    "word_count": {"type": "integer"},
+    "provider_used": {"type": ["string", "null"]}
+  }
+}
