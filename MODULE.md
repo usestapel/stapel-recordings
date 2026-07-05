@@ -197,6 +197,10 @@ required because this module holds user data.
 - **Don't `os.getenv` at import time** — use the `STAPEL_RECORDINGS`
   namespace.
 - **Don't inline-publish pipeline events** — always through the outbox.
+- **Don't split a `save()` from its `emit_*()`** — keep the mutation and its
+  event in one `transaction.atomic()` / `stapel_core.comm.mutate_and_emit()`
+  unit (`run_stage`, and the terminal `_finalize` / `_dlq` helpers). CI gates
+  this with `python -m stapel_core.lint.emit_check .`.
 
 ## App-layer (not in this module)
 

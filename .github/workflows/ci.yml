@@ -31,6 +31,9 @@ jobs:
           pip install ruff --quiet
           ruff check . --select E,F,W --ignore E501
 
+      - name: emit-check (outbox atomicity gate)
+        run: python -m stapel_core.lint.emit_check .
+
       - name: Import check
         run: python -c "import stapel_recordings; print('import OK')"
 

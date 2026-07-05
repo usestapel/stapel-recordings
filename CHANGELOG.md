@@ -40,6 +40,16 @@ publisher before the first `v0.1.0` tag.
   reconcile, storage-seam swap, upload/multipart, GDPR, summarize, checks,
   schema validation, HTTP surface.
 
+### Internal (still unreleased — folded into the pending 0.1.0)
+- Wired the `stapel_core.lint.emit_check` outbox-atomicity gate into CI and the
+  pre-commit/pre-push hooks (guard-fall back to skip when stapel-core < 0.3.3).
+- `pipeline._finalize` / `pipeline._dlq`: the terminal `save()` + `emit_*()` pair
+  is now wrapped in `stapel_core.comm.mutate_and_emit()` (was flagged EMIT003).
+  Both are only ever called from within `run_stage`'s `transaction.atomic()`, so
+  this nests as a savepoint joining the outer transaction — no behaviour change —
+  but makes the mutation+emit unit lexically atomic and correct even if a future
+  caller invokes them outside `run_stage`.
+
 ### Changed from the legacy recordings service (provenance)
 - **Raw Kafka bus + publish-after-commit → `stapel_core.comm` Actions
   through the transactional outbox.** Fixes the source's dual-write event

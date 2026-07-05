@@ -2,4 +2,10 @@
 set -e
 echo "Running ruff lint check..."
 ruff check . --select E,F,W --ignore E501
+echo "Running emit-check (outbox atomicity)..."
+if python3 -c "import stapel_core.lint.emit_check" 2>/dev/null; then
+  python3 -m stapel_core.lint.emit_check .
+else
+  echo "emit-check unavailable (stapel-core < 0.3.3) - skipping"
+fi
 echo "Lint check passed."

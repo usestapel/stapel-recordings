@@ -29,6 +29,7 @@ import logging
 
 from django.db import transaction
 from django.utils import timezone
+from stapel_core.comm import mutate_and_emit
 
 from . import events
 from .conf import recordings_settings
@@ -139,8 +140,13 @@ def _finalize(recording: Recording) -> None:
     if recording.status == RecordingStatus.COMPLETED:
         return
     recording.status = RecordingStatus.COMPLETED
-    recording.save(update_fields=["status", "updated_at"])
-    events.emit_completed(recording)
+    # Save + terminal emit as one unit. run_stage() already holds the outer
+    # transaction.atomic(); this nests as a savepoint (joins the outer txn,
+    # events still leave only on outer commit) and keeps the pair atomic even
+    # if a future caller invokes _finalize() outside run_stage.
+    with mutate_and_emit():
+        recording.save(update_fields=["status", "updated_at"])
+        events.emit_completed(recording)
     logger.info("pipeline: recording %s completed", recording.id)
 
 
@@ -162,8 +168,13 @@ def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_
     recording.status = RecordingStatus.ERROR
     if not already_errored:
         _set_last_error(recording, stage, reason, detail)
-    recording.save(update_fields=["status", "metadata", "updated_at"])
-    events.emit_failed(recording, stage=stage, reason=reason, user_retryable=True)
+    # Save + terminal DLQ emit as one unit. run_stage() already holds the outer
+    # transaction.atomic(); this nests as a savepoint (joins the outer txn,
+    # events still leave only on outer commit) and keeps the pair atomic even
+    # if a future caller invokes _dlq() outside run_stage.
+    with mutate_and_emit():
+        recording.save(update_fields=["status", "metadata", "updated_at"])
+        events.emit_failed(recording, stage=stage, reason=reason, user_retryable=True)
     logger.warning("pipeline: recording %s DLQ at stage %s (%s)", recording.id, stage, reason)
 
 
