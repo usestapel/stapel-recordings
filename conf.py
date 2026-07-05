@@ -63,7 +63,14 @@ recordings_settings = AppSettings(
         "SUMMARIZE_MODEL": "medium",
 
         # ── Reconcile watchdog ───────────────────────────────────────
-        "STUCK_THRESHOLD_SECONDS": 10 * 60,
+        # STUCK_THRESHOLD_SECONDS MUST exceed the longest legitimate stage
+        # duration (for the built-ins: TRANSCRIBE_TIMEOUT_SECONDS), or the
+        # watchdog will re-emit recording.stage for stages that are still
+        # running — the duplicate then piles up on the row lock. Default:
+        # transcribe timeout (1800) + 5 min headroom. If you raise
+        # TRANSCRIBE_TIMEOUT_SECONDS (or add a slower custom stage), raise
+        # this too — a system check (W005) warns on inconsistency.
+        "STUCK_THRESHOLD_SECONDS": 35 * 60,
         "ABANDONED_UPLOAD_THRESHOLD_SECONDS": 60 * 60,
     },
     import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER"),

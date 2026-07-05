@@ -101,6 +101,68 @@ def test_runtime_register_and_unregister():
     assert "record" not in stages.resolve_stages()
 
 
+def test_resolver_failure_parks_then_dlqs_bounded(make_recording, drain):
+    """A crashing PIPELINE_RESOLVER (missing per-workspace row, DB glitch)
+    must not crash-loop the delivery forever in the outbox: it is parked as
+    a retryable failure, bounded by MAX_STAGE_RETRIES, then DLQ'd."""
+    from stapel_recordings import pipeline
+
+    r = make_recording(status=RecordingStatus.QUEUED)
+    with override_settings(
+        STAPEL_RECORDINGS={
+            "PIPELINE_RESOLVER": "stapel_recordings.tests.fakes.broken_resolver",
+            "MAX_STAGE_RETRIES": 1,
+        }
+    ):
+        pipeline.run_stage(str(r.id), 0)
+        r.refresh_from_db()
+        assert r.status == RecordingStatus.QUEUED  # parked, not crash-looping
+        assert r.retry_count == 1
+        assert r.metadata["last_error"]["stage"] == "<pipeline_resolver>"
+
+        pipeline.run_stage(str(r.id), 0)  # reconcile re-drive, retries exhausted
+
+    r.refresh_from_db()
+    assert r.status == RecordingStatus.ERROR
+    from stapel_core.django.outbox.models import OutboxEvent
+
+    assert OutboxEvent.objects.filter(topic=events.ACTION_FAILED).count() == 1
+
+
+def test_broken_overlay_entry_does_not_break_unrelated_pipelines(make_recording, drain):
+    """get_stage is lazy: a broken dotted-path in the STAGES overlay only
+    affects pipelines that actually include that stage."""
+    stages.register_stage("record", fakes.RecordStage)
+    r = make_recording(status=RecordingStatus.QUEUED)
+    with override_settings(
+        STAPEL_RECORDINGS={
+            "STAGES": {"unrelated": "no.such.module.Stage"},
+            "PIPELINE": ["record"],
+        }
+    ):
+        events.emit_stage(r.id, 0)
+        drain()
+
+    assert fakes.STAGE_TRACE == ["record"]
+    assert Recording.objects.get(pk=r.id).status == RecordingStatus.COMPLETED
+
+
+def test_broken_overlay_stage_in_pipeline_dlqs_that_recording(make_recording, drain):
+    r = make_recording(status=RecordingStatus.QUEUED)
+    with override_settings(
+        STAPEL_RECORDINGS={
+            "STAGES": {"broken": "no.such.module.Stage"},
+            "PIPELINE": ["broken"],
+        }
+    ):
+        events.emit_stage(r.id, 0)
+        drain()
+
+    r.refresh_from_db()
+    assert r.status == RecordingStatus.ERROR
+    assert r.metadata["last_error"]["reason"].startswith("unresolvable_stage")
+
+
 def test_pipeline_resolver_seam(make_recording, drain):
     """A custom PIPELINE_RESOLVER sources a non-default pipeline (e.g. a
     per-recording / DB-stored definition edited at runtime)."""

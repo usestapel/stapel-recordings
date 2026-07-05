@@ -415,11 +415,33 @@ def resolve_stages() -> dict[str, object]:
 
 
 def get_stage(name: str) -> Stage:
-    """Resolve *name* to a ready-to-run Stage instance."""
-    stages = resolve_stages()
-    if name not in stages:
-        raise KeyError(f"stage {name!r} is not registered")
-    return _as_stage(name, stages[name])
+    """Resolve *name* to a ready-to-run Stage instance.
+
+    Lazy: only the requested stage's handler is imported (same precedence as
+    :func:`resolve_stages` — runtime > STAGES overlay > built-ins). A broken
+    dotted-path elsewhere in the STAGES overlay therefore only affects
+    pipelines that actually include that stage, instead of failing every
+    recording at once. A bad path raises ``ImportError`` (the driver DLQs
+    the recording as ``unresolvable_stage``)."""
+    from django.utils.module_loading import import_string
+
+    if name in _runtime_stages:
+        handler = _runtime_stages[name]
+        if handler is None:
+            raise KeyError(f"stage {name!r} was removed by a runtime registration")
+        return _as_stage(name, handler)
+
+    overlay = recordings_settings.STAGES or {}
+    if name in overlay:
+        path = overlay[name]
+        if path is None:
+            raise KeyError(f"stage {name!r} was removed via the STAGES overlay")
+        handler = import_string(path) if isinstance(path, str) else path
+        return _as_stage(name, handler)
+
+    if name in BUILTIN_STAGES:
+        return _as_stage(name, BUILTIN_STAGES[name])
+    raise KeyError(f"stage {name!r} is not registered")
 
 
 def _as_stage(name: str, obj) -> Stage:

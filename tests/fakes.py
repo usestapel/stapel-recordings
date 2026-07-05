@@ -106,3 +106,9 @@ def only_record_resolver(recording):
     """PIPELINE_RESOLVER seam double — a runtime/DB-sourced pipeline that
     ignores the PIPELINE setting and returns a single 'record' stage."""
     return ["record"]
+
+
+def broken_resolver(recording):
+    """PIPELINE_RESOLVER double that fails (missing per-workspace row, DB
+    glitch) — used to assert bounded retry -> DLQ instead of a crash loop."""
+    raise RuntimeError("pipeline definition unavailable")

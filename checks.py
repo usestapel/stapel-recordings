@@ -64,3 +64,23 @@ def check_pipeline_stages(app_configs, **kwargs):
                 id="stapel_recordings.W004",
             ))
     return warnings
+
+
+@checks.register(checks.Tags.compatibility)
+def check_reconcile_threshold(app_configs, **kwargs):
+    """W: the reconcile stuck-threshold must exceed the longest legitimate
+    stage duration, or the watchdog re-emits ``recording.stage`` for stages
+    that are still running (duplicate deliveries piling up on the row lock)."""
+    from .conf import recordings_settings
+
+    stuck = int(recordings_settings.STUCK_THRESHOLD_SECONDS)
+    longest = int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS)
+    if stuck <= longest:
+        return [checks.Warning(
+            f"STAPEL_RECORDINGS['STUCK_THRESHOLD_SECONDS'] ({stuck}) must exceed "
+            f"TRANSCRIBE_TIMEOUT_SECONDS ({longest}) — the longest built-in stage "
+            "duration — or reconcile will re-drive stages that are still running. "
+            "Account for slow custom stages too.",
+            id="stapel_recordings.W005",
+        )]
+    return []

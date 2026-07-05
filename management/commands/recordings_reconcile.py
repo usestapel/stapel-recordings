@@ -53,27 +53,38 @@ class Command(BaseCommand):
             time.sleep(interval)
 
     def reconcile_once(self) -> int:
+        from django.db import transaction
+
         from ...conf import recordings_settings
         from ...events import emit_stage
         from ...models import Recording, RecordingStatus
 
-        transient = [
-            RecordingStatus.QUEUED, RecordingStatus.ANALYZING, RecordingStatus.NORMALIZING,
-            RecordingStatus.TRANSCRIBING, RecordingStatus.DIARIZING, RecordingStatus.MERGING,
+        # Anything that is neither pre-pipeline (created/uploading) nor
+        # terminal is treated as in-pipeline. Deliberately inverted (not a
+        # hardcoded list of built-in stage statuses) so recordings parked in
+        # a *custom* stage status are re-driven too instead of hanging
+        # forever.
+        non_transient = [
+            RecordingStatus.CREATED, RecordingStatus.UPLOADING,
+            RecordingStatus.COMPLETED, RecordingStatus.ERROR, RecordingStatus.DELETED,
         ]
         cutoff = timezone.now() - timedelta(seconds=int(recordings_settings.STUCK_THRESHOLD_SECONDS))
         qs = (
             Recording.objects
-            .filter(status__in=transient, updated_at__lt=cutoff, deleted_at__isnull=True)
+            .exclude(status__in=non_transient)
+            .filter(updated_at__lt=cutoff, deleted_at__isnull=True)
             .order_by("updated_at")[:BATCH]
         )
         count = 0
-        for r in qs:
-            stage_index = (r.metadata or {}).get("pipeline", {}).get("stage_index")
-            if stage_index is None:
-                stage_index = 0  # never started a stage — restart from the top
-            emit_stage(r.id, int(stage_index))
-            count += 1
+        # One atomic batch: the outbox rows commit together (and emit() is
+        # correctly inside a transaction — no outside-atomic warning noise).
+        with transaction.atomic():
+            for r in qs:
+                stage_index = (r.metadata or {}).get("pipeline", {}).get("stage_index")
+                if stage_index is None:
+                    stage_index = 0  # never started a stage — restart from the top
+                emit_stage(r.id, int(stage_index))
+                count += 1
         return count
 
     def cleanup_abandoned_uploads(self) -> int:
@@ -89,10 +100,19 @@ class Command(BaseCommand):
         )
         count = 0
         for r in qs:
-            r.status = RecordingStatus.ERROR
-            r.metadata = {**(r.metadata or {}), "last_error": {
-                "stage": "upload", "reason": "upload_abandoned", "at": timezone.now().isoformat(),
-            }}
-            r.save(update_fields=["status", "metadata", "updated_at"])
-            count += 1
+            # Conditional per-row UPDATE (no plain save over a stale read):
+            # if finalize_upload won the race after our snapshot, the filter
+            # no longer matches and we don't clobber status/metadata of a
+            # recording whose pipeline has started.
+            count += Recording.objects.filter(
+                pk=r.pk,
+                status=RecordingStatus.UPLOADING,
+                file_storage_key__isnull=True,
+            ).update(
+                status=RecordingStatus.ERROR,
+                metadata={**(r.metadata or {}), "last_error": {
+                    "stage": "upload", "reason": "upload_abandoned", "at": timezone.now().isoformat(),
+                }},
+                updated_at=timezone.now(),
+            )
         return count

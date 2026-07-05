@@ -1,8 +1,12 @@
-"""System checks: storage E-level, pipeline/normalizer W-level."""
+"""System checks: storage E-level, pipeline/normalizer/threshold W-level."""
 import pytest
 from django.test import override_settings
 
-from stapel_recordings.checks import check_pipeline_stages, check_storage_backend
+from stapel_recordings.checks import (
+    check_pipeline_stages,
+    check_reconcile_threshold,
+    check_storage_backend,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -10,6 +14,15 @@ pytestmark = pytest.mark.django_db
 def test_defaults_are_clean():
     assert check_storage_backend(None) == []
     assert check_pipeline_stages(None) == []
+    assert check_reconcile_threshold(None) == []
+
+
+def test_stuck_threshold_at_or_below_stage_timeout_is_warning():
+    """Reconcile must not consider a still-running stage 'stuck' — the
+    threshold has to exceed the longest stage duration."""
+    with override_settings(STAPEL_RECORDINGS={"STUCK_THRESHOLD_SECONDS": 600}):
+        warnings = check_reconcile_threshold(None)
+    assert any(w.id == "stapel_recordings.W005" for w in warnings)
 
 
 def test_bad_storage_is_error():

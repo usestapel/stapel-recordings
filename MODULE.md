@@ -66,7 +66,38 @@ class Stage:
 `StageRetryable` (transient — the driver counts the attempt and parks the
 recording for `reconcile`) or `StageFatal` (bad input — straight to DLQ).
 Stages MUST be idempotent (guard on status / persisted keys): delivery is
-at-least-once.
+at-least-once. `status` should be a `RecordingStatus`-compatible transient
+value; `reconcile` treats *any* status that is neither pre-pipeline
+(`created`/`uploading`) nor terminal (`completed`/`error`/`deleted`) as
+in-pipeline, so custom statuses are re-driven too.
+
+**Editing pipelines under live recordings — the cursor contract.**
+Because the list can change at runtime (resolver/UI), the driver's progress
+cursor is **stage names, not positions**: the names of completed stages are
+persisted on `metadata.pipeline.completed` (plus `completed_index`, the
+position of the last completion, used as a duplicate-delivery guard) in the
+same transaction as the stage's success events. On every delivery the
+driver runs the *first stage in the currently resolved list that has not
+completed*. Consequences — all safe with in-flight recordings:
+
+- **Remove a stage**: it is skipped (a warning is logged when the removed
+  stage had already started); already-completed work is kept. Removal is
+  treated as operator intent, not an error.
+- **Insert a stage** (even before the cursor): it runs; completed stages
+  never re-run. The list is declarative — each named stage runs at most
+  once per recording.
+- **Reorder**: remaining stages run in the new order.
+- **Empty list from the resolver**: treated as a misconfiguration → DLQ
+  (`empty_pipeline`), never a silent `completed`. Recover with
+  `retry_recording()` after fixing the config.
+- Stage names must be **unique within one pipeline** (a repeated name is
+  considered already-completed by the second occurrence).
+
+A crashing `PIPELINE_RESOLVER` parks the recording as a retryable failure
+(bounded by `MAX_STAGE_RETRIES`, then DLQ) instead of crash-looping the
+delivery in the outbox. A broken dotted-path in the `STAGES` overlay only
+affects pipelines that include that stage (`get_stage` imports lazily);
+those recordings DLQ as `unresolvable_stage`.
 
 **Worked example — insert a redaction stage and skip diarize:**
 
@@ -119,7 +150,7 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 | `MULTIPART_SESSION_TTL_SECONDS` | `86400` | value | Multipart session TTL |
 | `MULTIPART_PART_SIZE` | `10 MiB` | value | Multipart part size |
 | `MAX_UPLOAD_BYTES` | `2 GiB` | value | Upload cap |
-| `STUCK_THRESHOLD_SECONDS` | `600` | value | Reconcile: age before re-drive |
+| `STUCK_THRESHOLD_SECONDS` | `2100` | value | Reconcile: age before re-drive. **Must exceed the longest stage duration** (built-ins: `TRANSCRIBE_TIMEOUT_SECONDS`), or reconcile re-drives stages that are still running (checked: W005) |
 | `ABANDONED_UPLOAD_THRESHOLD_SECONDS` | `3600` | value | Reconcile: abandoned-upload age |
 | `S3_*` | — | value | Config for the optional `S3Backend` |
 
@@ -172,12 +203,28 @@ under `schemas/emits/`, validated in tests.
 
 - **Outbox** — `emit` writes the event with the caller's DB transaction;
   the driver walks stages after commit. At-least-once + idempotent stages.
+- **Completion cursor** — "stage N completed" is persisted (name + index)
+  in the same transaction as the success events, so a duplicate delivery of
+  a completed stage is a total no-op: no re-run, and crucially **no
+  re-emit** of `recording.stage_completed`/`recording.stage` with fresh
+  event_ids (safe to hang billing on `stage_completed`).
 - **DLQ** — a `StageFatal` (or retries exhausted) sets `status=error` and
-  emits `recording.failed`.
+  emits `recording.failed`. `error` is **terminal for deliveries**: a
+  redelivered event never resurrects a DLQ'd recording. The only way back
+  is the explicit **`pipeline.retry_recording(recording_id)`** transition
+  (`error → queued`, resumes at the first not-yet-completed stage) — expose
+  it from an app-layer endpoint or admin action.
 - **Reconcile** — `python manage.py recordings_reconcile [--once]` re-emits
-  `recording.stage` for recordings stuck past `STUCK_THRESHOLD_SECONDS`
-  (index read from `metadata['pipeline']['stage_index']`) and fails
-  abandoned uploads.
+  `recording.stage` for recordings stuck past `STUCK_THRESHOLD_SECONDS` in
+  any non-terminal, non-upload status (custom stage statuses included;
+  index read from `metadata['pipeline']['stage_index']`) and fails
+  abandoned uploads (conditional update — never clobbers a finalized row).
+  **Tuning invariant:** `STUCK_THRESHOLD_SECONDS` > the longest legitimate
+  stage duration (`TRANSCRIBE_TIMEOUT_SECONDS` for the built-ins, plus your
+  slowest custom stage). `run_stage` holds the row lock for the whole stage
+  — a premature re-drive parks a duplicate on that lock, wasting a
+  worker/connection even though the completion cursor keeps it
+  semantically harmless. System check W005 warns on inconsistency.
 
 ### GDPR
 
@@ -185,6 +232,15 @@ under `schemas/emits/`, validated in tests.
 `ready()`; `@on_action("user.deleted")` hard-deletes the user's recordings
 and their storage objects (via the seam). Consumer + provider are both
 required because this module holds user data.
+
+Erasure contract (idempotent, at-least-once): rows are locked
+(`select_for_update`) before their object keys are read — serializing with
+a live `run_stage` so a stage can't commit a new object key for a row being
+deleted — and a row is deleted only after **all** of its objects were
+deleted. Storage failures keep the affected rows and raise
+`GDPRStorageDeleteError` after the clean rows' deletion commits, so the
+`user.deleted` redelivery / GDPR-orchestrator retry re-drives erasure for
+exactly the remaining rows.
 
 ## Anti-patterns
 

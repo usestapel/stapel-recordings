@@ -34,11 +34,73 @@ publisher before the first `v0.1.0` tag.
   abandoned uploads).
 - System checks: E for a bad `STORAGE`, W for unknown pipeline stages /
   non-callable `NORMALIZER` / `PIPELINE_RESOLVER`.
-- 55 tests: full pipeline run, split producer/consumer halves, state-machine
-  transitions, idempotent re-delivery, pipeline extension points
-  (custom/reordered/subset/swapped stages + resolver seam), retry/DLQ,
-  reconcile, storage-seam swap, upload/multipart, GDPR, summarize, checks,
+- 77 tests: full pipeline run, split producer/consumer halves, state-machine
+  transitions, idempotent re-delivery (incl. duplicate deliveries of
+  completed stages), pipeline edits under live recordings, pipeline
+  extension points (custom/reordered/subset/swapped stages + resolver
+  seam), retry/DLQ + explicit retry transition, reconcile, storage-seam
+  swap, upload/multipart, GDPR (incl. erasure retry), summarize, checks,
   schema validation, HTTP surface.
+
+### Fixed (adversarial-review findings — folded into the pending 0.1.0)
+
+At-least-once / mutable-pipeline semantics hardening (per-step atomicity was
+already clean; these fix idempotency and pipeline-edit consistency):
+
+- **Progress cursor is now stage *names*, not positions** (H1). The driver
+  persists the completed stage names (`metadata.pipeline.completed`) and on
+  every delivery runs the first not-yet-completed stage of the *currently*
+  resolved pipeline; the event's `stage_index` is only a dedup hint.
+  Editing a pipeline under live recordings no longer skips the wrong stage
+  or finalizes early. Decisions: a removed pending stage is **skipped with
+  a warning** (list edits are operator intent; DLQing every in-flight
+  recording on an edit would fail recordings for a routine action); an
+  **empty resolver list DLQs** (`empty_pipeline`) instead of silently
+  emitting `recording.completed` for a recording with no transcript.
+- **Stage completion is persisted in the success transaction** (H2):
+  `completed_index` + name are written atomically with
+  `recording.stage_completed`/next-`recording.stage`. A duplicate delivery
+  of a completed stage (broker redelivery, reconcile racing a live worker)
+  is now a total no-op — it no longer re-emits public events with fresh
+  event_ids (billing on `stage_completed` can't double-charge). Crash
+  before the commit still re-runs the (idempotent) stage.
+- **Reconcile can no longer duplicate live work by default** (H2):
+  `STUCK_THRESHOLD_SECONDS` default raised 600 → 2100 (transcribe timeout
+  1800 + headroom); new system check **W005** warns when the threshold
+  doesn't exceed `TRANSCRIBE_TIMEOUT_SECONDS`. Decision: the claim-pattern
+  (short claim txn → work outside the lock → fence-checked commit txn) was
+  evaluated and rejected for 0.1.0 — it forfeits the single-transaction
+  atomicity anchor of `run_stage` and needs fencing tokens to stay correct;
+  the completed-cursor guard already makes premature re-drives semantically
+  harmless (the residual cost is a duplicate parked on the row lock, which
+  the raised threshold avoids). Revisit if stage durations outgrow sensible
+  thresholds.
+- **`error` is terminal for deliveries** (M): added to the driver's
+  terminal guard, so a redelivered `recording.stage` can't resurrect a
+  DLQ'd recording and emit `recording.completed` after `recording.failed`.
+  Retry is an explicit transition: new **`pipeline.retry_recording(id)`**
+  (`error → queued`, resumes at the first not-yet-completed stage).
+- **GDPR erasure is retryable and race-free** (M): `delete_object` failures
+  are collected and re-raised (`GDPRStorageDeleteError`) instead of
+  swallowed, and the affected rows are **kept** so `user.deleted`
+  redelivery / the GDPR orchestrator retry the erasure (previously the row
+  was deleted anyway — the object with PII was orphaned forever and every
+  retry path saw "success"). Rows are locked (`select_for_update`) before
+  the key snapshot, so a live convert/merge can't commit a new storage key
+  for a row being erased. Clean rows still erase on partial failure.
+- **Resolver/overlay failures no longer crash-loop in the outbox** (M-L): a
+  crashing `PIPELINE_RESOLVER` parks the recording as a retryable failure
+  (bounded by `MAX_STAGE_RETRIES`, then DLQ); `get_stage` now imports
+  handlers lazily, so one broken `STAGES` dotted-path DLQs only the
+  pipelines that include that stage instead of breaking every recording.
+- **Small races closed** (L): `start_pipeline` now locks the row and writes
+  the started marker in the same transaction as `recording.stage(0)`
+  (concurrent `recording.uploaded` duplicates emit a single stage 0);
+  `cleanup_abandoned_uploads` uses a conditional per-row `UPDATE` (can't
+  clobber a recording that finalized after the sweep's snapshot);
+  `reconcile_once` treats any non-terminal/non-upload status as transient
+  (recordings parked in *custom* stage statuses are re-driven) and emits
+  inside `transaction.atomic()` (no outside-atomic warning noise).
 
 ### Internal (still unreleased — folded into the pending 0.1.0)
 - Wired the `stapel_core.lint.emit_check` outbox-atomicity gate into CI and the
