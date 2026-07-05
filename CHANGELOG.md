@@ -10,6 +10,13 @@ Initial port from `the legacy recordings service` (the legacy backend). **Not re
 awaits an independent adversarial review and a PyPI pending trusted
 publisher before the first `v0.1.0` tag.
 
+### Packaging
+- Tests excluded from the built wheel/sdist (the `stapel_recordings.tests`
+  subpackage is no longer listed in `[tool.setuptools] packages`). Added
+  `[project.urls]`, completed the trove classifiers (MIT/OSI, Python 3.13,
+  `Typing :: Typed`, OS Independent, `3 :: Only`, Development Status) and a
+  `[tool.ruff]` lint section (single source shared with the git hooks/CI).
+
 ### Added
 - **Domain**: `Recording` + `Speaker` + `Segment` (unified transcript),
   `UploadSession` (presigned single-PUT + multipart), `Job` ledger, and the
