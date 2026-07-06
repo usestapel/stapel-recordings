@@ -4,11 +4,21 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
-## [0.1.0] — Unreleased
+## [0.1.1] — 2026-07-07
 
-Initial port from `the legacy recordings service` (the legacy backend). **Not released** —
-awaits an independent adversarial review and a PyPI pending trusted
-publisher before the first `v0.1.0` tag.
+Initial port from `the legacy recordings service` (the legacy backend). `0.1.0` shipped to
+PyPI with different content than what is described below; this entry — and
+the version bump — cover the actual first published state of the package
+(PyPI releases are immutable, so a re-publish of the same content requires a
+new version number).
+
+### Fixed
+- CI harness incident (library-standard §7.5–§7.6): the test job installed
+  the package non-editable, so `stapel_recordings.tests` (excluded from the
+  wheel by design, §4) was unimportable and `ROOT_URLCONF` blew up with
+  `ModuleNotFoundError` on first view access. Test job now installs with
+  `pip install -e .`; `publish.yml` gained its own test job and `build`
+  depends on it, so a red test run blocks publication.
 
 ### Changed
 - Pinned `stapel-core` to the `>=0.8,<0.9` window (library-standard §7.1: one
@@ -17,8 +27,8 @@ publisher before the first `v0.1.0` tag.
   the way an end user does (`pip install .`, dependencies resolved from PyPI
   strictly by the declared pins, no git-main core, no editable siblings), asserts
   `stapel-core` resolves inside the `0.8` window, and runs an import smoke.
-  Advisory (continue-on-error) until the whole stapel graph is on PyPI; becomes
-  the blocking precondition for a `vX.Y.Z` tag once it is.
+  Blocking (library-standard §7.5): the stapel dependency graph is now fully
+  on PyPI, so a green run here is a precondition for a `vX.Y.Z` tag.
 
 ### Packaging
 - Tests excluded from the built wheel/sdist (the `stapel_recordings.tests`

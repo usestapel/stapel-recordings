@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.1.0"
+version = "0.1.1"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
