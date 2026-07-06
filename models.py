@@ -20,6 +20,7 @@ import uuid
 
 from django.conf import settings
 from django.db import models
+from stapel_core.access import access
 
 
 # =====================================================================
@@ -206,6 +207,11 @@ class Segment(models.Model):
 # =====================================================================
 
 
+@access.ops  # TTL-bounded upload-in-progress tracker, never staff-authored
+# (admin-suite AS-5): rows only ever come from ``services.create_upload_session``
+# / ``start_multipart_upload``, mutated by ``finalize_upload``, and deleted by
+# ``abort_multipart_upload_session`` or expiry cleanup — no add/change/delete
+# workflow through the admin exists to protect.
 class UploadSession(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     recording = models.ForeignKey(
@@ -228,6 +234,12 @@ class UploadSession(models.Model):
         indexes = [models.Index(fields=["recording"], name="rec_upload_rec_idx")]
 
 
+@access.ops  # processing-job ledger (admin-suite AS-5): status/type tracker in
+# the doc's own TaskRecord shape. No code path in this repo writes a Job row
+# today (the pipeline driver tracks progress on Recording.status/metadata
+# instead — see pipeline.py) or exposes a staff-facing create/retry form; the
+# model exists as the ledger a host/consumer may populate. Treated as
+# machinery nobody is expected to hand-author through the admin.
 class Job(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     workspace_id = models.UUIDField(db_index=True)

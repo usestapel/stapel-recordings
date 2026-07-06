@@ -4,6 +4,29 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [Unreleased]
+
+### Added — admin-suite AS-5: `@access` category rollout + `StapelModelAdmin`
+
+Applies the `stapel_core.access` category decorators (admin-suite §0/AS-5
+sweep, docs/admin-suite.md) to this module's models and switches the
+affected `ModelAdmin`s to `stapel_core.django.admin.base.StapelModelAdmin`.
+
+- `@access.ops` (read-only journal, forbids add/change/delete for everyone
+  including superuser; view requires HIGH clearance): `UploadSession` (a
+  TTL-bounded upload-in-progress tracker — every row is created/mutated/
+  removed exclusively by the service layer, never through the admin) and
+  `Job` (a processing-job ledger matching the doc's own `TaskRecord`
+  example — no code path in this repo writes a row today; flagged in
+  MODULE.md as a ledger for a future consumer, not an active staff
+  workflow).
+- `Recording`, `Speaker`, `Segment` stay undecorated (implicit
+  `@access.standard`) — business tables (the transcript data itself); this
+  module's admin already kept them read-only as its own pre-existing
+  choice, unrelated to this rollout.
+- Attribute-only change: no migrations (`makemigrations recordings --check
+  --dry-run` reports no changes).
+
 ## [0.1.1] — 2026-07-07
 
 Initial port from `the legacy recordings service` (the legacy backend). `0.1.0` shipped to

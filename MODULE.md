@@ -242,6 +242,33 @@ deleted. Storage failures keep the affected rows and raise
 `user.deleted` redelivery / GDPR-orchestrator retry re-drives erasure for
 exactly the remaining rows.
 
+### Admin categories (`stapel_core.access`, admin-suite AS-5)
+
+`Recording`, `Speaker`, and `Segment` are business tables — the transcript
+data itself, the doc's own `Listing`/`Wallet`/`Profile` shape — and stay
+undecorated (implicit `@access.standard`). This module's admin has always
+kept them read-only via a local `_ReadOnlyAdmin` base regardless (a
+pre-existing choice independent of this rollout).
+
+`UploadSession` and `Job` are decorated `@access.ops` and their `ModelAdmin`s
+subclass `stapel_core.django.admin.base.StapelModelAdmin`:
+
+- `UploadSession` — a TTL-bounded upload-in-progress tracker. Every row is
+  created by `services.create_upload_session` / `start_multipart_upload`,
+  mutated only by `finalize_upload`, and removed by
+  `abort_multipart_upload_session` or expiry — there is no staff
+  add/change/delete workflow through the admin for `ops` to break.
+- `Job` — a processing-job ledger matching the doc's own `TaskRecord`
+  example. No code path in this repo currently writes a `Job` row (the
+  pipeline driver tracks progress on `Recording.status`/`metadata` instead,
+  see `pipeline.py`); the model is a ledger a host/consumer may populate.
+  Treated as machinery nobody hand-authors through the admin, not as an
+  active staff-facing tracker — flagged here in case a future consumer
+  starts writing rows and wants a different category.
+
+Attribute-only change: no migrations (`makemigrations recordings --check
+--dry-run` reports no changes).
+
 ## Anti-patterns
 
 - **Don't fork to change the pipeline** — reorder/insert/replace stages via

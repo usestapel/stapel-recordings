@@ -1,5 +1,15 @@
-"""Read-only admin for the recordings journal models."""
+"""Admin for stapel-recordings.
+
+``Recording``/``Speaker``/``Segment`` are undecorated business tables (the
+transcript data itself) but kept read-only here as this module's own
+pre-existing choice, independent of the ``@access`` category rollout below.
+``UploadSession`` and ``Job`` are decorated ``@access.ops`` (admin-suite
+AS-5) — pure machinery with no staff add/change/delete workflow — so their
+admins subclass ``StapelModelAdmin``, which enforces the read-only-even-for-
+superuser lockout and the HIGH-clearance view gate from the declaration.
+"""
 from django.contrib import admin
+from stapel_core.django.admin.base import StapelModelAdmin
 
 from .models import Job, Recording, Segment, Speaker, UploadSession
 
@@ -33,11 +43,11 @@ class SegmentAdmin(_ReadOnlyAdmin):
 
 
 @admin.register(UploadSession)
-class UploadSessionAdmin(_ReadOnlyAdmin):
+class UploadSessionAdmin(StapelModelAdmin):
     list_display = ("id", "recording", "is_multipart", "finalized_at", "expires_at")
 
 
 @admin.register(Job)
-class JobAdmin(_ReadOnlyAdmin):
+class JobAdmin(StapelModelAdmin):
     list_display = ("id", "recording", "type", "status", "progress_percent")
     list_filter = ("type", "status")
