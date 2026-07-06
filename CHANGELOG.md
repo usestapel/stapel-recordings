@@ -10,6 +10,16 @@ Initial port from `the legacy recordings service` (the legacy backend). **Not re
 awaits an independent adversarial review and a PyPI pending trusted
 publisher before the first `v0.1.0` tag.
 
+### Changed
+- Pinned `stapel-core` to the `>=0.8,<0.9` window (library-standard §7.1: one
+  minor window; floor `0.8.0` is published on PyPI — no pin into the void).
+- CI: added the release-track job (library-standard §7.4) — installs the package
+  the way an end user does (`pip install .`, dependencies resolved from PyPI
+  strictly by the declared pins, no git-main core, no editable siblings), asserts
+  `stapel-core` resolves inside the `0.8` window, and runs an import smoke.
+  Advisory (continue-on-error) until the whole stapel graph is on PyPI; becomes
+  the blocking precondition for a `vX.Y.Z` tag once it is.
+
 ### Packaging
 - Tests excluded from the built wheel/sdist (the `stapel_recordings.tests`
   subpackage is no longer listed in `[tool.setuptools] packages`). Added
