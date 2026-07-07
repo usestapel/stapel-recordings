@@ -10,7 +10,7 @@ seam). Two backends ship:
   backend in prod). Presigned URLs degrade to ``storage.url(key)``; a
   synthetic multipart shim keeps the API total for backends without a
   native multipart protocol.
-- :class:`S3Backend` — ports the legacy recordings service' boto3 presigned/multipart
+- :class:`S3Backend` — boto3 presigned/multipart
   helpers. ``boto3`` is an optional dependency (``pip install
   stapel-recordings[s3]``); imported lazily with a clear error.
 
@@ -175,7 +175,7 @@ class DjangoStorageBackend(RecordingStorage):
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Optional: S3 / MinIO backend (boto3) — ported from the legacy recordings service
+# Optional: S3 / MinIO backend (boto3)
 # ─────────────────────────────────────────────────────────────────────
 
 

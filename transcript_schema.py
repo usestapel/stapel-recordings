@@ -6,8 +6,7 @@ seam at ``<prefix>/<id>/transcript.json``. ``render_markdown`` /
 ``build_summary_input`` prepare LLM-ready views for the summarize step
 (which delegates to stapel-agent's ``llm.summarize``).
 
-Ported from the legacy recordings service ``recordings/transcript_schema.py``; the
-provider-facing ``from_normalized`` mapper is dropped because STT now
+The provider-facing ``from_normalized`` mapper is dropped because STT now
 lives in stapel-agent — recordings persists Segment rows directly from
 the ``llm.transcribe`` result dict (see ``stages.TranscribeStage``).
 

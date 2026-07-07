@@ -3,7 +3,7 @@
 All side effects leave through the transactional outbox (``emit`` writes
 the event with the caller's DB transaction; delivery happens after
 commit). No inline publish, so there is no publish-after-commit loss —
-the dual-write bug of the the legacy recordings service raw-bus origin is gone.
+the prior raw-bus dual-write bug is gone.
 
 Action surface:
 

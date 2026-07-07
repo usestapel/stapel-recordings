@@ -29,7 +29,7 @@ affected `ModelAdmin`s to `stapel_core.django.admin.base.StapelModelAdmin`.
 
 ## [0.1.1] — 2026-07-07
 
-Initial port from `the legacy recordings service` (the legacy backend). `0.1.0` shipped to
+Initial port from a prior service. `0.1.0` shipped to
 PyPI with different content than what is described below; this entry — and
 the version bump — cover the actual first published state of the package
 (PyPI releases are immutable, so a re-publish of the same content requires a
@@ -162,7 +162,7 @@ already clean; these fix idempotency and pipeline-edit consistency):
   but makes the mutation+emit unit lexically atomic and correct even if a future
   caller invokes them outside `run_stage`.
 
-### Changed from the legacy recordings service (provenance)
+### Changed from the source service (provenance)
 - **Raw Kafka bus + publish-after-commit → `stapel_core.comm` Actions
   through the transactional outbox.** Fixes the source's dual-write event
   loss; the pipeline is now at-least-once with idempotent stages.

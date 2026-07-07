@@ -287,7 +287,7 @@ Attribute-only change: no migrations (`makemigrations recordings --check
 
 ## App-layer (not in this module)
 
-These were app-specific in the the legacy recordings service origin and are intentionally
+These were app-specific in the source origin and are intentionally
 **not** ported; build them in the host project:
 
 - **Zoom / Meet / Teams ingestion** (OAuth, webhooks, TOFU account binding)
