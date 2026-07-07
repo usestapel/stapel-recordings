@@ -176,8 +176,8 @@ already clean; these fix idempotency and pipeline-edit consistency):
   `llm.summarize` call** whose result is stored on the recording.
 - **Scattered `os.getenv` (MINIO_/ELEVENLABS_/PYANNOTE_/…) → the
   `STAPEL_RECORDINGS` conf namespace.**
-- **Hardcoded `legacy.recordings.*` topics → schema'd comm names** under
-  `schemas/emits/`.
+- **Hardcoded legacy `*.recordings.*` topic strings → schema'd comm names**
+  under `schemas/emits/`.
 
 ### Not ported (app-layer)
 - Zoom/Meet/Teams ingestion (OAuth, webhooks, TOFU binding), credits, share
