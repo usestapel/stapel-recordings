@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/usestapel/stapel-recordings/actions/workflows/ci.yml/badge.svg)](https://github.com/usestapel/stapel-recordings/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/usestapel/stapel-recordings/graph/badge.svg)](https://codecov.io/gh/usestapel/stapel-recordings)
+[![PyPI](https://img.shields.io/pypi/v/stapel-recordings.svg)](https://pypi.org/project/stapel-recordings/)
 
 Recording lifecycle and transcription for the [Stapel framework](https://github.com/usestapel) —
 composable Django apps that deploy as a monolith or as microservices
