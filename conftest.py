@@ -1,51 +1,18 @@
 def pytest_configure(config):
     from django.conf import settings
     if not settings.configured:
-        settings.configure(
-            SECRET_KEY="test-secret-key-not-for-production",
-            INSTALLED_APPS=[
-                "django.contrib.contenttypes",
-                "django.contrib.auth",
-                "django.contrib.sessions",
-                "django.contrib.admin",
-                "django.contrib.messages",
-                "stapel_core.django.users",
-                "stapel_core.django.outbox",
-                "rest_framework",
-                "stapel_recordings",
-            ],
-            AUTH_USER_MODEL="users.User",
-            DATABASES={
-                "default": {
-                    "ENGINE": "django.db.backends.sqlite3",
-                    "NAME": ":memory:",
-                }
-            },
-            DEFAULT_AUTO_FIELD="django.db.models.BigAutoField",
-            USE_TZ=True,
-            ROOT_URLCONF="stapel_recordings.tests.urls",
-            MEDIA_ROOT="/tmp/stapel-recordings-test-media",
-            CACHES={
-                "default": {
-                    "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-                }
-            },
-            # Realistic comm: Actions leave through the transactional outbox
-            # (so producer/consumer can be tested as split synchronous halves,
-            # §7.21) and schema validation is ON — the committed contracts in
-            # schemas/ are enforced by the tests.
-            STAPEL_BUS_BACKEND="stapel_core.bus.backends.memory.MemoryBus",
-            STAPEL_COMM={
-                "OUTBOX_ENABLED": True,
-                "ACTION_TRANSPORT": "inprocess",
-                "FUNCTION_TRANSPORT": "inprocess",
-                "VALIDATE_SCHEMAS": True,
-            },
-            MIGRATION_MODULES={
-                "users": None,
-                "recordings": None,
-            },
-        )
+        # Single source of truth for this block lives in _codegen_settings.py
+        # so the test harness and the contract-emission harness (make
+        # contract) can never drift (contract-pipeline.md §3). Tests keep the
+        # bare mount + no production REST_FRAMEWORK, exactly as before the
+        # extraction. The one addition vs. the pre-extraction conftest:
+        # INSTALLED_APPS now also carries drf_spectacular + stapel_core's
+        # CommonDjangoConfig (needed for the contract harness's management
+        # commands) — verified harmless for the test suite (all pre-existing
+        # tests pass unchanged; see _codegen_settings.py docstring).
+        from stapel_recordings._codegen_settings import settings_kwargs
+
+        settings.configure(**settings_kwargs())
         import django
         django.setup()
 

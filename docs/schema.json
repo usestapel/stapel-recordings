@@ -1,0 +1,341 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "",
+    "version": "0.0.0"
+  },
+  "paths": {
+    "/recordings/api/recordings": {
+      "get": {
+        "operationId": "recordings_api_recordings_list",
+        "description": "Create a recording and open its upload session, or list your own.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RecordingDTO"
+                  }
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "operationId": "recordings_api_recordings_create",
+        "description": "Create a recording and open its upload session, or list your own.\n\n**Permissions:** `IsAuthenticated`",
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecordingRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecordingRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecordingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRecordingResponse"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/recordings/api/recordings/{recording_id}": {
+      "get": {
+        "operationId": "recordings_api_recordings_retrieve",
+        "description": "Fetch a single recording.\n\n**Permissions:** `IsAuthenticated`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/recordings/api/recordings/{recording_id}/finalize": {
+      "post": {
+        "operationId": "recordings_api_recordings_finalize_create",
+        "description": "Finalize the upload and enqueue the pipeline.\n\n**Permissions:** `IsAuthenticated`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeUploadRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeUploadRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeUploadRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateRecordingRequest": {
+        "type": "object",
+        "description": "Incoming payload to create a recording + open an upload session.",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "source_type": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "language": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 10
+          },
+          "diarization_enabled": {
+            "type": "boolean",
+            "default": true
+          }
+        },
+        "required": [
+          "title",
+          "workspace_id"
+        ]
+      },
+      "CreateRecordingResponse": {
+        "type": "object",
+        "description": "CreateRecordingResponse(recording: 'RecordingDTO', upload: 'UploadSessionDTO')",
+        "properties": {
+          "recording": {
+            "$ref": "#/components/schemas/RecordingDTO"
+          },
+          "upload": {
+            "$ref": "#/components/schemas/UploadSessionDTO"
+          }
+        },
+        "required": [
+          "recording",
+          "upload"
+        ]
+      },
+      "FinalizeUploadRequest": {
+        "type": "object",
+        "properties": {
+          "file_size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "RecordingDTO": {
+        "type": "object",
+        "description": "A recording as seen by the API.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "source_type": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "nullable": true
+          },
+          "duration_seconds": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "segments_count": {
+            "type": "integer"
+          },
+          "speakers_count": {
+            "type": "integer"
+          },
+          "word_count": {
+            "type": "integer"
+          },
+          "provider_used": {
+            "type": "string",
+            "nullable": true
+          },
+          "transcript_storage_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "summary": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "created_at",
+          "duration_seconds",
+          "id",
+          "language",
+          "provider_used",
+          "segments_count",
+          "source_type",
+          "speakers_count",
+          "status",
+          "summary",
+          "title",
+          "transcript_storage_key",
+          "word_count",
+          "workspace_id"
+        ]
+      },
+      "UploadSessionDTO": {
+        "type": "object",
+        "description": "A single-PUT upload session.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "presigned_url": {
+            "type": "string"
+          },
+          "storage_key": {
+            "type": "string"
+          },
+          "max_size_bytes": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "id",
+          "max_size_bytes",
+          "presigned_url",
+          "storage_key"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "JWTCookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "stapel_jwt",
+        "description": "JWT token stored in cookie. Login via /auth/admin/ to get the cookie."
+      }
+    }
+  }
+}

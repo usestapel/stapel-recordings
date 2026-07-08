@@ -4,6 +4,49 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [Unreleased]
+
+### Added — per-module contract emission: `schema` + `flows` + `errors` triad (contract-pipeline.md Wave 1)
+
+stapel-recordings now emits its **own** API contract per-module — the same
+`docs/{schema,flows,errors}.json` triad stapel-auth established as the etalon
+and stapel-profiles copied — a prerequisite for a future `recordings-react`
+pair (client priority #1, needs client-project/client-project).
+
+- **Harness** (reuses `stapel_tools.codegen`, ~90 lines of per-module config,
+  copied from auth/profiles):
+  - `_codegen_settings.py` — single source of truth for the
+    `settings.configure` block, shared with `conftest.py` (extracted, no
+    test-behavior change beyond adding `drf_spectacular` +
+    `stapel_core.django.apps.CommonDjangoConfig` to `INSTALLED_APPS` — the
+    latter provides the `generate_flow_docs`/`generate_error_keys`
+    management commands the harness needs); `contract=True` swaps in the
+    production `REST_FRAMEWORK`.
+  - `codegen_urls.py` — mounts `stapel_recordings.urls` at the canonical
+    `recordings/` prefix (the module's own `urls.py` already bakes
+    `api/recordings` into its path entries, so the resulting public prefix
+    is `/recordings/api/recordings`, matching `urls.py`'s own documented
+    mount recipe).
+  - `_codegen.py` — pins `spectacular_settings.SCHEMA_PATH_PREFIX = "/"` and
+    **explicitly calls `_register_jwt_auth_extension()`** before emission
+    (the profiles-finding: without a co-mounted sibling to trigger this
+    registration as a side effect, protected endpoints would emit without
+    their `security: [{"JWTCookieAuth": []}]` entry — recordings has no
+    co-mounted sibling, so it needs the explicit call like profiles did).
+- **Gate:** `make contract` / `make contract-check`; `tests/test_contract.py`
+  (drift + determinism + canonical-prefix + `$ref`-closure self-containment +
+  JWT-security presence).
+- **Validation shape differs from auth/profiles:** stapel-recordings is
+  **not mounted in stapel-example-monolith**, so there is no monolith
+  aggregate slice to assert byte-identity against. `tests/test_contract.py`
+  validates standalone instead — see MODULE.md's "Contract emission"
+  section for the four checks this implies.
+- Artifacts: 3 paths, 0 flows (`flows.json = []` — no `@flow_step`
+  annotations yet), 44 error keys. Zero cross-module `$ref` (recordings
+  references `workspace_id`/`owner` only as bare UUIDs, never a `User` FK),
+  so the `{recordings + core}` harness needs no sibling installed for
+  closure.
+
 ## [0.1.2] - 2026-07-08
 
 ### Added — admin-suite AS-5: `@access` category rollout + `StapelModelAdmin`

@@ -269,6 +269,82 @@ subclass `stapel_core.django.admin.base.StapelModelAdmin`:
 Attribute-only change: no migrations (`makemigrations recordings --check
 --dry-run` reports no changes).
 
+### Contract emission — the `schema` + `flows` + `errors` triad
+
+This module emits its **own** machine-readable API contract, per-module, so a
+future frontend codegen reads a committed, version-pinned artifact instead of
+depending on a monolith aggregate (contract-pipeline.md §2, verdict **A**:
+contract = a reviewable commit, following the pattern stapel-auth established
+as the etalon). The triad lives in `docs/`:
+
+```
+docs/schema.json   drf-spectacular OpenAPI, this module only, canonical /recordings/api/ prefix
+docs/flows.json    generate_flow_docs machine artifact — [] here, no @flow_step annotations yet
+docs/errors.json   generate_error_keys registry
+```
+
+**stapel-recordings is not mounted in `stapel-example-monolith`** (no route
+for it in `svc-app/core/urls.py` as of this writing — recordings ships ahead
+of its own frontend pair). Unlike auth/profiles/notifications/billing/
+workspaces, there is therefore no monolith aggregate slice to diff this
+artifact against for byte-identity. Validation is **standalone** instead
+(`tests/test_contract.py`): determinism (two independent emissions are
+byte-identical), a self-contained `$ref` closure (no dangling references),
+canonical-prefix paths, and `security: [{"JWTCookieAuth": []}]` present on
+every protected operation. If recordings is later mounted in the monolith,
+add a `test_matches_monolith_recordings_slice` byte-identity test mirroring
+auth's/profiles' (see their `tests/test_contract.py`).
+
+**Harness** (three ~30-100-line files, plus the shared mechanism in
+`stapel_tools.codegen`):
+- `_codegen_settings.py` — the single `settings.configure(**kwargs)` block,
+  shared with `conftest.py` so the test instance and the codegen instance can
+  never drift. `contract=True` swaps in the production `REST_FRAMEWORK` (DRF
+  caches it on first access, so it must be right at configure time) and the
+  shared `INSTALLED_APPS` gained `stapel_core.django.apps.CommonDjangoConfig`
+  (needed for the `generate_flow_docs`/`generate_error_keys` management
+  commands — recordings' original conftest predated this and never called
+  them) and `drf_spectacular`.
+- `codegen_urls.py` — mounts `stapel_recordings.urls` at the canonical
+  `recordings/` prefix (the module's own `urls.py` already bakes
+  `api/recordings` into its path entries, so the resulting public prefix is
+  `/recordings/api/recordings`, matching `urls.py`'s own documented mount
+  recipe).
+- `_codegen.py` — configures the instance on `codegen_urls`, forces
+  `spectacular_settings.SCHEMA_PATH_PREFIX = "/"` on the drf-spectacular
+  singleton (reproduces the aggregate-style operationId convention,
+  `recordings_api_*`, that every other pair-backend's harness also pins),
+  **explicitly calls `stapel_core.django.openapi.swagger._register_jwt_auth_extension()`**
+  before emission, then calls the shared `emit_schema` / `emit_flows` /
+  `emit_errors`. The explicit JWT-extension call is the **profiles-finding
+  gap**: a real all-modules deployment registers this drf-spectacular
+  security-scheme extension as a side effect of its own dev-only Swagger
+  URLs; auth's harness gets it for free only because its co-mounted
+  `stapel_gdpr` sibling happens to trigger the same registration.
+  stapel-recordings has no co-mounted sibling, so — like profiles — it must
+  call the registration function itself, or every protected endpoint here
+  (all three views are `permission_classes = [IsAuthenticated]`) would emit
+  without its `security` entry. `tests/test_contract.py::
+  test_protected_endpoints_carry_jwt_security` gates this regression.
+
+**Gate:** `make contract` re-emits; `make contract-check` regenerates into a
+temp dir and diffs (`PYTHON=<venv>/bin/python make contract-check` — the
+default `PYTHON ?= python3` targets the system interpreter, not this
+workspace's venv). The CI-enforced gate is `tests/test_contract.py` (pytest,
+run in the module's venv). Regenerate after any serializer/view/url/error
+change:
+
+    make contract        # or: python -m stapel_recordings._codegen --out docs
+
+then commit `docs/{schema,flows,errors}.json`.
+
+**Adding contract emission to a module with no monolith mount** (this
+module's own precedent, in case another standalone pair-backend needs it):
+copy stapel-auth's/stapel-profiles' three harness files verbatim, retarget
+the module name + canonical prefix, and swap the byte-identity-vs-monolith
+test for the four standalone checks above (determinism, closure, prefix,
+security) — there is nothing to diff against without a monolith mount.
+
 ## Anti-patterns
 
 - **Don't fork to change the pipeline** — reorder/insert/replace stages via
