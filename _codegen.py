@@ -86,7 +86,31 @@ def _configure() -> None:
     _register_jwt_auth_extension()
 
 
+def _require_python_312() -> None:
+    """Abort emission if not running the pinned 3.12 interpreter.
+
+    drf-spectacular's rendering of component descriptions (``Optional[X]`` vs
+    ``X | None``) depends on the Python **minor** version — contracts emitted
+    on anything other than 3.12 (the CI/monolith pin) produce false diffs
+    against the committed docs/*.json. Emission must never proceed on the
+    wrong minor.
+    """
+    if sys.version_info[:2] != (3, 12):
+        got = f"{sys.version_info.major}.{sys.version_info.minor}"
+        raise SystemExit(
+            f"stapel-recordings contract emission ABORTED: running Python "
+            f"{got}, but contracts must be emitted on Python 3.12 (the "
+            "CI/monolith pin). drf-spectacular renders component "
+            "descriptions (Optional[X] vs X | None) differently across "
+            "Python minor versions, so emitting on any other minor produces "
+            "false diffs against the committed docs/*.json. Re-run under a "
+            "3.12 interpreter."
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
+    _require_python_312()
+
     parser = argparse.ArgumentParser(
         prog="stapel-recordings-contract",
         description="Emit this module's contract triad (schema.json + flows.json "
