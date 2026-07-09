@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "provides": "Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.",
   "axes": [
     {
