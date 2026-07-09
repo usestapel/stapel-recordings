@@ -6,12 +6,18 @@ from typing import NamedTuple
 
 from django.urls import path
 
-from .views import FinalizeUploadView, RecordingDetailView, RecordingListCreateView
+from .views import (
+    FinalizeUploadView,
+    RecordingDetailView,
+    RecordingListCreateView,
+    ReprocessRecordingView,
+)
 
 urlpatterns = [
     path("api/recordings", RecordingListCreateView.as_view(), name="recordings-list-create"),
     path("api/recordings/<uuid:recording_id>", RecordingDetailView.as_view(), name="recordings-detail"),
     path("api/recordings/<uuid:recording_id>/finalize", FinalizeUploadView.as_view(), name="recordings-finalize"),
+    path("api/recordings/<uuid:recording_id>/reprocess", ReprocessRecordingView.as_view(), name="recordings-reprocess"),
 ]
 
 

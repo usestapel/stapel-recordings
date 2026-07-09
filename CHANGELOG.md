@@ -4,6 +4,37 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.3.0] — 2026-07-10
+
+Service-backlog tails: the `reprocess` transition gains an HTTP verb, and the
+listing gains a `resource_key` filter. Minor bump — the API contract grows (a
+new endpoint, a new query parameter, a new error key), additive but a minor
+per the frontend-pair regen schedule (schema changes → pair minor).
+
+### Added — `reprocess` HTTP verb
+
+- `POST /recordings/api/recordings/{id}/reprocess` exposes the
+  `pipeline.reprocess_recording` transition (added as a bare service transition
+  in 0.2.0): re-run the whole pipeline from stage 0 for a **completed**
+  recording, clearing the progress cursor. Owner-scoped like every other
+  per-recording verb — an unknown/foreign/deleted recording is `404`. The
+  transition is allowed **only** from `completed`; from any other status the
+  endpoint answers `409 error.409.recording_invalid_state` (new domain error
+  key) and leaves the recording untouched. On success it returns the requeued
+  recording (now `queued`).
+
+### Added — `resource_key` listing filter
+
+- `GET /recordings/api/recordings?resource_key=<opaque-token>` narrows the
+  listing to the single recording that opaque, signed handle references
+  (resolved via `resolve_resource_key`). It composes with `?workspace_id=`
+  (workspace scope stays membership-gated) and with the default owner scope.
+  A missing/forged/tampered key resolves to nothing and the listing comes back
+  **empty** (not `400`) — the token is tamper-evident and opaque by design, so
+  the surface neither leaks whether a token is genuine nor invents a distinct
+  error for a value the client only ever obtains from a prior server response.
+  Anchor pagination is unchanged.
+
 ## [0.2.1] — 2026-07-10
 
 ### Fixed

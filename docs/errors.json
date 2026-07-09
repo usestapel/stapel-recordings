@@ -271,6 +271,13 @@
     "en": "Resource already exists"
   },
   {
+    "code": "error.409.recording_invalid_state",
+    "status": 409,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "Recording is not in a valid state for this action"
+  },
+  {
     "code": "error.410.gone",
     "status": 410,
     "params": [],

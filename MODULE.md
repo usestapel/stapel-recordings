@@ -19,7 +19,8 @@
   (+ `error`, `deleted`).
 - A **storage seam** (`RecordingStorage`) — no hard dependency on any S3
   client in the module core.
-- A REST surface (create + upload session, detail, finalize) with
+- A REST surface (create + upload session, detail, list — owner- /
+  workspace- / `resource_key`-scoped —, finalize, reprocess) with
   serializer seams, and a GDPR provider + `user.deleted` consumer.
 
 **What it delegates (does NOT implement):**

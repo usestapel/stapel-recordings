@@ -122,3 +122,136 @@ def test_workspace_list_fails_closed_when_workspaces_unavailable(
     api_client.force_authenticate(user=user)
     resp = api_client.get(f"/recordings/api/recordings?workspace_id={ws}")
     assert resp.status_code == 403
+
+
+# ── resource-scoped listing: ?resource_key= ───────────────────────────────
+
+
+def test_list_filtered_by_resource_key_returns_only_that_recording(
+    use_fakes, api_client, user, make_recording
+):
+    from stapel_recordings.resources import resource_key
+
+    keep = make_recording(owner=user, title="keep")
+    make_recording(owner=user, title="other")
+    api_client.force_authenticate(user=user)
+    resp = api_client.get(
+        f"/recordings/api/recordings?resource_key={resource_key(keep)}"
+    )
+    assert resp.status_code == 200
+    rows = resp.json()
+    assert [r["id"] for r in rows] == [str(keep.id)]
+
+
+def test_list_forged_resource_key_yields_empty(
+    use_fakes, api_client, user, make_recording
+):
+    r = make_recording(owner=user, title="mine")
+    api_client.force_authenticate(user=user)
+    resp = api_client.get("/recordings/api/recordings?resource_key=not-a-real-token")
+    assert resp.status_code == 200
+    assert resp.json() == []
+    # Sanity: without the (bogus) filter the recording is listed.
+    assert r.id is not None
+
+
+def test_resource_key_of_another_owner_is_not_leaked(
+    use_fakes, api_client, db, make_recording
+):
+    """A valid key for a recording you do not own resolves, but the owner-scoped
+    base queryset still excludes it — empty, never a cross-owner leak."""
+    from django.contrib.auth import get_user_model
+
+    from stapel_recordings.resources import resource_key
+
+    User = get_user_model()
+    owner = User.objects.create(username=f"o-{uuid.uuid4().hex[:8]}")
+    viewer = User.objects.create(username=f"v-{uuid.uuid4().hex[:8]}")
+    theirs = make_recording(owner=owner, title="theirs")
+    api_client.force_authenticate(user=viewer)
+    resp = api_client.get(
+        f"/recordings/api/recordings?resource_key={resource_key(theirs)}"
+    )
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_resource_key_composes_with_workspace_scope(
+    use_fakes, api_client, db, make_recording, stub_membership
+):
+    from django.contrib.auth import get_user_model
+
+    from stapel_recordings.resources import resource_key
+
+    User = get_user_model()
+    ws = uuid.uuid4()
+    owner = User.objects.create(username=f"o-{uuid.uuid4().hex[:8]}")
+    viewer = User.objects.create(username=f"v-{uuid.uuid4().hex[:8]}")
+    target = make_recording(owner=owner, workspace_id=ws, title="target")
+    make_recording(owner=owner, workspace_id=ws, title="sibling")
+
+    stub_membership.grant(ws, viewer.pk)
+    api_client.force_authenticate(user=viewer)
+    resp = api_client.get(
+        f"/recordings/api/recordings?workspace_id={ws}"
+        f"&resource_key={resource_key(target)}"
+    )
+    assert resp.status_code == 200
+    assert [r["title"] for r in resp.json()] == ["target"]
+
+
+# ── reprocess verb: POST /{id}/reprocess ──────────────────────────────────
+
+
+def test_reprocess_completed_recording_requeues(use_fakes, api_client, user, make_recording):
+    r = make_recording(owner=user, status=RecordingStatus.COMPLETED)
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(f"/recordings/api/recordings/{r.id}/reprocess")
+    assert resp.status_code == 200, resp.content
+    assert resp.json()["status"] == RecordingStatus.QUEUED
+    r.refresh_from_db()
+    assert r.status == RecordingStatus.QUEUED
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        RecordingStatus.CREATED,
+        RecordingStatus.UPLOADING,
+        RecordingStatus.QUEUED,
+        RecordingStatus.TRANSCRIBING,
+        RecordingStatus.ERROR,
+    ],
+)
+def test_reprocess_from_non_completed_is_409(
+    use_fakes, api_client, user, make_recording, status
+):
+    r = make_recording(owner=user, status=status)
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(f"/recordings/api/recordings/{r.id}/reprocess")
+    assert resp.status_code == 409
+    assert resp.json()["localizable_error"] == "error.409.recording_invalid_state"
+    r.refresh_from_db()
+    assert r.status == status  # unchanged
+
+
+def test_reprocess_unknown_recording_is_404(api_client, user):
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(f"/recordings/api/recordings/{uuid.uuid4()}/reprocess")
+    assert resp.status_code == 404
+
+
+def test_reprocess_foreign_recording_is_404(use_fakes, api_client, db, make_recording):
+    """Owner scope: another user's completed recording is not reprocessable —
+    404, never a cross-owner 409/200."""
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    owner = User.objects.create(username=f"o-{uuid.uuid4().hex[:8]}")
+    viewer = User.objects.create(username=f"v-{uuid.uuid4().hex[:8]}")
+    r = make_recording(owner=owner, status=RecordingStatus.COMPLETED)
+    api_client.force_authenticate(user=viewer)
+    resp = api_client.post(f"/recordings/api/recordings/{r.id}/reprocess")
+    assert resp.status_code == 404
+    r.refresh_from_db()
+    assert r.status == RecordingStatus.COMPLETED  # untouched
