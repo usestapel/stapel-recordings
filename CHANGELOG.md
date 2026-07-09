@@ -6,6 +6,16 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-09
+
+### Added — `docs/capabilities.json`, the fourth contract artifact (A6 sweep)
+
+Emits `docs/capabilities.json` alongside the schema/flows/errors triad below —
+same per-module contract-emission harness, extended to also declare the
+module's capability surface for the A6 capabilities mechanism. Enforces
+Python 3.12 for emission (rendering-skew guard, keeps the artifact
+byte-stable across contributor machines).
+
 ### Added — per-module contract emission: `schema` + `flows` + `errors` triad (contract-pipeline.md Wave 1)
 
 stapel-recordings now emits its **own** API contract per-module — the same
