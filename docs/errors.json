@@ -194,6 +194,13 @@
     "en": "Requests from this network are not allowed"
   },
   {
+    "code": "error.403.recording_workspace_forbidden",
+    "status": 403,
+    "params": [],
+    "remediation": "retry",
+    "en": "You are not a member of this workspace"
+  },
+  {
     "code": "error.403.verification_enrollment_required",
     "status": 403,
     "params": [],
@@ -283,6 +290,13 @@
     "params": [],
     "remediation": "retry",
     "en": "Upload exceeds the maximum allowed size"
+  },
+  {
+    "code": "error.415.recording_unsupported_media",
+    "status": 415,
+    "params": [],
+    "remediation": "retry",
+    "en": "Upload file type is not supported"
   },
   {
     "code": "error.415.unsupported_media_type",

@@ -229,6 +229,52 @@ def retry_recording(recording_id: str) -> bool:
     return True
 
 
+def reprocess_recording(recording_id: str) -> bool:
+    """Explicit ``completed -> queued`` transition: re-run the WHOLE pipeline
+    from stage 0 for an already-finished recording. Returns True if requeued.
+
+    Distinct from :func:`retry_recording` (``error -> queued``, which *resumes*
+    at the first not-yet-completed stage keeping the completed-set): reprocess
+    is for a recording that finished successfully but a host wants re-run
+    (e.g. after changing the pipeline, ASR tier, or a stage's config). It
+    **clears the pipeline progress cursor** (``completed`` / ``completed_index``
+    / carried ``ctx``) so every stage runs again from the top, then re-emits
+    ``recording.stage(0)``.
+
+    Allowed only from ``completed``. Every other status — ``created`` /
+    ``uploading`` / ``queued`` / any in-flight processing status / ``error``
+    (use ``retry_recording``) / ``deleted`` — is a forbidden transition and
+    returns False without side effects. Stages remain idempotent and
+    self-guard on persisted artifacts, so a host that needs derived data
+    (segments, transcript, summary) regenerated clears the relevant keys as
+    part of its reprocess flow — the module never destroys transcript data on
+    its own."""
+    with transaction.atomic():
+        try:
+            recording = Recording.objects.select_for_update().get(pk=recording_id)
+        except Recording.DoesNotExist:
+            logger.warning("reprocess_recording: recording %s not found", recording_id)
+            return False
+        if recording.status != RecordingStatus.COMPLETED:
+            return False
+        metadata = dict(recording.metadata or {})
+        pl = dict(metadata.get("pipeline") or {})
+        pl.pop("completed", None)
+        pl.pop("completed_index", None)
+        pl.pop("ctx", None)
+        pl.pop("stage", None)
+        pl.pop("stage_index", None)
+        pl["reprocess_at"] = timezone.now().isoformat()
+        metadata["pipeline"] = pl
+        recording.metadata = metadata
+        recording.status = RecordingStatus.QUEUED
+        recording.retry_count = 0
+        recording.save(update_fields=["status", "retry_count", "metadata", "updated_at"])
+        events.emit_stage(recording.id, 0)
+    logger.info("pipeline: recording %s requeued for reprocess", recording_id)
+    return True
+
+
 # ─── terminal transitions ──────────────────────────────────────────────
 
 
@@ -339,4 +385,5 @@ __all__ = [
     "start_pipeline",
     "run_stage",
     "retry_recording",
+    "reprocess_recording",
 ]

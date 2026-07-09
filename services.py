@@ -16,16 +16,75 @@ from .conf import recordings_settings
 from .models import Recording, RecordingStatus, UploadSession
 from .storage import get_storage
 
+#: Comm Function the workspaces module exposes to answer membership questions
+#: by name (no import of that app). See stapel_workspaces.functions.
+WORKSPACES_CHECK_MEMBERSHIP = "workspaces.check_membership"
 
-def _storage_key(recording: Recording) -> str:
+
+class UnsupportedUploadExtension(ValueError):
+    """Raised when a caller-supplied upload filename has no extension, or one
+    outside ``UPLOAD_EXTENSION_ALLOWLIST``."""
+
+    def __init__(self, ext: str):
+        super().__init__(f"unsupported upload extension: {ext!r}")
+        self.ext = ext
+
+
+def validated_upload_ext(filename: str | None) -> str:
+    """Return the object-key suffix for *filename* (``""`` when no filename
+    is given — the backward-compatible ``…/audio`` key). A filename with no
+    extension, or one outside the allowlist, raises
+    :class:`UnsupportedUploadExtension`."""
+    if not filename:
+        return ""
+    _, dot, ext = filename.rpartition(".")
+    ext = ext.strip().lower()
+    if not dot or not ext:
+        raise UnsupportedUploadExtension(filename)
+    allowlist = {e.lower() for e in (recordings_settings.UPLOAD_EXTENSION_ALLOWLIST or [])}
+    if ext not in allowlist:
+        raise UnsupportedUploadExtension(ext)
+    return f".{ext}"
+
+
+def _storage_key(recording: Recording, *, filename: str | None = None) -> str:
     prefix = recordings_settings.STORAGE_PREFIX.strip("/")
-    return f"{prefix}/{recording.workspace_id}/{recording.id}/audio"
+    base = f"{prefix}/{recording.workspace_id}/{recording.id}/audio"
+    return f"{base}{validated_upload_ext(filename)}"
 
 
-def create_upload_session(*, recording: Recording) -> UploadSession:
-    """Create a single-PUT presigned upload session."""
+def check_workspace_membership(*, user_id, workspace_id) -> bool:
+    """True iff *user_id* is an accepted member of *workspace_id*.
+
+    Asks the workspaces module by comm name (``workspaces.check_membership``)
+    — no import of that app, the transport is deployment config. **Fails
+    closed**: any wiring/provider failure (workspaces not deployed, route not
+    configured, provider error) denies access rather than leaking another
+    member's recordings."""
+    from stapel_core.comm import call
+    from stapel_core.comm.exceptions import CommError
+
+    if user_id is None or workspace_id is None:
+        return False
+    try:
+        result = call(
+            WORKSPACES_CHECK_MEMBERSHIP,
+            {"workspace_id": str(workspace_id), "user_id": str(user_id)},
+        )
+    except CommError:
+        return False
+    return bool(isinstance(result, dict) and result.get("is_member"))
+
+
+def create_upload_session(*, recording: Recording, filename: str | None = None) -> UploadSession:
+    """Create a single-PUT presigned upload session.
+
+    When *filename* is given, its extension is validated against
+    ``UPLOAD_EXTENSION_ALLOWLIST`` and appended to the object key
+    (``…/audio.mp3``); omitting it keeps the legacy ``…/audio`` key
+    (backward compatible)."""
     storage = get_storage()
-    key = _storage_key(recording)
+    key = _storage_key(recording, filename=filename)
     ttl = int(recordings_settings.UPLOAD_SESSION_TTL_SECONDS)
     presigned_url = storage.presigned_put_url(key, expires_seconds=ttl)
     session = UploadSession.objects.create(
@@ -42,11 +101,18 @@ def create_upload_session(*, recording: Recording) -> UploadSession:
 
 
 def start_multipart_upload(
-    *, recording: Recording, file_size_bytes: int, content_type: str | None = None
+    *,
+    recording: Recording,
+    file_size_bytes: int,
+    content_type: str | None = None,
+    filename: str | None = None,
 ) -> tuple[UploadSession, list[dict], int]:
-    """Initiate a multipart upload. Returns (session, parts, part_size)."""
+    """Initiate a multipart upload. Returns (session, parts, part_size).
+
+    *filename* behaves as in :func:`create_upload_session` (validated
+    extension appended to the object key; omit for the legacy key)."""
     storage = get_storage()
-    key = _storage_key(recording)
+    key = _storage_key(recording, filename=filename)
     part_size = int(recordings_settings.MULTIPART_PART_SIZE)
     num_parts = max(1, (file_size_bytes + part_size - 1) // part_size)
     ttl = int(recordings_settings.MULTIPART_SESSION_TTL_SECONDS)
@@ -122,4 +188,8 @@ __all__ = [
     "start_multipart_upload",
     "abort_multipart_upload_session",
     "finalize_upload",
+    "validated_upload_ext",
+    "UnsupportedUploadExtension",
+    "check_workspace_membership",
+    "WORKSPACES_CHECK_MEMBERSHIP",
 ]

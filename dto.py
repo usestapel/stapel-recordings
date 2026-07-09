@@ -10,6 +10,7 @@ class RecordingDTO:
     """A recording as seen by the API."""
 
     id: str
+    resource_key: str
     workspace_id: str
     title: str
     status: str
@@ -43,8 +44,11 @@ class CreateRecordingResponse:
 
 
 def recording_to_dto(recording) -> RecordingDTO:
+    from .resources import resource_key
+
     return RecordingDTO(
         id=str(recording.id),
+        resource_key=resource_key(recording),
         workspace_id=str(recording.workspace_id),
         title=recording.title,
         status=recording.status,

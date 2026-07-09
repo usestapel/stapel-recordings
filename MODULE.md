@@ -214,6 +214,14 @@ under `schemas/emits/`, validated in tests.
   is the explicit **`pipeline.retry_recording(recording_id)`** transition
   (`error → queued`, resumes at the first not-yet-completed stage) — expose
   it from an app-layer endpoint or admin action.
+- **Reprocess** — **`pipeline.reprocess_recording(recording_id)`** re-runs
+  the whole pipeline from stage 0 for a **`completed`** recording
+  (`completed → queued`, clears the progress cursor so every stage re-runs;
+  the counterpart to `retry_recording`'s resume). Forbidden from any other
+  status (no-op → `False`). Stages self-guard on persisted artifacts, so a
+  host that wants derived data (segments/transcript/summary) regenerated
+  clears the relevant keys as part of its reprocess flow — the module never
+  destroys transcript data itself.
 - **Reconcile** — `python manage.py recordings_reconcile [--once]` re-emits
   `recording.stage` for recordings stuck past `STUCK_THRESHOLD_SECONDS` in
   any non-terminal, non-upload status (custom stage statuses included;

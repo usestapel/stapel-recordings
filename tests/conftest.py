@@ -135,6 +135,32 @@ def stub_transcribe():
 
 
 @pytest.fixture
+def stub_membership():
+    """Register a stub ``workspaces.check_membership`` comm Function. Returns a
+    recorder whose ``members`` set of (workspace_id, user_id) string pairs the
+    test populates to grant membership."""
+    from stapel_core.comm import register_function
+
+    class Recorder:
+        def __init__(self):
+            self.calls = []
+            self.members: set[tuple[str, str]] = set()
+
+        def grant(self, workspace_id, user_id):
+            self.members.add((str(workspace_id), str(user_id)))
+
+        def __call__(self, payload):
+            self.calls.append(payload)
+            key = (str(payload["workspace_id"]), str(payload["user_id"]))
+            is_member = key in self.members
+            return {"is_member": is_member, "role": "member" if is_member else None}
+
+    recorder = Recorder()
+    register_function("workspaces.check_membership", recorder)
+    return recorder
+
+
+@pytest.fixture
 def stub_summarize():
     from stapel_core.comm import register_function
 

@@ -28,6 +28,31 @@ class CreateRecordingRequestSerializer(serializers.Serializer):
     source_type = serializers.CharField(max_length=32, required=False)
     language = serializers.CharField(max_length=10, required=False, allow_null=True)
     diarization_enabled = serializers.BooleanField(required=False, default=True)
+    # Optional: the client's original filename. When present its extension is
+    # validated against UPLOAD_EXTENSION_ALLOWLIST and used to build the
+    # upload object key. Omit for the legacy extension-less key.
+    filename = serializers.CharField(max_length=512, required=False, allow_blank=True)
+
+    def validate_source_type(self, value):
+        from .sources import is_valid_source_type, registered_source_types
+
+        if value and not is_valid_source_type(value):
+            raise serializers.ValidationError(
+                f"unknown source_type {value!r}; registered: "
+                f"{registered_source_types()}"
+            )
+        return value
+
+    def validate_filename(self, value):
+        from .services import UnsupportedUploadExtension, validated_upload_ext
+
+        if not value:
+            return value
+        try:
+            validated_upload_ext(value)
+        except UnsupportedUploadExtension as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+        return value
 
 
 class FinalizeUploadRequestSerializer(serializers.Serializer):

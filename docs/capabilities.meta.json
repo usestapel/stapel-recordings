@@ -45,6 +45,11 @@
       "summary": "Swap the audio-normalization step: ffmpeg by default, a passthrough for environments without it, or a custom converter."
     },
     {
+      "name": "SOURCE_TYPES",
+      "kind": "merge_registry",
+      "summary": "Extend the recording source-kind registry ({key: label}, merged over the built-in meet/dictaphone/upload/other) — add zoom, teams, phone and so on from settings without editing a code enum."
+    },
+    {
       "name": "serializer_seams",
       "kind": "class_override",
       "summary": "Every view declares request/response serializer seams (SerializerSeamMixin) — subclass the view, override the attribute, remount the URL."

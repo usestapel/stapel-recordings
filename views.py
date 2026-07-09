@@ -4,14 +4,14 @@ Thin views over the service layer. Each view carries a request/response
 serializer seam (``SerializerSeamMixin``) so a host can swap the contract
 by subclassing — no need to rewrite the method bodies.
 """
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import permissions
 from rest_framework.views import APIView
 from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse
 
 from . import services
 from .dto import CreateRecordingResponse, recording_to_dto, upload_session_to_dto
-from .errors import ERR_404_NOT_FOUND
+from .errors import ERR_403_WORKSPACE_FORBIDDEN, ERR_404_NOT_FOUND
 from .models import Recording
 from .serializers import (
     CreateRecordingRequestSerializer,
@@ -49,15 +49,44 @@ def _owned_qs(request):
 
 @extend_schema(tags=["Recordings"])
 class RecordingListCreateView(SerializerSeamMixin, APIView):
-    """Create a recording and open its upload session, or list your own."""
+    """Create a recording and open its upload session, or list recordings.
+
+    ``GET`` lists your own recordings by default; pass ``?workspace_id=<uuid>``
+    to list every recording in a workspace you are a member of (membership is
+    verified against the workspaces module; non-members get 403)."""
 
     permission_classes = [permissions.IsAuthenticated]
     request_serializer_class = CreateRecordingRequestSerializer
     response_serializer_class = CreateRecordingResponseSerializer
 
-    @extend_schema(responses={200: RecordingSerializer(many=True)})
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="workspace_id",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=False,
+                description="List all recordings in this workspace (requires "
+                "membership) instead of only your own.",
+            )
+        ],
+        responses={200: RecordingSerializer(many=True)},
+    )
     def get(self, request):
-        rows = _owned_qs(request).order_by("-created_at")[:200]
+        workspace_id = request.query_params.get("workspace_id")
+        if workspace_id:
+            if not services.check_workspace_membership(
+                user_id=getattr(request.user, "pk", None), workspace_id=workspace_id
+            ):
+                return StapelErrorResponse(403, ERR_403_WORKSPACE_FORBIDDEN)
+            rows = (
+                Recording.objects.filter(
+                    deleted_at__isnull=True, workspace_id=workspace_id
+                )
+                .order_by("-created_at")[:200]
+            )
+        else:
+            rows = _owned_qs(request).order_by("-created_at")[:200]
         return StapelResponse(RecordingSerializer([recording_to_dto(r) for r in rows], many=True))
 
     @extend_schema(request=CreateRecordingRequestSerializer, responses={201: CreateRecordingResponseSerializer})
@@ -73,7 +102,9 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
             language=data.get("language"),
             diarization_enabled=data.get("diarization_enabled", True),
         )
-        session = services.create_upload_session(recording=recording)
+        session = services.create_upload_session(
+            recording=recording, filename=data.get("filename") or None
+        )
         payload = CreateRecordingResponse(
             recording=recording_to_dto(recording),
             upload=upload_session_to_dto(session),

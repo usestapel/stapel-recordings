@@ -6,6 +6,71 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-09
+
+Client-validation gap closure (G4/G5/G9/G10). Minor bump: the API contract
+grows (new response field, new request field, new error keys) and the module
+gains two public transitions/registries — additive, but a minor per the
+frontend-pair regen schedule (schema changes → pair minor).
+
+### Added — G4: workspace-scoped listing + opaque `resource_key`
+
+- `GET /recordings/api/recordings?workspace_id=<uuid>` lists **every**
+  recording in a workspace the caller is a member of, not just their own.
+  Membership is verified by comm name (`workspaces.check_membership`, no
+  import of that app) and **fails closed** — a non-member, or any wiring
+  failure (workspaces not deployed / route unconfigured), returns
+  `403 error.403.recording_workspace_forbidden`, never another member's data.
+  Without `workspace_id` the endpoint stays owner-scoped as before.
+- Every recording payload now carries an opaque, tamper-evident
+  `resource_key` (a `SECRET_KEY`-signed handle over the id via
+  `django.core.signing`) so cross-owner listings hand back a reference token
+  instead of leaking internal identifiers. `stapel_recordings.resources`
+  exposes `resource_key()` / `resolve_resource_key()`.
+
+### Added — G5: filename/extension in the upload key
+
+`create_upload_session` (and `start_multipart_upload`) accept an optional
+`filename`; the create endpoint accepts a `filename` field. Its extension is
+validated against the new `UPLOAD_EXTENSION_ALLOWLIST` setting and appended to
+the object key (`…/audio.mp3`). A disallowed/extension-less filename is
+rejected (`415 error.415.recording_unsupported_media` domain key; `400` at the
+serializer boundary). **Backward compatible**: omit `filename` for the prior
+extension-less `…/audio` key.
+
+### Added — G9: `SourceType` is a settings-overlay registry, not a code enum
+
+Recording source kinds are now an open merge-registry
+(`stapel_recordings.sources`): the four built-ins (`meet` / `dictaphone` /
+`upload` / `other`, derived from the model enum) merged over a
+`STAPEL_RECORDINGS["SOURCE_TYPES"]` overlay — a host adds `zoom` / `teams` /
+`phone` from settings, no enum edit, no migration
+(`Recording.source_type` is a free `CharField`). The create endpoint validates
+`source_type` against the resolved registry. Declared as a `merge_registry`
+extension point in `capabilities.meta.json`.
+
+### Added — G10: explicit `reprocess` transition (completed → queued)
+
+`pipeline.reprocess_recording(id)` re-runs the whole pipeline from stage 0 for
+a **finished** recording, clearing the pipeline progress cursor
+(`completed` / `completed_index` / carried `ctx`) so every stage re-runs — the
+counterpart to `retry_recording` (`error → queued`, which *resumes*). Allowed
+only from `completed`; every other status (`created` / `uploading` / `queued`
+/ in-flight / `error` / `deleted`) is a forbidden no-op returning `False`. The
+module never destroys transcript data on its own — stages self-guard on
+persisted artifacts, so a host that needs derived data regenerated clears the
+relevant keys as part of its reprocess flow.
+
+### Contract / tests
+
+- Regenerated `docs/{schema,errors,capabilities}.json` (`make contract`):
+  `resource_key` + `filename` in the schema, 44 → 46 error keys, the
+  `SOURCE_TYPES` extension point.
+- New tests per gap (workspace list + membership fail-closed + resource_key
+  round-trip; filename allowlist + API 400/201; source-type registry overlay +
+  API accept/reject; reprocess allowed/forbidden transition matrix). Suite
+  90 → 118, green.
+
 ## [0.1.3] - 2026-07-09
 
 ### Added — `docs/capabilities.json`, the fourth contract artifact (A6 sweep)

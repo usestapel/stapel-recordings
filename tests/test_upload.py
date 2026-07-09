@@ -16,6 +16,85 @@ def test_create_upload_session(use_fakes, make_recording):
     assert r.status == RecordingStatus.UPLOADING
 
 
+# ── G5: filename / extension in the upload key ────────────────────────────
+
+
+def test_create_upload_session_without_filename_keeps_legacy_key(use_fakes, make_recording):
+    """Backward compatibility: no filename → the extension-less …/audio key."""
+    r = make_recording(status=RecordingStatus.CREATED)
+    session = services.create_upload_session(recording=r)
+    assert session.storage_key.endswith(f"{r.id}/audio")
+
+
+def test_create_upload_session_appends_validated_extension(use_fakes, make_recording):
+    r = make_recording(status=RecordingStatus.CREATED)
+    session = services.create_upload_session(recording=r, filename="Team Sync.MP3")
+    assert session.storage_key.endswith(f"{r.id}/audio.mp3")  # lower-cased
+
+
+def test_create_upload_session_rejects_disallowed_extension(use_fakes, make_recording):
+    r = make_recording(status=RecordingStatus.CREATED)
+    with pytest.raises(services.UnsupportedUploadExtension):
+        services.create_upload_session(recording=r, filename="malware.exe")
+
+
+def test_create_upload_session_rejects_extensionless_filename(use_fakes, make_recording):
+    r = make_recording(status=RecordingStatus.CREATED)
+    with pytest.raises(services.UnsupportedUploadExtension):
+        services.create_upload_session(recording=r, filename="noext")
+
+
+def test_extension_allowlist_is_settings_extensible(use_fakes, make_recording):
+    from django.test import override_settings
+
+    r = make_recording(status=RecordingStatus.CREATED)
+    with override_settings(
+        STAPEL_RECORDINGS={
+            "STORAGE": "stapel_recordings.tests.fakes.FakeStorage",
+            "NORMALIZER": "stapel_recordings.normalize.passthrough_normalize",
+            "UPLOAD_EXTENSION_ALLOWLIST": ["mp3", "xyz"],
+        }
+    ):
+        from stapel_recordings import storage
+
+        storage.reset_storage_cache()
+        session = services.create_upload_session(recording=r, filename="clip.xyz")
+    assert session.storage_key.endswith(f"{r.id}/audio.xyz")
+
+
+def test_multipart_upload_honours_filename_extension(use_fakes, make_recording):
+    r = make_recording(status=RecordingStatus.CREATED)
+    session, _parts, _sz = services.start_multipart_upload(
+        recording=r, file_size_bytes=1024, filename="talk.wav"
+    )
+    assert session.storage_key.endswith(f"{r.id}/audio.wav")
+
+
+def test_create_recording_api_rejects_bad_filename(use_fakes, api_client, user):
+    import uuid
+
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/recordings",
+        {"workspace_id": str(uuid.uuid4()), "title": "x", "filename": "bad.exe"},
+        format="json",
+    )
+    assert resp.status_code == 400
+
+
+def test_create_recording_api_accepts_good_filename(use_fakes, api_client, user):
+    import uuid
+
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/recordings",
+        {"workspace_id": str(uuid.uuid4()), "title": "x", "filename": "meeting.m4a"},
+        format="json",
+    )
+    assert resp.status_code == 201, resp.content
+    assert resp.json()["upload"]["storage_key"].endswith("audio.m4a")
+
+
 def test_start_multipart_upload_splits_parts(use_fakes, make_recording):
     r = make_recording(status=RecordingStatus.CREATED)
     session, parts, part_size = services.start_multipart_upload(

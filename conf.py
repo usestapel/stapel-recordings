@@ -56,6 +56,23 @@ DEFAULTS = {
         "MULTIPART_SESSION_TTL_SECONDS": 24 * 60 * 60,
         "MULTIPART_PART_SIZE": 10 * 1024 * 1024,
         "MAX_UPLOAD_BYTES": 2 * 1024 * 1024 * 1024,
+        # Allowlist of upload file extensions (lower-case, no dot) accepted
+        # when a caller passes a filename to ``create_upload_session`` — the
+        # object key is then suffixed with the validated extension. Tuning,
+        # not an axis: extend it for whatever media your NORMALIZER handles.
+        "UPLOAD_EXTENSION_ALLOWLIST": [
+            "mp3", "m4a", "wav", "ogg", "oga", "opus", "webm", "flac",
+            "aac", "aiff", "amr", "wma", "mp4", "mov", "mkv", "3gp",
+        ],
+
+        # ── Source-type registry (merge-over-builtins extension point) ─
+        # Recording source kinds (meet / dictaphone / upload / other by
+        # default) are an OPEN registry, not a hardcoded enum: a host adds
+        # ``zoom`` / ``teams`` / ``phone`` by overlaying this map — merged
+        # OVER stapel_recordings.sources.DEFAULT_SOURCE_TYPES, the same
+        # merge-registry idiom as STAGES / notifications.TYPES. ``{key:
+        # label}``. See stapel_recordings/sources.py.
+        "SOURCE_TYPES": {},
 
         # ── Transcription / summarization (delegated to stapel-agent) ─
         "TRANSCRIBE_TIMEOUT_SECONDS": 1800,

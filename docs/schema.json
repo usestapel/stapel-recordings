@@ -8,7 +8,17 @@
     "/recordings/api/recordings": {
       "get": {
         "operationId": "recordings_api_recordings_list",
-        "description": "Create a recording and open its upload session, or list your own.\n\n**Permissions:** `IsAuthenticated`",
+        "description": "Create a recording and open its upload session, or list recordings.\n\n``GET`` lists your own recordings by default; pass ``?workspace_id=<uuid>``\nto list every recording in a workspace you are a member of (membership is\nverified against the workspaces module; non-members get 403).\n\n**Permissions:** `IsAuthenticated`",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "schema": {
+              "type": "string"
+            },
+            "description": "List all recordings in this workspace (requires membership) instead of only your own."
+          }
+        ],
         "tags": [
           "Recordings"
         ],
@@ -35,7 +45,7 @@
       },
       "post": {
         "operationId": "recordings_api_recordings_create",
-        "description": "Create a recording and open its upload session, or list your own.\n\n**Permissions:** `IsAuthenticated`",
+        "description": "Create a recording and open its upload session, or list recordings.\n\n``GET`` lists your own recordings by default; pass ``?workspace_id=<uuid>``\nto list every recording in a workspace you are a member of (membership is\nverified against the workspaces module; non-members get 403).\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Recordings"
         ],
@@ -198,6 +208,10 @@
           "diarization_enabled": {
             "type": "boolean",
             "default": true
+          },
+          "filename": {
+            "type": "string",
+            "maxLength": 512
           }
         },
         "required": [
@@ -235,6 +249,9 @@
         "description": "A recording as seen by the API.",
         "properties": {
           "id": {
+            "type": "string"
+          },
+          "resource_key": {
             "type": "string"
           },
           "workspace_id": {
@@ -289,6 +306,7 @@
           "id",
           "language",
           "provider_used",
+          "resource_key",
           "segments_count",
           "source_type",
           "speakers_count",
