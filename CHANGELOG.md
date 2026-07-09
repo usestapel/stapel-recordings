@@ -86,7 +86,7 @@ byte-stable across contributor machines).
 stapel-recordings now emits its **own** API contract per-module — the same
 `docs/{schema,flows,errors}.json` triad stapel-auth established as the etalon
 and stapel-profiles copied — a prerequisite for a future `recordings-react`
-pair (client priority #1, needs client-project/client-project).
+pair (client priority #1, needed by client migrations).
 
 - **Harness** (reuses `stapel_tools.codegen`, ~90 lines of per-module config,
   copied from auth/profiles):
