@@ -1,0 +1,72 @@
+{
+  "module": "stapel-recordings",
+  "version": "0.1.2",
+  "provides": "Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.",
+  "axes": [
+    {
+      "key": "SUMMARIZE_ENABLED",
+      "kind": "bool",
+      "default": true,
+      "group": "recordings.summarize",
+      "gates": {
+        "operations": [],
+        "co_gates": [],
+        "behavior": "When on, the merge stage calls llm.summarize on the finished transcript and stores the result; a summary failure never fails the recording."
+      },
+      "curated": {
+        "summary": "When on, each completed transcript is additionally summarized (via the agent module's language model) and the summary is stored on the recording; the transcript itself is always produced.",
+        "business_label": "Automatic meeting summaries"
+      }
+    }
+  ],
+  "extension_points": [
+    {
+      "name": "PIPELINE",
+      "kind": "ordered_list",
+      "summary": "The flagship seam: the processing pipeline is an ordered list of stage names run by a generic driver — reorder, subset (e.g. skip diarization) or insert stages (e.g. PII redaction) purely from settings, no fork."
+    },
+    {
+      "name": "STAGES",
+      "kind": "merge_registry",
+      "summary": "Replace, remove or add stage handlers ({name: dotted-path | None}, merged over the built-ins) or register them at runtime via register_stage()."
+    },
+    {
+      "name": "PIPELINE_RESOLVER",
+      "kind": "dotted_path",
+      "summary": "Source the stage list at runtime per recording — point it at a DB or per-workspace definition so operators can edit pipelines in a UI without a redeploy."
+    },
+    {
+      "name": "STORAGE",
+      "kind": "dotted_path",
+      "summary": "Swap the object-storage backend (RecordingStorage implementation): any Django storage by default, bundled S3/MinIO backend, or your own."
+    },
+    {
+      "name": "NORMALIZER",
+      "kind": "dotted_path",
+      "summary": "Swap the audio-normalization step: ffmpeg by default, a passthrough for environments without it, or a custom converter."
+    },
+    {
+      "name": "serializer_seams",
+      "kind": "class_override",
+      "summary": "Every view declares request/response serializer seams (SerializerSeamMixin) — subclass the view, override the attribute, remount the URL."
+    }
+  ],
+  "operations_total": 4,
+  "requires": [
+    {
+      "module": "stapel-core",
+      "optional": false,
+      "reason": "comm bus (recording.stage pipeline driving, llm.transcribe / llm.summarize calls), JWT authentication, GDPR provider registry, AppSettings config layer"
+    },
+    {
+      "module": "stapel-agent",
+      "optional": true,
+      "reason": "provides the llm.transcribe and llm.summarize comm Functions the transcribe/merge stages call; recordings passes audio and options by comm name, no import"
+    },
+    {
+      "module": "stapel-auth",
+      "optional": true,
+      "reason": "every endpoint requires an authenticated user (IsAuthenticated); stapel-auth is the shelf's session issuer — any stapel-core-compatible JWT issuer satisfies the check"
+    }
+  ]
+}

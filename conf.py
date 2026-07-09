@@ -21,9 +21,10 @@ from stapel_core.conf import AppSettings
 #: or a PIPELINE_RESOLVER for runtime/per-recording definitions.
 DEFAULT_PIPELINE = ("convert", "transcribe", "diarize", "merge")
 
-recordings_settings = AppSettings(
-    "STAPEL_RECORDINGS",
-    defaults={
+#: AppSettings-shaped literal dict (capability-config.md §2): a top-level
+#: DEFAULTS lets the capabilities.json emitter introspect axis keys/kinds
+#: without re-parsing the AppSettings() call.
+DEFAULTS = {
         # ── Pipeline (flagship extension point) ──────────────────────
         # Ordered stage-name list run by the generic driver. A host can
         # reorder, drop (e.g. skip "diarize") or insert stages (e.g. a
@@ -72,7 +73,11 @@ recordings_settings = AppSettings(
         # this too — a system check (W005) warns on inconsistency.
         "STUCK_THRESHOLD_SECONDS": 35 * 60,
         "ABANDONED_UPLOAD_THRESHOLD_SECONDS": 60 * 60,
-    },
+}
+
+recordings_settings = AppSettings(
+    "STAPEL_RECORDINGS",
+    defaults=DEFAULTS,
     import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER"),
 )
 
