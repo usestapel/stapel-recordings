@@ -34,6 +34,15 @@ jobs:
       - name: emit-check (outbox atomicity gate)
         run: python -m stapel_core.lint.emit_check .
 
+      # - name: migration-lint (expand/contract gate, release-management.md §3)
+      #   run: |
+      #     pip install stapel-tools --quiet
+      #     stapel-migration-lint . --strict
+      # TODO(migration-lint): no module repo's CI can install stapel-tools yet
+      # (not on PyPI under the new org; no git-install step wired in any
+      # module repo's CI as of this pass). Enable this step once that lands;
+      # until then run `make migration-lint` locally / at release-cut time.
+
       - name: Import check
         run: python -c "import stapel_recordings; print('import OK')"
 

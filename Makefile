@@ -38,3 +38,12 @@ contract-check:
 	rm -rf "$$tmp"; \
 	if [ $$rc -eq 0 ]; then echo "contract-check: docs/{schema,flows,errors,capabilities}.json up to date"; fi; \
 	exit $$rc
+
+
+.PHONY: migration-lint
+
+# Expand/contract gate for Django migrations (release-management.md §3;
+# stapel_tools.migration_lint). Requires stapel-tools importable (the
+# workspace venv, or `pip install stapel-tools` once published).
+migration-lint:
+	$(PYTHON) -m stapel_tools.migration_lint . --strict
