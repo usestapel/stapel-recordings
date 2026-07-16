@@ -5,7 +5,7 @@ stapel-recordings emits its **own** contract triad — ``docs/schema.json``
 artifact — empty here, this module has no ``@flow_step`` annotations) and
 ``docs/errors.json`` (generate_error_keys registry) — from a single-module
 ``{recordings + core}`` Django instance mounted at the canonical
-``/recordings/api/`` prefix. The frontend codegen consumes these committed
+``/recordings/api/v1/`` prefix. The frontend codegen consumes these committed
 artifacts.
 
 Unlike auth/profiles, **stapel-recordings is not mounted in
@@ -24,7 +24,7 @@ aggregate slice to assert byte-identity against. Validation here is
     (the profiles-finding gap: without an explicit
     ``_register_jwt_auth_extension()`` call, a module with no co-mounted
     sibling silently drops ``security`` from every operation);
-  - paths carry the canonical ``/recordings/api/`` prefix.
+  - paths carry the canonical ``/recordings/api/v1/`` prefix.
 
 Regenerate after any change to a serializer / view / url / error key:
 
@@ -66,7 +66,7 @@ if _PY != (3, 12):
 REPO = Path(__file__).resolve().parent.parent
 DOCS = REPO / "docs"
 TRIAD = ("schema.json", "flows.json", "errors.json")
-CANONICAL_PREFIX = "/recordings/api/"
+CANONICAL_PREFIX = "/recordings/api/v1/"
 # The fourth artifact (capability-config.md §2): config axes over
 # STAPEL_RECORDINGS, emitted from conf.py DEFAULTS + the urls.py gate
 # registry + schema.json + the curated docs/capabilities.meta.json.
@@ -114,11 +114,11 @@ def test_emission_is_deterministic(tmp_path):
 
 
 def test_paths_carry_canonical_prefix():
-    """The mount-prefix fix: schema paths + flow endpoints are /recordings/api/*, not bare."""
+    """The mount-prefix fix: schema paths + flow endpoints are /recordings/api/v1/*, not bare."""
     schema = json.loads((DOCS / "schema.json").read_text())
     assert schema["paths"], "schema has no paths"
     assert all(p.startswith(CANONICAL_PREFIX) for p in schema["paths"]), (
-        "schema paths are not mounted at the canonical /recordings/api/ prefix"
+        "schema paths are not mounted at the canonical /recordings/api/v1/ prefix"
     )
     flows = json.loads((DOCS / "flows.json").read_text())
     for flow in flows:

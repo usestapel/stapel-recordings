@@ -75,7 +75,7 @@ def test_create_recording_api_rejects_bad_filename(use_fakes, api_client, user):
 
     api_client.force_authenticate(user=user)
     resp = api_client.post(
-        "/recordings/api/recordings",
+        "/recordings/api/v1/recordings",
         {"workspace_id": str(uuid.uuid4()), "title": "x", "filename": "bad.exe"},
         format="json",
     )
@@ -87,7 +87,7 @@ def test_create_recording_api_accepts_good_filename(use_fakes, api_client, user)
 
     api_client.force_authenticate(user=user)
     resp = api_client.post(
-        "/recordings/api/recordings",
+        "/recordings/api/v1/recordings",
         {"workspace_id": str(uuid.uuid4()), "title": "x", "filename": "meeting.m4a"},
         format="json",
     )

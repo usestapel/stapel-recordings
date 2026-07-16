@@ -37,7 +37,7 @@ class CreateRecordingRequestSerializer(serializers.Serializer):
         from .sources import is_valid_source_type, registered_source_types
 
         if value and not is_valid_source_type(value):
-            raise serializers.ValidationError(
+            raise serializers.ValidationError(  # noqa: R002
                 f"unknown source_type {value!r}; registered: "
                 f"{registered_source_types()}"
             )
@@ -51,7 +51,7 @@ class CreateRecordingRequestSerializer(serializers.Serializer):
         try:
             validated_upload_ext(value)
         except UnsupportedUploadExtension as exc:
-            raise serializers.ValidationError(str(exc)) from exc
+            raise serializers.ValidationError(str(exc)) from exc  # noqa: R002
         return value
 
 

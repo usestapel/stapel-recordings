@@ -21,11 +21,11 @@ import shutil
 import subprocess
 from typing import Optional
 
-FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
-FFPROBE_BIN = os.environ.get("FFPROBE_BIN", "ffprobe")
+FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")  # noqa: CFG001
+FFPROBE_BIN = os.environ.get("FFPROBE_BIN", "ffprobe")  # noqa: CFG001
 TARGET_SAMPLE_RATE = 16000
 TARGET_CHANNELS = 1
-SUBPROCESS_TIMEOUT_S = int(os.environ.get("FFMPEG_TIMEOUT_S", "1800"))
+SUBPROCESS_TIMEOUT_S = int(os.environ.get("FFMPEG_TIMEOUT_S", "1800"))  # noqa: CFG001
 
 
 class NormalizeFatal(Exception):

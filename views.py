@@ -96,7 +96,7 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
         ],
         responses={200: RecordingSerializer(many=True)},
     )
-    def get(self, request):
+    def get(self, request):  # noqa: R007
         workspace_id = request.query_params.get("workspace_id")
         if workspace_id:
             if not services.check_workspace_membership(
@@ -119,7 +119,7 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
         return StapelResponse(RecordingSerializer([recording_to_dto(r) for r in rows], many=True))
 
     @extend_schema(request=CreateRecordingRequestSerializer, responses={201: CreateRecordingResponseSerializer})
-    def post(self, request):
+    def post(self, request):  # noqa: R007
         req = self.get_request_serializer_class()(data=request.data)
         req.is_valid(raise_exception=True)
         data = req.validated_data
@@ -149,7 +149,7 @@ class RecordingDetailView(SerializerSeamMixin, APIView):
     response_serializer_class = RecordingSerializer
 
     @extend_schema(responses={200: RecordingSerializer})
-    def get(self, request, recording_id):
+    def get(self, request, recording_id):  # noqa: R007
         recording = _owned_qs(request).filter(pk=recording_id).first()
         if recording is None:
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)
@@ -165,7 +165,7 @@ class FinalizeUploadView(SerializerSeamMixin, APIView):
     response_serializer_class = RecordingSerializer
 
     @extend_schema(request=FinalizeUploadRequestSerializer, responses={200: RecordingSerializer})
-    def post(self, request, recording_id):
+    def post(self, request, recording_id):  # noqa: R007
         recording = _owned_qs(request).filter(pk=recording_id).first()
         if recording is None:
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)
@@ -195,7 +195,7 @@ class ReprocessRecordingView(SerializerSeamMixin, APIView):
     response_serializer_class = RecordingSerializer
 
     @extend_schema(request=None, responses={200: RecordingSerializer})
-    def post(self, request, recording_id):
+    def post(self, request, recording_id):  # noqa: R007
         recording = _owned_qs(request).filter(pk=recording_id).first()
         if recording is None:
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)

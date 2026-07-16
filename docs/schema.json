@@ -5,9 +5,9 @@
     "version": "0.0.0"
   },
   "paths": {
-    "/recordings/api/recordings": {
+    "/recordings/api/v1/recordings": {
       "get": {
-        "operationId": "recordings_api_recordings_list",
+        "operationId": "recordings_api_v1_recordings_list",
         "description": "Create a recording and open its upload session, or list recordings.\n\n``GET`` lists your own recordings by default; pass ``?workspace_id=<uuid>``\nto list every recording in a workspace you are a member of (membership is\nverified against the workspaces module; non-members get 403).\n\nPass ``?resource_key=<opaque-token>`` to narrow the listing to the single\nrecording that token references. The key is the opaque, signed handle\ncarried in every recording payload (``resolve_resource_key``); it composes\nwith ``workspace_id`` (workspace scope stays membership-gated) or with the\ndefault owner scope. A missing/forged/tampered key resolves to nothing, so\nthe listing comes back **empty** rather than 400 — the token is\ntamper-evident and opaque by design, so we neither leak whether a token is\ngenuine nor surface a distinct error for a value the client only ever\nobtains from a prior server response.\n\n**Permissions:** `IsAuthenticated`",
         "parameters": [
           {
@@ -52,7 +52,7 @@
         }
       },
       "post": {
-        "operationId": "recordings_api_recordings_create",
+        "operationId": "recordings_api_v1_recordings_create",
         "description": "Create a recording and open its upload session, or list recordings.\n\n``GET`` lists your own recordings by default; pass ``?workspace_id=<uuid>``\nto list every recording in a workspace you are a member of (membership is\nverified against the workspaces module; non-members get 403).\n\nPass ``?resource_key=<opaque-token>`` to narrow the listing to the single\nrecording that token references. The key is the opaque, signed handle\ncarried in every recording payload (``resolve_resource_key``); it composes\nwith ``workspace_id`` (workspace scope stays membership-gated) or with the\ndefault owner scope. A missing/forged/tampered key resolves to nothing, so\nthe listing comes back **empty** rather than 400 — the token is\ntamper-evident and opaque by design, so we neither leak whether a token is\ngenuine nor surface a distinct error for a value the client only ever\nobtains from a prior server response.\n\n**Permissions:** `IsAuthenticated`",
         "tags": [
           "Recordings"
@@ -96,9 +96,9 @@
         }
       }
     },
-    "/recordings/api/recordings/{recording_id}": {
+    "/recordings/api/v1/recordings/{recording_id}": {
       "get": {
-        "operationId": "recordings_api_recordings_retrieve",
+        "operationId": "recordings_api_v1_recordings_retrieve",
         "description": "Fetch a single recording.\n\n**Permissions:** `IsAuthenticated`",
         "parameters": [
           {
@@ -133,9 +133,9 @@
         }
       }
     },
-    "/recordings/api/recordings/{recording_id}/finalize": {
+    "/recordings/api/v1/recordings/{recording_id}/finalize": {
       "post": {
-        "operationId": "recordings_api_recordings_finalize_create",
+        "operationId": "recordings_api_v1_recordings_finalize_create",
         "description": "Finalize the upload and enqueue the pipeline.\n\n**Permissions:** `IsAuthenticated`",
         "parameters": [
           {
@@ -189,9 +189,9 @@
         }
       }
     },
-    "/recordings/api/recordings/{recording_id}/reprocess": {
+    "/recordings/api/v1/recordings/{recording_id}/reprocess": {
       "post": {
-        "operationId": "recordings_api_recordings_reprocess_create",
+        "operationId": "recordings_api_v1_recordings_reprocess_create",
         "description": "Re-run the whole pipeline for a finished recording (``completed → queued``).\n\nExposes the ``pipeline.reprocess_recording`` transition: the progress cursor\nis cleared and every stage re-runs from stage 0 (distinct from the\nresume-in-place retry). Allowed **only** from ``completed`` — from any other\nstatus the transition is a no-op and the endpoint answers ``409``\n(``error.409.recording_invalid_state``). Owner-scoped, like every other\nper-recording verb; an unknown/foreign/deleted recording is ``404``.\n\n**Permissions:** `IsAuthenticated`",
         "parameters": [
           {

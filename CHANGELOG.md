@@ -43,6 +43,20 @@ per the frontend-pair regen schedule (schema changes → pair minor).
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-07-16
+
+### Changed
+- **v1 canon sweep §60** (api-versioning.md §2, §6): URL set moved to
+  `urls_v1.py`; the new root `urls.py` mounts it under `api/v1/` (the `api/`
+  segment historically lives inside this package, so the version slots in
+  right after it, per canon). Host mount `recordings/` unchanged: endpoints
+  now serve at `/recordings/api/v1/...`; bare `/recordings/api/...` no longer
+  exists (sweep lands before the §3 API00x gates are enabled).
+- Contract artifacts regenerated (`make contract`): `/v1/` in schema paths.
+- `_capabilities.py` canonical_prefix → `/recordings/api/v1`.
+- Lint hygiene to a clean `stapel-verify`: explicit `# noqa` on pre-existing
+  findings.
+
 ## [0.2.0] - 2026-07-09
 
 Client-validation gap closure (G4/G5/G9/G10). Minor bump: the API contract

@@ -47,7 +47,7 @@ def test_empty_overlay_is_the_default(settings):
 def test_create_rejects_unregistered_source_type(use_fakes, api_client, user):
     api_client.force_authenticate(user=user)
     resp = api_client.post(
-        "/recordings/api/recordings",
+        "/recordings/api/v1/recordings",
         {"workspace_id": str(uuid.uuid4()), "title": "x", "source_type": "zoom"},
         format="json",
     )
@@ -67,7 +67,7 @@ def test_create_accepts_overlaid_source_type(use_fakes, api_client, user):
 
         storage.reset_storage_cache()
         resp = api_client.post(
-            "/recordings/api/recordings",
+            "/recordings/api/v1/recordings",
             {"workspace_id": str(uuid.uuid4()), "title": "x", "source_type": "zoom"},
             format="json",
         )

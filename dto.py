@@ -38,7 +38,7 @@ class UploadSessionDTO:
 
 
 @dataclass
-class CreateRecordingResponse:
+class CreateRecordingResponse:  # noqa: R004
     recording: RecordingDTO
     upload: UploadSessionDTO
 

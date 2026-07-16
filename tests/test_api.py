@@ -11,7 +11,7 @@ pytestmark = pytest.mark.django_db
 def test_create_recording_opens_upload_session(use_fakes, api_client, user):
     api_client.force_authenticate(user=user)
     resp = api_client.post(
-        "/recordings/api/recordings",
+        "/recordings/api/v1/recordings",
         {"workspace_id": str(uuid.uuid4()), "title": "Standup", "diarization_enabled": True},
         format="json",
     )
@@ -27,7 +27,7 @@ def test_detail_and_finalize(use_fakes, api_client, user):
 
     api_client.force_authenticate(user=user)
     create = api_client.post(
-        "/recordings/api/recordings",
+        "/recordings/api/v1/recordings",
         {"workspace_id": str(uuid.uuid4()), "title": "Interview"},
         format="json",
     ).json()
@@ -35,12 +35,12 @@ def test_detail_and_finalize(use_fakes, api_client, user):
     storage_key = create["upload"]["storage_key"]
     get_storage().put_bytes(storage_key, b"audio")
 
-    detail = api_client.get(f"/recordings/api/recordings/{rec_id}")
+    detail = api_client.get(f"/recordings/api/v1/recordings/{rec_id}")
     assert detail.status_code == 200
     assert detail.json()["id"] == rec_id
 
     fin = api_client.post(
-        f"/recordings/api/recordings/{rec_id}/finalize", {"file_size_bytes": 5}, format="json"
+        f"/recordings/api/v1/recordings/{rec_id}/finalize", {"file_size_bytes": 5}, format="json"
     )
     assert fin.status_code == 200
     assert Recording.objects.get(pk=rec_id).status == RecordingStatus.QUEUED
@@ -48,14 +48,14 @@ def test_detail_and_finalize(use_fakes, api_client, user):
 
 def test_detail_404_for_unknown(api_client, user):
     api_client.force_authenticate(user=user)
-    resp = api_client.get(f"/recordings/api/recordings/{uuid.uuid4()}")
+    resp = api_client.get(f"/recordings/api/v1/recordings/{uuid.uuid4()}")
     assert resp.status_code == 404
 
 
 def test_list_is_owner_scoped(use_fakes, api_client, user, make_recording):
     make_recording(owner=user, title="mine")
     api_client.force_authenticate(user=user)
-    resp = api_client.get("/recordings/api/recordings")
+    resp = api_client.get("/recordings/api/v1/recordings")
     assert resp.status_code == 200
     titles = [r["title"] for r in resp.json()]
     assert "mine" in titles
@@ -69,7 +69,7 @@ def test_list_carries_opaque_resource_key(use_fakes, api_client, user, make_reco
 
     r = make_recording(owner=user, title="mine")
     api_client.force_authenticate(user=user)
-    row = api_client.get("/recordings/api/recordings").json()[0]
+    row = api_client.get("/recordings/api/v1/recordings").json()[0]
     rk = row["resource_key"]
     # Opaque: not the raw id, and not trivially derivable from it.
     assert rk and rk != str(r.id) and str(r.id) not in rk
@@ -94,7 +94,7 @@ def test_workspace_list_returns_all_members_recordings_for_a_member(
 
     stub_membership.grant(ws, viewer.pk)
     api_client.force_authenticate(user=viewer)
-    resp = api_client.get(f"/recordings/api/recordings?workspace_id={ws}")
+    resp = api_client.get(f"/recordings/api/v1/recordings?workspace_id={ws}")
     assert resp.status_code == 200
     titles = {r["title"] for r in resp.json()}
     # Sees both members' recordings in the workspace, not the other workspace.
@@ -108,7 +108,7 @@ def test_workspace_list_forbidden_for_non_member(
     make_recording(owner=user, workspace_id=ws, title="secret")
     # No grant → not a member.
     api_client.force_authenticate(user=user)
-    resp = api_client.get(f"/recordings/api/recordings?workspace_id={ws}")
+    resp = api_client.get(f"/recordings/api/v1/recordings?workspace_id={ws}")
     assert resp.status_code == 403
 
 
@@ -120,7 +120,7 @@ def test_workspace_list_fails_closed_when_workspaces_unavailable(
     ws = uuid.uuid4()
     make_recording(owner=user, workspace_id=ws, title="secret")
     api_client.force_authenticate(user=user)
-    resp = api_client.get(f"/recordings/api/recordings?workspace_id={ws}")
+    resp = api_client.get(f"/recordings/api/v1/recordings?workspace_id={ws}")
     assert resp.status_code == 403
 
 
@@ -136,7 +136,7 @@ def test_list_filtered_by_resource_key_returns_only_that_recording(
     make_recording(owner=user, title="other")
     api_client.force_authenticate(user=user)
     resp = api_client.get(
-        f"/recordings/api/recordings?resource_key={resource_key(keep)}"
+        f"/recordings/api/v1/recordings?resource_key={resource_key(keep)}"
     )
     assert resp.status_code == 200
     rows = resp.json()
@@ -148,7 +148,7 @@ def test_list_forged_resource_key_yields_empty(
 ):
     r = make_recording(owner=user, title="mine")
     api_client.force_authenticate(user=user)
-    resp = api_client.get("/recordings/api/recordings?resource_key=not-a-real-token")
+    resp = api_client.get("/recordings/api/v1/recordings?resource_key=not-a-real-token")
     assert resp.status_code == 200
     assert resp.json() == []
     # Sanity: without the (bogus) filter the recording is listed.
@@ -170,7 +170,7 @@ def test_resource_key_of_another_owner_is_not_leaked(
     theirs = make_recording(owner=owner, title="theirs")
     api_client.force_authenticate(user=viewer)
     resp = api_client.get(
-        f"/recordings/api/recordings?resource_key={resource_key(theirs)}"
+        f"/recordings/api/v1/recordings?resource_key={resource_key(theirs)}"
     )
     assert resp.status_code == 200
     assert resp.json() == []
@@ -193,7 +193,7 @@ def test_resource_key_composes_with_workspace_scope(
     stub_membership.grant(ws, viewer.pk)
     api_client.force_authenticate(user=viewer)
     resp = api_client.get(
-        f"/recordings/api/recordings?workspace_id={ws}"
+        f"/recordings/api/v1/recordings?workspace_id={ws}"
         f"&resource_key={resource_key(target)}"
     )
     assert resp.status_code == 200
@@ -206,7 +206,7 @@ def test_resource_key_composes_with_workspace_scope(
 def test_reprocess_completed_recording_requeues(use_fakes, api_client, user, make_recording):
     r = make_recording(owner=user, status=RecordingStatus.COMPLETED)
     api_client.force_authenticate(user=user)
-    resp = api_client.post(f"/recordings/api/recordings/{r.id}/reprocess")
+    resp = api_client.post(f"/recordings/api/v1/recordings/{r.id}/reprocess")
     assert resp.status_code == 200, resp.content
     assert resp.json()["status"] == RecordingStatus.QUEUED
     r.refresh_from_db()
@@ -228,7 +228,7 @@ def test_reprocess_from_non_completed_is_409(
 ):
     r = make_recording(owner=user, status=status)
     api_client.force_authenticate(user=user)
-    resp = api_client.post(f"/recordings/api/recordings/{r.id}/reprocess")
+    resp = api_client.post(f"/recordings/api/v1/recordings/{r.id}/reprocess")
     assert resp.status_code == 409
     assert resp.json()["localizable_error"] == "error.409.recording_invalid_state"
     r.refresh_from_db()
@@ -237,7 +237,7 @@ def test_reprocess_from_non_completed_is_409(
 
 def test_reprocess_unknown_recording_is_404(api_client, user):
     api_client.force_authenticate(user=user)
-    resp = api_client.post(f"/recordings/api/recordings/{uuid.uuid4()}/reprocess")
+    resp = api_client.post(f"/recordings/api/v1/recordings/{uuid.uuid4()}/reprocess")
     assert resp.status_code == 404
 
 
@@ -251,7 +251,7 @@ def test_reprocess_foreign_recording_is_404(use_fakes, api_client, db, make_reco
     viewer = User.objects.create(username=f"v-{uuid.uuid4().hex[:8]}")
     r = make_recording(owner=owner, status=RecordingStatus.COMPLETED)
     api_client.force_authenticate(user=viewer)
-    resp = api_client.post(f"/recordings/api/recordings/{r.id}/reprocess")
+    resp = api_client.post(f"/recordings/api/v1/recordings/{r.id}/reprocess")
     assert resp.status_code == 404
     r.refresh_from_db()
     assert r.status == RecordingStatus.COMPLETED  # untouched
