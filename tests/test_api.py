@@ -12,7 +12,12 @@ def test_create_recording_opens_upload_session(use_fakes, api_client, user):
     api_client.force_authenticate(user=user)
     resp = api_client.post(
         "/recordings/api/v1/recordings",
-        {"workspace_id": str(uuid.uuid4()), "title": "Standup", "diarization_enabled": True},
+        {
+            "workspace_id": str(uuid.uuid4()),
+            "title": "Standup",
+            "diarization_enabled": True,
+            "filename": "standup.mp3",
+        },
         format="json",
     )
     assert resp.status_code == 201, resp.content
@@ -28,7 +33,7 @@ def test_detail_and_finalize(use_fakes, api_client, user):
     api_client.force_authenticate(user=user)
     create = api_client.post(
         "/recordings/api/v1/recordings",
-        {"workspace_id": str(uuid.uuid4()), "title": "Interview"},
+        {"workspace_id": str(uuid.uuid4()), "title": "Interview", "filename": "interview.mp3"},
         format="json",
     ).json()
     rec_id = create["recording"]["id"]

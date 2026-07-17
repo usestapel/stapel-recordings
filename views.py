@@ -132,7 +132,7 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
             diarization_enabled=data.get("diarization_enabled", True),
         )
         session = services.create_upload_session(
-            recording=recording, filename=data.get("filename") or None
+            recording=recording, filename=data["filename"]
         )
         payload = CreateRecordingResponse(
             recording=recording_to_dto(recording),

@@ -19,7 +19,7 @@ def _seed_uploaded(make_recording):
     from stapel_recordings.storage import get_storage
 
     r = make_recording(status=RecordingStatus.CREATED)
-    session = services.create_upload_session(recording=r)
+    session = services.create_upload_session(recording=r, filename="take.mp3")
     get_storage().put_bytes(session.storage_key, b"audio", content_type="audio/mpeg")
     return r, session
 

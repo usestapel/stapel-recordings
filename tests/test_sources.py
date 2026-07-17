@@ -48,7 +48,12 @@ def test_create_rejects_unregistered_source_type(use_fakes, api_client, user):
     api_client.force_authenticate(user=user)
     resp = api_client.post(
         "/recordings/api/v1/recordings",
-        {"workspace_id": str(uuid.uuid4()), "title": "x", "source_type": "zoom"},
+        {
+            "workspace_id": str(uuid.uuid4()),
+            "title": "x",
+            "source_type": "zoom",
+            "filename": "take.mp3",
+        },
         format="json",
     )
     assert resp.status_code == 400
@@ -68,7 +73,12 @@ def test_create_accepts_overlaid_source_type(use_fakes, api_client, user):
         storage.reset_storage_cache()
         resp = api_client.post(
             "/recordings/api/v1/recordings",
-            {"workspace_id": str(uuid.uuid4()), "title": "x", "source_type": "zoom"},
+            {
+                "workspace_id": str(uuid.uuid4()),
+                "title": "x",
+                "source_type": "zoom",
+                "filename": "take.mp3",
+            },
             format="json",
         )
     assert resp.status_code == 201, resp.content

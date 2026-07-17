@@ -4,6 +4,27 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.4.0] — 2026-07-17
+
+Legacy-compat scrub: the extension-less `…/audio` upload key is gone —
+`filename` is now **required** everywhere. Minor bump (pre-1.0 breaking).
+
+### Removed
+- **Legacy extension-less upload key (`…/audio`).** `filename` is now
+  required on `POST /recordings/api/v1/recordings` (was optional /
+  allow_blank; omitting it kept the backward-compatible `…/audio` object
+  key). The object key is always `…/audio.<validated-ext>`.
+- `services.create_upload_session` / `services.start_multipart_upload` /
+  `services.validated_upload_ext` / `_storage_key`: the
+  `filename: str | None = None` dual signature is gone — `filename: str`
+  is required; a missing/empty filename raises
+  `UnsupportedUploadExtension` instead of producing the legacy key.
+- Test of the legacy path
+  (`test_create_upload_session_without_filename_keeps_legacy_key`) replaced
+  by required-filename rejection tests (service + API 400).
+- `docs/schema.json` regenerated: `filename` joins the request's
+  `required` list.
+
 ## [0.3.3] — 2026-07-17
 
 ### Changed

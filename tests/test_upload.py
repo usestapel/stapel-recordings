@@ -9,9 +9,9 @@ pytestmark = pytest.mark.django_db
 
 def test_create_upload_session(use_fakes, make_recording):
     r = make_recording(status=RecordingStatus.CREATED)
-    session = services.create_upload_session(recording=r)
+    session = services.create_upload_session(recording=r, filename="take.mp3")
     assert session.presigned_url.startswith("memory://put/")
-    assert session.storage_key.endswith(f"{r.id}/audio")
+    assert session.storage_key.endswith(f"{r.id}/audio.mp3")
     r.refresh_from_db()
     assert r.status == RecordingStatus.UPLOADING
 
@@ -19,11 +19,10 @@ def test_create_upload_session(use_fakes, make_recording):
 # ── G5: filename / extension in the upload key ────────────────────────────
 
 
-def test_create_upload_session_without_filename_keeps_legacy_key(use_fakes, make_recording):
-    """Backward compatibility: no filename → the extension-less …/audio key."""
+def test_create_upload_session_requires_filename(use_fakes, make_recording):
     r = make_recording(status=RecordingStatus.CREATED)
-    session = services.create_upload_session(recording=r)
-    assert session.storage_key.endswith(f"{r.id}/audio")
+    with pytest.raises(services.UnsupportedUploadExtension):
+        services.create_upload_session(recording=r, filename="")
 
 
 def test_create_upload_session_appends_validated_extension(use_fakes, make_recording):
@@ -82,6 +81,18 @@ def test_create_recording_api_rejects_bad_filename(use_fakes, api_client, user):
     assert resp.status_code == 400
 
 
+def test_create_recording_api_requires_filename(use_fakes, api_client, user):
+    import uuid
+
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/v1/recordings",
+        {"workspace_id": str(uuid.uuid4()), "title": "x"},
+        format="json",
+    )
+    assert resp.status_code == 400
+
+
 def test_create_recording_api_accepts_good_filename(use_fakes, api_client, user):
     import uuid
 
@@ -98,7 +109,7 @@ def test_create_recording_api_accepts_good_filename(use_fakes, api_client, user)
 def test_start_multipart_upload_splits_parts(use_fakes, make_recording):
     r = make_recording(status=RecordingStatus.CREATED)
     session, parts, part_size = services.start_multipart_upload(
-        recording=r, file_size_bytes=25 * 1024 * 1024
+        recording=r, file_size_bytes=25 * 1024 * 1024, filename="long.mp3"
     )
     assert session.is_multipart is True
     assert session.multipart_upload_id
@@ -111,7 +122,7 @@ def test_finalize_is_idempotent_and_emits_once(use_fakes, make_recording):
     from stapel_recordings.storage import get_storage
 
     r = make_recording(status=RecordingStatus.UPLOADING)
-    session = services.create_upload_session(recording=r)
+    session = services.create_upload_session(recording=r, filename="take.mp3")
     get_storage().put_bytes(session.storage_key, b"data")
 
     services.finalize_upload(session=session, file_size_bytes=4)
@@ -129,6 +140,8 @@ def test_finalize_is_idempotent_and_emits_once(use_fakes, make_recording):
 
 def test_abort_multipart_removes_session(use_fakes, make_recording):
     r = make_recording(status=RecordingStatus.CREATED)
-    session, _parts, _sz = services.start_multipart_upload(recording=r, file_size_bytes=1024)
+    session, _parts, _sz = services.start_multipart_upload(
+        recording=r, file_size_bytes=1024, filename="take.mp3"
+    )
     services.abort_multipart_upload_session(session=session)
     assert not UploadSession.objects.filter(pk=session.pk).exists()

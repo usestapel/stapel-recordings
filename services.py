@@ -22,21 +22,20 @@ WORKSPACES_CHECK_MEMBERSHIP = "workspaces.check_membership"
 
 
 class UnsupportedUploadExtension(ValueError):
-    """Raised when a caller-supplied upload filename has no extension, or one
-    outside ``UPLOAD_EXTENSION_ALLOWLIST``."""
+    """Raised when a caller-supplied upload filename is missing, has no
+    extension, or one outside ``UPLOAD_EXTENSION_ALLOWLIST``."""
 
     def __init__(self, ext: str):
         super().__init__(f"unsupported upload extension: {ext!r}")
         self.ext = ext
 
 
-def validated_upload_ext(filename: str | None) -> str:
-    """Return the object-key suffix for *filename* (``""`` when no filename
-    is given — the backward-compatible ``…/audio`` key). A filename with no
-    extension, or one outside the allowlist, raises
+def validated_upload_ext(filename: str) -> str:
+    """Return the object-key suffix (``.mp3``) for *filename*. A missing
+    filename, one with no extension, or one outside the allowlist raises
     :class:`UnsupportedUploadExtension`."""
     if not filename:
-        return ""
+        raise UnsupportedUploadExtension(filename)
     _, dot, ext = filename.rpartition(".")
     ext = ext.strip().lower()
     if not dot or not ext:
@@ -47,7 +46,7 @@ def validated_upload_ext(filename: str | None) -> str:
     return f".{ext}"
 
 
-def _storage_key(recording: Recording, *, filename: str | None = None) -> str:
+def _storage_key(recording: Recording, *, filename: str) -> str:
     prefix = recordings_settings.STORAGE_PREFIX.strip("/")
     base = f"{prefix}/{recording.workspace_id}/{recording.id}/audio"
     return f"{base}{validated_upload_ext(filename)}"
@@ -76,13 +75,12 @@ def check_workspace_membership(*, user_id, workspace_id) -> bool:
     return bool(isinstance(result, dict) and result.get("is_member"))
 
 
-def create_upload_session(*, recording: Recording, filename: str | None = None) -> UploadSession:
+def create_upload_session(*, recording: Recording, filename: str) -> UploadSession:
     """Create a single-PUT presigned upload session.
 
-    When *filename* is given, its extension is validated against
+    The *filename* extension is validated against
     ``UPLOAD_EXTENSION_ALLOWLIST`` and appended to the object key
-    (``…/audio.mp3``); omitting it keeps the legacy ``…/audio`` key
-    (backward compatible)."""
+    (``…/audio.mp3``)."""
     storage = get_storage()
     key = _storage_key(recording, filename=filename)
     ttl = int(recordings_settings.UPLOAD_SESSION_TTL_SECONDS)
@@ -105,12 +103,12 @@ def start_multipart_upload(
     recording: Recording,
     file_size_bytes: int,
     content_type: str | None = None,
-    filename: str | None = None,
+    filename: str,
 ) -> tuple[UploadSession, list[dict], int]:
     """Initiate a multipart upload. Returns (session, parts, part_size).
 
     *filename* behaves as in :func:`create_upload_session` (validated
-    extension appended to the object key; omit for the legacy key)."""
+    extension appended to the object key)."""
     storage = get_storage()
     key = _storage_key(recording, filename=filename)
     part_size = int(recordings_settings.MULTIPART_PART_SIZE)
