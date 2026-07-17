@@ -4,6 +4,14 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.4.1] — 2026-07-17
+
+Fleet follow-up to stapel-core 0.12.0 (legacy shim sweep). No source
+changes needed. Full suite green against core 0.12.0.
+
+### Changed
+- `stapel-core` dependency ceiling `<0.12` → `<0.13`.
+
 ## [0.4.0] — 2026-07-17
 
 Legacy-compat scrub: the extension-less `…/audio` upload key is gone —
