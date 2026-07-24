@@ -231,6 +231,21 @@ limit=20) -> [SearchHit(segment_id, recording_id, score, snippet)]`.
   need no calibration. Knobs: `RRF_K` (60), `RRF_WEIGHTS`
   (`{"text": 1.0, "vector": 1.0}`).
 
+**Optional rerank** (`VECTOR["RERANK"]`, default off): one post-ranking
+pass in **every** mode (rerank is provider-agnostic quality — the top
+`TOP_K` candidates go to the reranker regardless of arm). The `TOP_K`
+best hits' *full segment texts* go through `call("llm.rerank", ...)`
+(stapel-agent ≥ 0.5) and that block is re-ordered by rerank score
+(`SearchHit.score` becomes the rerank score, `reranked=True`); hits the
+reranker didn't score (`TOP_N` cut, or beyond `TOP_K`) follow in their
+pre-rerank order, then the result truncates to `limit`. `FAIL_OPEN`
+(default True): any rerank failure logs a warning and returns the
+un-reranked order; `False` raises `VectorSearchUnavailable`. Privacy:
+segment texts DO go to the rerank provider — the same trust boundary as
+`llm.transcribe`/`llm.summarize`. Knobs: `ENABLED` (False), `PROVIDER`
+(`""` = agent default), `TOP_K` (50), `TOP_N` (20; 0 = score all),
+`TIMEOUT_SECONDS` (60), `FAIL_OPEN` (True).
+
 On sqlite or with the app absent, `vector`/`hybrid` raise
 `VectorSearchUnavailable` — a decidable error, never a silently empty
 result; hosts choose their degradation.

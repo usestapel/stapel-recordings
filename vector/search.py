@@ -26,13 +26,45 @@ recording id, score, snippet). Three modes:
   (``{"text": w, "vector": w}`` — bias one arm without touching code).
   Same availability requirements as ``"vector"``.
 
+**Optional rerank** (``VECTOR["RERANK"]``, default off): one code path
+applied post-fusion / post-text-ranking, in **every** mode — reranking is
+provider-agnostic result quality, so the top ``TOP_K`` candidates go to
+the reranker regardless of which arm produced them. The ``TOP_K`` best
+hits' **full segment texts** (not the trimmed snippets) are sent to the
+``llm.rerank`` comm Function (stapel-agent >= 0.5) and that block is
+re-ordered by rerank score; ``TOP_N`` is forwarded to the provider (score
+only the N best; ``0`` scores everything). Ordering semantics: reranked
+hits first (provider order, best first), then hits the reranker did not
+score (sent but cut by ``TOP_N``) in their pre-rerank order, then hits
+beyond ``TOP_K`` in their pre-rerank order; the result is truncated to
+``limit`` as before. When rerank is enabled the arms over-fetch to
+``TOP_K`` so the reranker sees a full candidate window.
+
+Score semantics with rerank: a reranked hit's ``SearchHit.score`` is
+**replaced** by the provider's rerank score and ``reranked=True``;
+un-reranked hits keep their RRF/arm score and ``reranked=False`` — the
+two scales are not comparable across that boundary, the list order is the
+contract.
+
+Failure semantics: ``RERANK["FAIL_OPEN"]`` (default True) → any rerank
+failure (comm error, failure envelope, malformed response) logs a warning
+and returns the un-reranked order — search must not die because the
+reranker hiccuped; ``False`` → :class:`VectorSearchUnavailable`.
+
+Privacy: with rerank enabled, segment texts DO go to the rerank provider.
+This is the same trust boundary as ``llm.transcribe``/``llm.summarize`` —
+the transcript already transits the agent seam.
+
 The module imports no Django models at import time, so it is importable —
 and its pure pieces (:func:`reciprocal_rank_fusion`, :func:`make_snippet`)
 unit-testable — without postgres, pgvector, or the vector app.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import logging
+from dataclasses import dataclass, replace
+
+logger = logging.getLogger(__name__)
 
 MODES = ("text", "vector", "hybrid")
 
@@ -44,10 +76,16 @@ class VectorSearchUnavailable(RuntimeError):
 
 @dataclass(frozen=True)
 class SearchHit:
+    """One search result. ``score`` is the producing ranker's score (FTS
+    rank / cosine similarity / RRF fused score) — unless ``reranked`` is
+    True, in which case it is the ``llm.rerank`` provider's score (the
+    scales are not mutually comparable; the list order is the contract)."""
+
     segment_id: object
     recording_id: object
     score: float
     snippet: str
+    reranked: bool = False
 
 
 # ─── Pure pieces ───────────────────────────────────────────────────────
@@ -108,7 +146,12 @@ def search_recordings(
 
     Scope narrows by ``workspace_id`` and/or an iterable of
     ``recording_ids`` (both optional). Returns at most *limit* hits,
-    best first."""
+    best first.
+
+    With ``VECTOR["RERANK"]["ENABLED"]`` the ranked candidates are
+    additionally passed through ``llm.rerank`` before truncation (any
+    mode; see the module docstring for ordering, failure and privacy
+    semantics — segment texts go to the rerank provider)."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     query = (query or "").strip()
@@ -118,16 +161,19 @@ def search_recordings(
     from ..conf import vector_config
 
     cfg = vector_config()
+    limit = int(limit)
 
     if mode == "text":
-        return _text_arm(query, workspace_id, recording_ids, int(limit), cfg)
+        hits = _text_arm(query, workspace_id, recording_ids, _candidate_limit(limit, cfg), cfg)
+        return _apply_rerank(hits, query, cfg)[:limit]
 
     _require_vector_search()
     if mode == "vector":
-        return _vector_arm(query, workspace_id, recording_ids, int(limit), cfg)
+        hits = _vector_arm(query, workspace_id, recording_ids, _candidate_limit(limit, cfg), cfg)
+        return _apply_rerank(hits, query, cfg)[:limit]
 
     # hybrid
-    arm_limit = max(int(limit), int(cfg["ARM_LIMIT"]))
+    arm_limit = max(_candidate_limit(limit, cfg), int(cfg["ARM_LIMIT"]))
     text_hits = _text_arm(query, workspace_id, recording_ids, arm_limit, cfg)
     vector_hits = _vector_arm(query, workspace_id, recording_ids, arm_limit, cfg)
     by_id = {}
@@ -143,15 +189,130 @@ def search_recordings(
         k=int(cfg["RRF_K"]),
         weights=cfg["RRF_WEIGHTS"],
     )
-    return [
+    hits = [
         SearchHit(
             segment_id=seg_id,
             recording_id=by_id[seg_id].recording_id,
             score=score,
             snippet=by_id[seg_id].snippet,
         )
-        for seg_id, score in fused[: int(limit)]
+        for seg_id, score in fused
     ]
+    return _apply_rerank(hits, query, cfg)[:limit]
+
+
+# ─── Rerank stage (one path, post-fusion / post-text-ranking) ──────────
+
+
+class _BadRerankResponse(Exception):
+    """Internal: the llm.rerank response was a failure envelope or
+    structurally unusable — routed through the FAIL_OPEN policy."""
+
+
+def _candidate_limit(limit: int, cfg: dict) -> int:
+    """Arm fetch size: with rerank enabled the arms over-fetch to
+    ``RERANK["TOP_K"]`` so the reranker sees a full candidate window."""
+    rerank_cfg = cfg["RERANK"]
+    if rerank_cfg.get("ENABLED"):
+        return max(limit, int(rerank_cfg["TOP_K"]))
+    return limit
+
+
+def _apply_rerank(hits: list[SearchHit], query: str, cfg: dict) -> list[SearchHit]:
+    """Re-order the top ``RERANK["TOP_K"]`` of *hits* via ``llm.rerank``.
+
+    No-op when disabled or on an empty list. Documents are the hits' full
+    segment texts (fetched by id — the stored snippet is a trimmed window
+    and would starve the reranker). See the module docstring for the
+    ordering / failure / privacy contract."""
+    rerank_cfg = cfg["RERANK"]
+    if not rerank_cfg.get("ENABLED") or not hits:
+        return hits
+
+    top_k = max(1, int(rerank_cfg["TOP_K"]))
+    head, tail = hits[:top_k], hits[top_k:]
+
+    from stapel_recordings.models import Segment
+
+    texts = dict(
+        Segment.objects.filter(
+            id__in=[h.segment_id for h in head]
+        ).values_list("id", "text")
+    )
+    payload: dict = {
+        "query": query,
+        # Full segment text; the snippet is the (unlikely) fallback for a
+        # segment deleted between ranking and rerank.
+        "documents": [texts.get(h.segment_id) or h.snippet for h in head],
+        "timeout_seconds": int(rerank_cfg["TIMEOUT_SECONDS"]),
+    }
+    top_n = int(rerank_cfg.get("TOP_N") or 0)
+    if top_n > 0:
+        payload["top_n"] = min(top_n, len(head))
+    if rerank_cfg.get("PROVIDER"):
+        payload["provider"] = rerank_cfg["PROVIDER"]
+
+    from stapel_core.comm import call
+    from stapel_core.comm.exceptions import CommError
+
+    try:
+        result = call("llm.rerank", payload)
+        order = _rerank_order(result, len(head))
+    except CommError as exc:
+        return _rerank_failed(hits, rerank_cfg, f"llm.rerank call failed: {exc}")
+    except _BadRerankResponse as exc:
+        return _rerank_failed(hits, rerank_cfg, str(exc))
+
+    scored = {idx for idx, _ in order}
+    reranked = [replace(head[idx], score=score, reranked=True) for idx, score in order]
+    unscored = [h for idx, h in enumerate(head) if idx not in scored]
+    return reranked + unscored + tail
+
+
+def _rerank_order(result, n_docs: int) -> list[tuple[int, float]]:
+    """Validate an llm.rerank envelope into ``[(index, score), ...]`` in
+    provider order (contract: best first). Anything unusable raises
+    :class:`_BadRerankResponse` for the FAIL_OPEN policy to route."""
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        reason = (
+            result.get("reason", "rerank_failed")
+            if isinstance(result, dict) else "rerank_failed"
+        )
+        raise _BadRerankResponse(f"llm.rerank returned failure: {reason}")
+    results = (result.get("rerank") or {}).get("results")
+    if not isinstance(results, list):
+        raise _BadRerankResponse("llm.rerank response missing rerank.results")
+    order: list[tuple[int, float]] = []
+    seen: set[int] = set()
+    for entry in results:
+        try:
+            idx, score = int(entry["index"]), float(entry["score"])
+        except (TypeError, KeyError, ValueError) as exc:
+            raise _BadRerankResponse(
+                f"malformed rerank result entry: {entry!r}"
+            ) from exc
+        if not 0 <= idx < n_docs or idx in seen:
+            raise _BadRerankResponse(
+                f"rerank result index {idx} out of range or duplicated"
+            )
+        seen.add(idx)
+        order.append((idx, score))
+    return order
+
+
+def _rerank_failed(
+    hits: list[SearchHit], rerank_cfg: dict, message: str
+) -> list[SearchHit]:
+    """FAIL_OPEN policy: warn + return the un-reranked order, or raise."""
+    if rerank_cfg.get("FAIL_OPEN", True):
+        logger.warning(
+            "rerank failed — returning un-reranked order (RERANK['FAIL_OPEN']): %s",
+            message,
+        )
+        return hits
+    raise VectorSearchUnavailable(
+        f"rerank failed and RERANK['FAIL_OPEN'] is False: {message}"
+    )
 
 
 def _require_vector_search() -> None:

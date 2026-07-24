@@ -4,6 +4,28 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.5.2] — 2026-07-24
+
+### Added
+- **Optional rerank stage for search** (`VECTOR["RERANK"]`, default off):
+  one post-ranking pass in every `search_recordings` mode — after RRF
+  fusion (or text/vector ranking), the top `TOP_K` hits' full segment
+  texts go through the `llm.rerank` comm Function (stapel-agent ≥ 0.5)
+  and that block is re-ordered by rerank score; hits the reranker didn't
+  score (`TOP_N` cut, or beyond `TOP_K`) keep their pre-rerank order
+  after it, then the result truncates to `limit` as before. Arms
+  over-fetch to `TOP_K` when enabled. `FAIL_OPEN` (default True): any
+  rerank failure (comm error, failure envelope, malformed response) logs
+  a warning and returns the un-reranked order; `False` raises
+  `VectorSearchUnavailable`. `SearchHit` gains `reranked: bool = False`;
+  a reranked hit's `score` is the provider's rerank score (the RRF and
+  rerank scales are not comparable — list order is the contract).
+  Privacy: with rerank enabled, segment texts go to the rerank provider —
+  the same trust boundary as `llm.transcribe`/`llm.summarize`. Knobs:
+  `ENABLED`/`PROVIDER`/`TOP_K` (50)/`TOP_N` (20; 0 = score all)/
+  `TIMEOUT_SECONDS` (60)/`FAIL_OPEN`; the block deep-merges like the
+  rest of `VECTOR` via `vector_config()`.
+
 ## [0.5.1] — 2026-07-24
 
 ### Fixed

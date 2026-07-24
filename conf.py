@@ -71,6 +71,23 @@ DEFAULT_VECTOR = {
     "RRF_K": 60,
     "RRF_WEIGHTS": {"text": 1.0, "vector": 1.0},
     "ARM_LIMIT": 50,
+    # Optional LLM rerank pass over search results (any mode — applied
+    # post-fusion / post-text-ranking). The top TOP_K hits' segment texts
+    # are sent to the ``llm.rerank`` comm Function (stapel-agent >= 0.5)
+    # and that block is re-ordered by rerank score; hits beyond TOP_K keep
+    # their prior order after it. TOP_N is forwarded to the provider
+    # (score only the N best; 0 = score everything). FAIL_OPEN: True →
+    # a rerank failure logs a warning and returns the un-reranked order;
+    # False → VectorSearchUnavailable. Note: segment texts DO go to the
+    # rerank provider — same trust boundary as llm.transcribe/summarize.
+    "RERANK": {
+        "ENABLED": False,
+        "PROVIDER": "",
+        "TOP_K": 50,
+        "TOP_N": 20,
+        "TIMEOUT_SECONDS": 60,
+        "FAIL_OPEN": True,
+    },
 }
 
 #: AppSettings-shaped literal dict (capability-config.md §2): a top-level
@@ -161,11 +178,11 @@ def vector_config() -> dict:
     """Effective VECTOR block: the host's ``STAPEL_RECORDINGS["VECTOR"]``
     merged over :data:`DEFAULT_VECTOR` (AppSettings replaces dict values
     wholesale, so the merge lives here). The nested dicts (``HNSW`` /
-    ``FTS_CONFIGS`` / ``RRF_WEIGHTS``) merge one level deep too — a host
-    adding one FTS language keeps the default map."""
+    ``FTS_CONFIGS`` / ``RRF_WEIGHTS`` / ``RERANK``) merge one level deep
+    too — a host flipping ``RERANK["ENABLED"]`` keeps the other knobs."""
     host = recordings_settings.VECTOR or {}
     merged = {**DEFAULT_VECTOR, **host}
-    for key in ("HNSW", "FTS_CONFIGS", "RRF_WEIGHTS"):
+    for key in ("HNSW", "FTS_CONFIGS", "RRF_WEIGHTS", "RERANK"):
         merged[key] = {**DEFAULT_VECTOR[key], **(host.get(key) or {})}
     return merged
 

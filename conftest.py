@@ -40,6 +40,6 @@ def _reset_recordings_state():
     yield
     stages.reset_runtime_stages()
     storage.reset_storage_cache()
-    for name in ("llm.transcribe", "llm.summarize", "llm.embed", "workspaces.check_membership"):
+    for name in ("llm.transcribe", "llm.summarize", "llm.embed", "llm.rerank", "workspaces.check_membership"):
         function_registry._providers.pop(name, None)
         function_registry._schemas.pop(name, None)
