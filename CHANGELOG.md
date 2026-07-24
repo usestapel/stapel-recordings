@@ -4,6 +4,12 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.5.1] — 2026-07-24
+
+### Fixed
+- 0.5.0 tag never published: docs/capabilities.json still carried 0.4.4
+  (version-stamped contract artifact; drift gate red in CI). Regenerated.
+
 ## [0.5.0] — 2026-07-24
 
 Opt-in vector/search layer. Minor bump (pre-1.0): the default `PIPELINE`
