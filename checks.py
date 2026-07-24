@@ -67,6 +67,24 @@ def check_pipeline_stages(app_configs, **kwargs):
 
 
 @checks.register(checks.Tags.compatibility)
+def check_vector_layer(app_configs, **kwargs):
+    """W: VECTOR["ENABLED"] without the opt-in vector app installed makes
+    the embed stage a silent no-op — flag the half-configured state."""
+    from .conf import vector_config
+    from .vector import vector_app_installed
+
+    if vector_config().get("ENABLED") and not vector_app_installed():
+        return [checks.Warning(
+            "STAPEL_RECORDINGS['VECTOR']['ENABLED'] is on but "
+            "'stapel_recordings.vector' is not in INSTALLED_APPS — the embed "
+            "stage will no-op. Install stapel-recordings[vector], add the app "
+            "and run its migrations (PostgreSQL + pgvector).",
+            id="stapel_recordings.W006",
+        )]
+    return []
+
+
+@checks.register(checks.Tags.compatibility)
 def check_reconcile_threshold(app_configs, **kwargs):
     """W: the reconcile stuck-threshold must exceed the longest legitimate
     stage duration, or the watchdog re-emits ``recording.stage`` for stages

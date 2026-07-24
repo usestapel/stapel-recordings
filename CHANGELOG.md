@@ -4,6 +4,51 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.5.0] — 2026-07-24
+
+Opt-in vector/search layer. Minor bump (pre-1.0): the default `PIPELINE`
+grows a fifth stage name (`embed`) — hosts pinning an explicit `PIPELINE`
+list are unaffected; hosts on the default get a no-op stage unless they
+opt in. Zero burden without the extra: the base package (and its sqlite
+test suite) works with `pgvector` absent.
+
+### Added
+- **`stapel_recordings.vector`** — a separate opt-in Django app (hosts add
+  it to `INSTALLED_APPS` themselves): `SegmentEmbedding` (unique per
+  segment+model, HNSW cosine index) and `RecordingEmbedding` (summary
+  chunks, unique per recording+model+chunk). `VectorField` dim + HNSW
+  params come from `STAPEL_RECORDINGS["VECTOR"]` at model-load/migrate
+  time. The app's `0001` runs pgvector's vendor-guarded
+  `CREATE EXTENSION IF NOT EXISTS vector` first.
+- **`embed` pipeline stage** (registered after `merge`, in the default
+  pipeline): no-op unless the vector app is installed AND
+  `VECTOR["ENABLED"]` (default False) — the DiarizeStage pattern. When
+  active, batches segment texts + the chunked summary through the
+  `llm.embed` comm Function (stapel-agent ≥ 0.4) and upserts embedding
+  rows. Outbox canon: content-hash idempotent, retry-safe
+  (`StageRetryable` on comm failures, `StageFatal` on a dim mismatch).
+- **Hybrid search service** — `vector/search.py::search_recordings(query,
+  *, workspace_id=None, recording_ids=None, mode="hybrid"|"text"|"vector",
+  limit)` returning segment hits (segment id, recording id, score,
+  snippet). Text arm: postgres FTS with a per-recording-language config
+  map (fallback `simple`), degrading to `icontains` off postgres. Vector
+  arm: `llm.embed` + pgvector cosine. Hybrid: reciprocal-rank fusion
+  (`RRF_K`/`RRF_WEIGHTS` in settings). On sqlite / app-absent,
+  `vector`/`hybrid` raise `VectorSearchUnavailable` — hosts decide.
+- `STAPEL_RECORDINGS["VECTOR"]` settings block (`DEFAULT_VECTOR` +
+  `vector_config()` merge helper): dim, model/provider, batch size,
+  timeout, summary chunking, HNSW params, FTS config map, RRF knobs.
+- `[project.optional-dependencies] vector = ["pgvector>=0.3"]`
+  (`all` now includes it); packaged `stapel_recordings.vector(.migrations)`.
+- System check **W006**: `VECTOR["ENABLED"]` without the vector app in
+  `INSTALLED_APPS` (the embed stage would silently no-op).
+- Opt-in postgres test harness: `STAPEL_RECORDINGS_TEST_DB=postgres://…`
+  runs the suite on postgres with the vector app installed and real
+  migrations, unlocking the vendor-gated `tests/test_vector_postgres.py`
+  (VectorField rows, FTS ranking, cosine ordering, extension + HNSW
+  migration). The canonical sqlite suite is unchanged and stays the
+  no-extra gate.
+
 ## [0.4.3] — 2026-07-17
 
 Fix-up #2: 0.4.2's regen still baked the old version into

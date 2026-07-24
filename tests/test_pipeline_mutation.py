@@ -172,7 +172,7 @@ def test_duplicate_stage_event_does_not_duplicate_public_events(
     r = Recording.objects.get(pk=ready_recording.id)
     assert r.status == RecordingStatus.COMPLETED
     names = _stage_completed_names()
-    assert sorted(names) == ["convert", "diarize", "merge", "transcribe"]  # exactly once each
+    assert sorted(names) == ["convert", "diarize", "embed", "merge", "transcribe"]  # exactly once each
     assert _outbox(events.ACTION_COMPLETED).count() == 1
     assert len(stub_transcribe.calls) == 1
 
@@ -191,7 +191,7 @@ def test_duplicate_of_completed_stage_is_total_noop(ready_recording, stub_transc
     drain()
     r = Recording.objects.get(pk=ready_recording.id)
     assert r.status == RecordingStatus.COMPLETED
-    assert sorted(_stage_completed_names()) == ["convert", "diarize", "merge", "transcribe"]
+    assert sorted(_stage_completed_names()) == ["convert", "diarize", "embed", "merge", "transcribe"]
 
 
 def test_completion_cursor_is_persisted_in_success_txn(ready_recording, stub_transcribe, stub_summarize):

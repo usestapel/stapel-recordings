@@ -8,8 +8,9 @@ pytestmark = pytest.mark.django_db
 
 
 def test_full_pipeline_completes(ready_recording, stub_transcribe, stub_summarize, drain):
-    """convert -> transcribe -> diarize -> merge -> completed, driven purely
-    by the outbox (the production reliability path)."""
+    """convert -> transcribe -> diarize -> merge -> embed -> completed,
+    driven purely by the outbox (the production reliability path). embed is
+    a no-op here (vector app not installed)."""
     events.emit_stage(ready_recording.id, 0)
     drain()
 
@@ -48,7 +49,7 @@ def test_status_progression_is_a_state_machine(ready_recording, stub_transcribe,
         action_registry._subscribers[events.ACTION_STAGE_COMPLETED].remove(_spy)
 
     stages_run = [s for s, _ in seen]
-    assert stages_run == ["convert", "transcribe", "diarize", "merge"]
+    assert stages_run == ["convert", "transcribe", "diarize", "merge", "embed"]
     # convert ran while status was NORMALIZING, transcribe while TRANSCRIBING…
     status_by_stage = dict(seen)
     assert status_by_stage["convert"] == RecordingStatus.NORMALIZING

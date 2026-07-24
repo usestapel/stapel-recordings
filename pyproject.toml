@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.4.4"
+version = "0.5.0"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -38,7 +38,12 @@ Issues = "https://github.com/usestapel/stapel-recordings/issues"
 # default DjangoStorageBackend needs no extra. Audio normalization
 # (convert stage) additionally needs ffmpeg/ffprobe on PATH at runtime.
 s3 = ["boto3>=1.34"]
-all = ["stapel-recordings[s3]"]
+# Opt-in vector/search layer: the stapel_recordings.vector Django app
+# (SegmentEmbedding/RecordingEmbedding + hybrid search). Requires
+# PostgreSQL with the pgvector extension at runtime; the base package
+# works (and is tested) without this extra.
+vector = ["pgvector>=0.3"]
+all = ["stapel-recordings[s3,vector]"]
 
 [tool.setuptools]
 package-dir = {"stapel_recordings" = "."}
@@ -47,10 +52,12 @@ packages = [
     "stapel_recordings.migrations",
     "stapel_recordings.management",
     "stapel_recordings.management.commands",
+    "stapel_recordings.vector",
+    "stapel_recordings.vector.migrations",
 ]
 
 [tool.setuptools.package-data]
-stapel_recordings = ["py.typed", "migrations/*.py", "schemas/**/*.json"]
+stapel_recordings = ["py.typed", "migrations/*.py", "vector/migrations/*.py", "schemas/**/*.json"]
 
 [tool.ruff]
 target-version = "py311"

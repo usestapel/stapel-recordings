@@ -22,6 +22,11 @@
 - A REST surface (create + upload session, detail, list — owner- /
   workspace- / `resource_key`-scoped —, finalize, reprocess) with
   serializer seams, and a GDPR provider + `user.deleted` consumer.
+- An **opt-in vector/search layer** (`stapel_recordings.vector` — a
+  separate Django app + the `[vector]` extra): segment/summary embeddings
+  written by the `embed` pipeline stage via `llm.embed`, and a hybrid
+  (FTS + pgvector cosine, RRF-fused) segment search service. Zero burden
+  when not installed — see the section below.
 
 **What it delegates (does NOT implement):**
 
@@ -42,7 +47,7 @@ names run by the generic driver in `pipeline.py`. Three composable ways to
 change it, none requiring a fork:
 
 1. **Reorder / subset / extend the list** — `STAPEL_RECORDINGS["PIPELINE"]`
-   (default `["convert", "transcribe", "diarize", "merge"]`). Drop
+   (default `["convert", "transcribe", "diarize", "merge", "embed"]`). Drop
    `diarize`, or insert `redact_pii` before `merge`, by editing the list.
 2. **Replace / remove / add a stage handler** — the `STAGES` overlay
    (`{name: dotted-path | None}`, **merge-over-builtins**; `None` removes a
@@ -121,7 +126,7 @@ STAPEL_RECORDINGS = {
 }
 ```
 
-The four built-ins:
+The five built-ins:
 
 | Stage | Status | Does | Delegates to |
 |---|---|---|---|
@@ -129,6 +134,7 @@ The four built-ins:
 | `transcribe` | `transcribing` | Call `llm.transcribe`, persist `Speaker`/`Segment` rows | **stapel-agent** |
 | `diarize` | `diarizing` | **No-op by default** (diarization is returned inline by `llm.transcribe`); swap in a real diarizer via the registry | — |
 | `merge` | `merging` | Build + store the unified transcript JSON, then `llm.summarize` | **stapel-agent** |
+| `embed` | — (keeps prior) | **No-op unless** the opt-in vector app is installed AND `VECTOR["ENABLED"]` (the diarize pattern); then batches segment texts + the chunked summary through `llm.embed` and upserts embedding rows (content-hashed, idempotent) | **stapel-agent** |
 
 ### Settings — `STAPEL_RECORDINGS` namespace (`conf.py`)
 
@@ -137,7 +143,7 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 
 | Key | Default | Semantics | Customizes |
 |---|---|---|---|
-| `PIPELINE` | `["convert","transcribe","diarize","merge"]` | value | Ordered stage list |
+| `PIPELINE` | `["convert","transcribe","diarize","merge","embed"]` | value | Ordered stage list |
 | `STAGES` | `{}` | **merge** over builtins (`None` removes) | Stage handler overlay (dotted paths) |
 | `PIPELINE_RESOLVER` | `…pipeline.default_pipeline_resolver` | **replace** (dotted path) | Runtime pipeline source |
 | `STORAGE` | `…storage.DjangoStorageBackend` | **replace** (dotted path) | Object-storage backend |
@@ -154,6 +160,7 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 | `STUCK_THRESHOLD_SECONDS` | `2100` | value | Reconcile: age before re-drive. **Must exceed the longest stage duration** (built-ins: `TRANSCRIBE_TIMEOUT_SECONDS`), or reconcile re-drives stages that are still running (checked: W005) |
 | `ABANDONED_UPLOAD_THRESHOLD_SECONDS` | `3600` | value | Reconcile: abandoned-upload age |
 | `S3_*` | — | value | Config for the optional `S3Backend` |
+| `VECTOR` | see `DEFAULT_VECTOR` | **merge** (one nested level, via `vector_config()`) | Tuning block for the opt-in vector layer (below) |
 
 ### Storage seam — `RecordingStorage` (`storage.py`)
 
@@ -169,6 +176,73 @@ target any store. `get_storage()` resolves + caches it.
 ffmpeg/ffprobe on PATH); `passthrough_normalize` for environments without
 ffmpeg or already-normalized input. Raise `NormalizeFatal` for unfixable
 input.
+
+### Vector/search layer — opt-in app (`vector/`)
+
+Semantic + full-text search over transcripts, packaged so that hosts who
+don't want it pay **nothing**: no pgvector import, no extra tables, no new
+dependency — the `embed` stage in the default pipeline is a no-op (exactly
+the diarize pattern). The base sqlite test suite runs (and must stay green)
+with the extra absent.
+
+**Opt in** (all four steps host-side):
+
+```python
+# pip install stapel-recordings[vector]        # pulls pgvector
+INSTALLED_APPS = [..., "stapel_recordings", "stapel_recordings.vector"]
+STAPEL_RECORDINGS = {"VECTOR": {"ENABLED": True, "DIM": 1536, "MODEL": "..." }}
+# then: manage.py migrate   (postgres only — the app's 0001 runs the
+# standard `CREATE EXTENSION IF NOT EXISTS vector`, vendor-guarded)
+```
+
+**Models** (`vector/models.py`): `SegmentEmbedding` (FK `Segment`,
+`VectorField(DIM)`, `model`, `content_hash`, unique per segment+model, HNSW
+cosine index with `VECTOR["HNSW"]` params) and `RecordingEmbedding`
+(summary chunks: FK `Recording`, `chunk_index`, `text_hash`, `vector`,
+`model`, unique per recording+model+chunk). `DIM`/HNSW are read from
+settings by **both** the models and the migration — set them before the
+first migrate; changing `DIM` later is a host migration + re-embed.
+
+**Embed stage**: after `merge`. Batches segment texts (`BATCH_SIZE`) →
+`call("llm.embed", {"texts", "model"?, "provider"?, "timeout_seconds"})`
+(stapel-agent ≥ 0.4) → upserts rows. Idempotent under the outbox's
+at-least-once delivery: every row stores the sha256 of the embedded text
+and unchanged texts are never re-sent; an edited segment re-embeds only
+itself. Comm failures → `StageRetryable`; a `dim` that contradicts
+`VECTOR["DIM"]` → `StageFatal` (misconfiguration, retry can't fix it).
+The summary is chunked (`SUMMARY_CHUNK_CHARS`/`_OVERLAP`, plain character
+windows — smarter chunking is host know-how) and stale tail chunks are
+pruned. Half-configured state (`ENABLED` without the app) → check W006.
+
+**Search** (`vector/search.py`): `search_recordings(query, *,
+workspace_id=None, recording_ids=None, mode="hybrid"|"text"|"vector",
+limit=20) -> [SearchHit(segment_id, recording_id, score, snippet)]`.
+
+- *text* — postgres FTS over `Segment.text`; the FTS config resolves per
+  recording's `language` via `VECTOR["FTS_CONFIGS"]` (primary subtag),
+  fallback `'simple'`. No stored search column — hosts at scale add their
+  own GIN index / SearchVectorField. Off postgres this mode degrades to
+  `icontains` (score 1.0) so it works everywhere.
+- *vector* — the query goes through `llm.embed`, then cosine distance over
+  `SegmentEmbedding` (score = 1 − distance).
+- *hybrid* — both arms fetch up to `VECTOR["ARM_LIMIT"]` candidates and are
+  fused with **reciprocal-rank fusion**: `score = Σ_arm WEIGHT_arm /
+  (RRF_K + rank_arm)` — rank-based, so the arms' incomparable score scales
+  need no calibration. Knobs: `RRF_K` (60), `RRF_WEIGHTS`
+  (`{"text": 1.0, "vector": 1.0}`).
+
+On sqlite or with the app absent, `vector`/`hybrid` raise
+`VectorSearchUnavailable` — a decidable error, never a silently empty
+result; hosts choose their degradation.
+
+**Testing**: logic-level tests (batching, hash-skip idempotency, chunking,
+RRF, error mapping, sqlite degradation) run on the canonical sqlite suite
+with the comm seam stubbed and persistence faked at the `get_store()` seam.
+DB-bound tests (real VectorField, FTS ranking, cosine ordering, the
+extension/HNSW migration) are explicitly vendor-gated in
+`tests/test_vector_postgres.py` and run under
+`STAPEL_RECORDINGS_TEST_DB=postgres://… python3 -m pytest` (the env var
+also installs the vector app and pins test `DIM=3`).
 
 ### Serializer seams (`views.py`)
 
@@ -199,6 +273,7 @@ under `schemas/emits/`, validated in tests.
 | Action (consume) | `user.deleted` | GDPR erase (owned by auth) | — |
 | Function (**call**) | `llm.transcribe` | STT | provided by **stapel-agent** |
 | Function (**call**) | `llm.summarize` | summary | provided by **stapel-agent** |
+| Function (**call**) | `llm.embed` | embeddings (opt-in vector layer only) | provided by **stapel-agent** ≥ 0.4 |
 
 ### Reliability primitives
 

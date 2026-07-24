@@ -13,9 +13,9 @@ the context dict passed to the next stage. It raises :class:`StageRetryable`
 :class:`StageFatal` (bad input — straight to DLQ). Stages MUST be idempotent
 (guard on status / persisted keys) because delivery is at-least-once.
 
-The four built-ins — ``convert``, ``transcribe``, ``diarize``, ``merge`` —
-are registered here. Hosts customize the pipeline three ways, all
-fork-free:
+The five built-ins — ``convert``, ``transcribe``, ``diarize``, ``merge``,
+``embed`` — are registered here. Hosts customize the pipeline three ways,
+all fork-free:
 
 1. Reorder / subset / extend the stage list: ``STAPEL_RECORDINGS["PIPELINE"]``
    (or a ``PIPELINE_RESOLVER`` for runtime/per-recording lists).
@@ -29,6 +29,10 @@ via the ``llm.transcribe`` / ``llm.summarize`` comm Functions — recordings
 does NOT implement STT or summarization. ``diarize`` is a no-op by default
 because diarization is returned inline by ``llm.transcribe``; it stays in
 the pipeline so hosts can swap in a real diarizer without touching the list.
+``embed`` follows the same pattern: a no-op unless the opt-in
+``stapel_recordings.vector`` app is installed AND ``VECTOR["ENABLED"]`` is
+on — then it delegates to ``llm.embed`` (stapel-agent) and persists segment
+/ summary embeddings for the hybrid search service (``vector/search.py``).
 """
 from __future__ import annotations
 
@@ -243,6 +247,41 @@ class MergeStage(Stage):
         return ctx
 
 
+class EmbedStage(Stage):
+    """Persist vector embeddings for the finished transcript (opt-in).
+
+    No-op — exactly the DiarizeStage pattern — unless BOTH hold:
+
+    - the opt-in vector app (``stapel_recordings.vector``) is installed
+      (INSTALLED_APPS; needs the ``[vector]`` extra + postgres/pgvector);
+    - ``STAPEL_RECORDINGS["VECTOR"]["ENABLED"]`` is True (default False).
+
+    So the stage can sit in the default pipeline at zero cost for hosts
+    that don't want vectors. When active it batches segment texts (and the
+    chunked summary) through ``llm.embed`` (stapel-agent) and upserts
+    ``SegmentEmbedding`` / ``RecordingEmbedding`` rows. Idempotent /
+    retry-safe: rows are keyed by a content hash, so a redelivery or a
+    partially-failed run only embeds what is missing. ``status`` is empty
+    on purpose — no new RecordingStatus enum value, the driver keeps the
+    previous status while embed runs (zero migration burden on the base
+    app)."""
+
+    name = "embed"
+    status = ""
+
+    def run(self, recording, ctx):
+        from .conf import vector_config
+        from .vector import vector_app_installed
+
+        if not (vector_app_installed() and vector_config()["ENABLED"]):
+            return ctx  # opt-in layer absent/off — no-op, like diarize
+
+        from .vector.embedding import embed_recording
+
+        embed_recording(recording)
+        return ctx
+
+
 # ─── stage helpers ─────────────────────────────────────────────────────
 
 
@@ -372,6 +411,7 @@ BUILTIN_STAGES: dict[str, object] = {
     "transcribe": TranscribeStage,
     "diarize": DiarizeStage,
     "merge": MergeStage,
+    "embed": EmbedStage,  # after merge — embeds the finished transcript
 }
 
 _runtime_stages: dict[str, object] = {}
@@ -463,6 +503,7 @@ __all__ = [
     "TranscribeStage",
     "DiarizeStage",
     "MergeStage",
+    "EmbedStage",
     "BUILTIN_STAGES",
     "register_stage",
     "unregister_stage",

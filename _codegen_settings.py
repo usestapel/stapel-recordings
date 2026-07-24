@@ -37,6 +37,36 @@ system-check registrations, admin-visibility setup, and one-time DRF
 """
 from __future__ import annotations
 
+import os
+from urllib.parse import urlparse
+
+
+def _postgres_database() -> dict | None:
+    """Opt-in postgres test harness for the vector layer.
+
+    ``STAPEL_RECORDINGS_TEST_DB=postgres://user:pass@host:port/dbname``
+    switches the suite's database to postgres AND installs the opt-in
+    ``stapel_recordings.vector`` app, unlocking the DB-bound vector tests
+    (``tests/test_vector_postgres.py`` — vendor-skipped otherwise). Under
+    this harness the REAL migrations run (MIGRATION_MODULES is not
+    disabled — syncdb can't order cross-app FKs on postgres), which also
+    exercises the vector app's 0001 for real (VectorExtension + HNSW), so
+    the connecting role must be allowed to ``CREATE EXTENSION vector`` (or
+    have it pre-created in template1). Default (env var unset): sqlite, no
+    vector app — the canonical zero-extra suite."""
+    url = os.environ.get("STAPEL_RECORDINGS_TEST_DB", "")
+    if not url.startswith(("postgres://", "postgresql://")):
+        return None
+    parsed = urlparse(url)
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": (parsed.path or "/").lstrip("/") or "stapel_recordings_test",
+        "USER": parsed.username or "",
+        "PASSWORD": parsed.password or "",
+        "HOST": parsed.hostname or "",
+        "PORT": str(parsed.port or ""),
+    }
+
 
 def settings_kwargs(
     *,
@@ -111,7 +141,8 @@ def settings_kwargs(
         ],
         AUTH_USER_MODEL="users.User",
         DATABASES={
-            "default": {
+            "default": _postgres_database()
+            or {
                 "ENGINE": "django.db.backends.sqlite3",
                 "NAME": ":memory:",
             }
@@ -142,6 +173,20 @@ def settings_kwargs(
             "recordings": None,
         },
     )
+    if _postgres_database() is not None:
+        # Postgres harness: install the opt-in vector app so its models
+        # (and the vendor-gated tests) come alive, and run the REAL
+        # migrations — syncdb (MIGRATION_MODULES=None) cannot create the
+        # users/recordings tables on postgres because their FKs need the
+        # auth tables migrated first, and running the vector app's actual
+        # 0001 (VectorExtension + HNSW index) is exactly what this harness
+        # exists to verify.
+        kwargs["INSTALLED_APPS"].append("stapel_recordings.vector")
+        kwargs["MIGRATION_MODULES"] = {}
+        # VECTOR["DIM"] is baked into the column at migrate time; pin the
+        # small test dimensionality here so the vector tests' 3-dim stub
+        # embeddings fit the migrated column.
+        kwargs["STAPEL_RECORDINGS"] = {"VECTOR": {"DIM": 3}}
     if rest_framework is not None:
         kwargs["REST_FRAMEWORK"] = rest_framework
     return kwargs
