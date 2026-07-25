@@ -181,6 +181,11 @@ def settings_kwargs(
         # auth tables migrated first, and running the vector app's actual
         # 0001 (VectorExtension + HNSW index) is exactly what this harness
         # exists to verify.
+        # Mirror what a host must actually configure: contrib.postgres is
+        # required for the HNSW index (postgres.E005 / E003 here), and the
+        # harness silently omitting it is how that requirement stayed
+        # undocumented until a real deploy hit it.
+        kwargs["INSTALLED_APPS"].append("django.contrib.postgres")
         kwargs["INSTALLED_APPS"].append("stapel_recordings.vector")
         kwargs["MIGRATION_MODULES"] = {}
         # VECTOR["DIM"] is baked into the column at migrate time; pin the

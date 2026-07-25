@@ -470,3 +470,47 @@ def test_w006_warns_on_enabled_without_app():
         findings = check_vector_layer(None)
     assert [f.id for f in findings] == ["stapel_recordings.W006"]
     assert check_vector_layer(None) == []  # default: disabled → quiet
+
+
+# ─── Install-time requirements (E003) ──────────────────────────────────
+
+
+class TestVectorAppRequirements:
+    """The vector app's tables carry an HNSW index, which Django only
+    builds when django.contrib.postgres is installed. The two-step install
+    doc omitted it, so `manage.py migrate` died at boot on the stand with
+    Django's own postgres.E005 pointing at a model class."""
+
+    def test_no_error_without_the_vector_app(self, monkeypatch):
+        from stapel_recordings import checks
+
+        monkeypatch.setattr(
+            "stapel_recordings.vector.vector_app_installed", lambda: False
+        )
+        assert checks.check_vector_app_requirements(None) == []
+
+    def test_error_when_contrib_postgres_is_missing(self, monkeypatch):
+        from django.apps import apps
+
+        from stapel_recordings import checks
+
+        monkeypatch.setattr(
+            "stapel_recordings.vector.vector_app_installed", lambda: True
+        )
+        monkeypatch.setattr(
+            apps, "is_installed", lambda name: name != "django.contrib.postgres"
+        )
+        errors = checks.check_vector_app_requirements(None)
+        assert [e.id for e in errors] == ["stapel_recordings.E003"]
+        assert "django.contrib.postgres" in errors[0].msg
+
+    def test_clean_when_both_apps_are_installed(self, monkeypatch):
+        from django.apps import apps
+
+        from stapel_recordings import checks
+
+        monkeypatch.setattr(
+            "stapel_recordings.vector.vector_app_installed", lambda: True
+        )
+        monkeypatch.setattr(apps, "is_installed", lambda name: True)
+        assert checks.check_vector_app_requirements(None) == []

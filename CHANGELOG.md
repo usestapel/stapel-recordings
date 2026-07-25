@@ -4,6 +4,21 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.6.1] — 2026-07-25
+
+### Fixed
+- **The vector app's install requirement is now stated and checked**
+  (`stapel_recordings.E003`). Its embedding tables carry an HNSW index,
+  which Django only builds when `django.contrib.postgres` is in
+  INSTALLED_APPS — the two-step install doc never said so, so a host that
+  followed it to the letter died at container boot with Django's own
+  `postgres.E005` pointed at a model class (ironmemo stand, 2026-07-25).
+  The check names the fix in this module's vocabulary, the install steps
+  in `vector/__init__.py` list both apps, and the postgres test harness
+  now installs `django.contrib.postgres` the way a host must — the
+  harness omitting it is precisely why the requirement stayed
+  undocumented (the suite never runs `manage.py check`).
+
 ## [0.6.0] — 2026-07-25
 
 Minor (**behaviour change in vector search**): embedding spaces are now

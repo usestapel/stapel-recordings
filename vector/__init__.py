@@ -6,8 +6,11 @@ installs nor imports it, so hosts that don't want vectors carry zero burden
 stays a no-op). To opt in:
 
 1. ``pip install stapel-recordings[vector]`` (pulls ``pgvector``);
-2. add ``"stapel_recordings.vector"`` to ``INSTALLED_APPS`` (after
-   ``"stapel_recordings"``);
+2. add TWO apps to ``INSTALLED_APPS``: ``"django.contrib.postgres"`` and
+   ``"stapel_recordings.vector"`` (after ``"stapel_recordings"``). The
+   contrib app is not optional — the embedding tables carry an HNSW
+   index and Django refuses to build one without it (``postgres.E005``);
+   ``stapel_recordings.E003`` says so up front;
 3. run this app's migrations against PostgreSQL — the first migration
    issues the standard ``CREATE EXTENSION IF NOT EXISTS vector`` (the
    operation is vendor-guarded: a no-op off postgres);

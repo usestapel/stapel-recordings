@@ -85,6 +85,37 @@ def check_vector_layer(app_configs, **kwargs):
 
 
 @checks.register(checks.Tags.compatibility)
+def check_vector_app_requirements(app_configs, **kwargs):
+    """E: the vector app's models use ``HnswIndex``, which Django only
+    allows when ``django.contrib.postgres`` is installed.
+
+    Django does say so itself (``postgres.E005``), but it says it about a
+    model class — which reads like a library bug rather than a missing
+    line in the host's INSTALLED_APPS, and it only surfaces when the host
+    boots (`manage.py migrate` refused to run on the ironmemo stand,
+    2026-07-25, after the documented two install steps were followed to
+    the letter). This check names the fix in the module's own vocabulary,
+    and the install steps in ``vector/__init__.py`` now list the app.
+    """
+    from django.apps import apps
+
+    from .vector import vector_app_installed
+
+    if not vector_app_installed():
+        return []
+    if apps.is_installed("django.contrib.postgres"):
+        return []
+    return [checks.Error(
+        "'stapel_recordings.vector' needs 'django.contrib.postgres' in "
+        "INSTALLED_APPS — its embedding tables carry an HNSW index, which "
+        "Django refuses to build without that app (postgres.E005). Add "
+        "both apps, in this order: 'django.contrib.postgres', "
+        "'stapel_recordings', 'stapel_recordings.vector'.",
+        id="stapel_recordings.E003",
+    )]
+
+
+@checks.register(checks.Tags.compatibility)
 def check_reconcile_threshold(app_configs, **kwargs):
     """W: the reconcile stuck-threshold must exceed the longest legitimate
     stage duration, or the watchdog re-emits ``recording.stage`` for stages
