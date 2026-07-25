@@ -20,6 +20,7 @@ import time
 from datetime import timedelta
 
 from django.core.management.base import BaseCommand
+from django.db import close_old_connections
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,15 @@ class Command(BaseCommand):
         once = bool(options.get("once"))
         self.stdout.write(f"recordings_reconcile: started (once={once}, interval={interval}s)")
         while True:
+            # A management-command loop has no request boundary, so nothing
+            # ever retires a connection the server closed underneath it
+            # (restart, failover, pgbouncer/idle kill, a DB recreated on a
+            # stand). Django reuses the dead handle and EVERY later pass
+            # raises "server closed the connection unexpectedly" — the
+            # watchdog is then permanently down while looking alive, paging
+            # on each tick (ironmemo stand, 2026-07-26). This is the same
+            # line Celery/Channels put at the top of their loops.
+            close_old_connections()
             try:
                 n = self.reconcile_once()
                 m = self.cleanup_abandoned_uploads()
@@ -48,6 +58,9 @@ class Command(BaseCommand):
                     self.stdout.write(f"recordings_reconcile: re-drove {n}, abandoned {m}")
             except Exception:
                 logger.exception("recordings_reconcile: pass failed")
+                # Drop whatever is left of a possibly-broken connection so
+                # the next pass starts clean instead of inheriting it.
+                close_old_connections()
             if once:
                 break
             time.sleep(interval)

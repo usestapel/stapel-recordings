@@ -4,6 +4,18 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.6.2] — 2026-07-26
+
+### Fixed
+- **The reconcile watchdog survives a dropped database connection.** Its
+  loop has no request boundary, so nothing retired a connection the server
+  had closed underneath it (restart, failover, pgbouncer idle-kill, a
+  stand's database recreated) — Django reused the dead handle and every
+  later pass raised `server closed the connection unexpectedly`, forever,
+  paging on each tick while the watchdog looked alive. `close_old_connections()`
+  now runs at the top of each pass and again after a failed one, the same
+  line Celery and Channels put in their loops.
+
 ## [0.6.1] — 2026-07-25
 
 ### Fixed

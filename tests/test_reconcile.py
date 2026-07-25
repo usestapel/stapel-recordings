@@ -133,3 +133,41 @@ def test_cleanup_abandoned_is_a_conditional_update(make_recording):
     r.refresh_from_db()
     assert r.status == RecordingStatus.QUEUED  # not clobbered to error
     assert r.metadata == {"pipeline": {"stage_index": 0}}
+
+
+def test_each_pass_retires_stale_connections(monkeypatch):
+    """A loop with no request boundary keeps a connection the server may
+    have closed (restart, failover, a stand's DB recreated). Django reuses
+    the dead handle and every later pass raises "server closed the
+    connection unexpectedly" — the watchdog looks alive and is not."""
+    from stapel_recordings.management.commands import recordings_reconcile as mod
+
+    calls = {"closed": 0, "passes": 0}
+    monkeypatch.setattr(mod, "close_old_connections",
+                        lambda: calls.__setitem__("closed", calls["closed"] + 1))
+
+    command = mod.Command()
+    monkeypatch.setattr(command, "reconcile_once",
+                        lambda: calls.__setitem__("passes", calls["passes"] + 1) or 0)
+    monkeypatch.setattr(command, "cleanup_abandoned_uploads", lambda: 0)
+
+    command.handle(once=True, poll_interval=0.01)
+    assert calls == {"closed": 1, "passes": 1}
+
+
+def test_a_failed_pass_drops_the_connection_too(monkeypatch):
+    from stapel_recordings.management.commands import recordings_reconcile as mod
+
+    closed = []
+    monkeypatch.setattr(mod, "close_old_connections", lambda: closed.append(1))
+
+    command = mod.Command()
+
+    def boom():
+        raise RuntimeError("server closed the connection unexpectedly")
+
+    monkeypatch.setattr(command, "reconcile_once", boom)
+    monkeypatch.setattr(command, "cleanup_abandoned_uploads", lambda: 0)
+
+    command.handle(once=True, poll_interval=0.01)  # must not propagate
+    assert len(closed) == 2  # before the pass, and again after it failed
