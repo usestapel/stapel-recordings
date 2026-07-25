@@ -13,6 +13,7 @@ Runs entirely on the canonical sqlite suite:
 import logging
 
 import pytest
+from django.db import connection
 from django.test import override_settings
 
 from stapel_recordings.conf import vector_config
@@ -23,7 +24,18 @@ from stapel_recordings.vector.search import (
     search_recordings,
 )
 
-pytestmark = pytest.mark.django_db
+pytestmark = [
+    pytest.mark.django_db,
+    # Base orders here ARE the sqlite text arm's degraded `icontains`
+    # order (uniform score, sequence_num) — under the opt-in postgres
+    # harness the same queries come back FTS-ranked, so every "reranked
+    # vs base order" assertion would compare against a different base.
+    # DB-bound coverage of the same paths lives in test_vector_postgres.py.
+    pytest.mark.skipif(
+        connection.vendor == "postgresql",
+        reason="rerank ordering assertions are shaped by the sqlite text arm",
+    ),
+]
 
 
 def _rerank_settings(**over) -> dict:

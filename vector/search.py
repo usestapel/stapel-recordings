@@ -13,6 +13,15 @@ recording id, score, snippet). Three modes:
   cosine distance over ``SegmentEmbedding`` (score = 1 - distance).
   Requires postgres + the vector app; otherwise raises
   :class:`VectorSearchUnavailable` — hosts decide how to degrade.
+  **Model isolation**: the candidate set is filtered to rows whose
+  ``model`` equals the model that embedded THIS query (as reported by
+  ``llm.embed``, which is exactly what the embed stage stamps on each
+  row). Two models produce two incomparable spaces of the same width, so
+  without the filter a changed embedder silently degrades ranking to
+  noise instead of returning nothing. Rows written under an older model
+  simply stop matching — re-embed them with the ``recordings_reembed``
+  management command (``VECTOR["SEARCH_MODEL_FILTER"] = False`` opts out,
+  e.g. to keep serving during a migration).
 - ``"hybrid"`` (default) — both arms fetch up to ``VECTOR["ARM_LIMIT"]``
   candidates each and are fused with **reciprocal-rank fusion**:
 
@@ -402,7 +411,7 @@ def _vector_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHi
     from .embedding import embed_texts
 
     try:
-        _model, vectors = embed_texts([query], cfg)
+        query_model, vectors = embed_texts([query], cfg)
     except StageError as exc:
         raise VectorSearchUnavailable(f"query embedding failed: {exc}") from exc
     query_vector = vectors[0]
@@ -412,8 +421,13 @@ def _vector_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHi
     from .models import SegmentEmbedding
 
     qs = SegmentEmbedding.objects.select_related("segment")
-    if cfg.get("MODEL"):
-        qs = qs.filter(model=cfg["MODEL"])
+    if cfg["SEARCH_MODEL_FILTER"]:
+        # Cosine distance between vectors from DIFFERENT models is
+        # meaningless (they are different spaces of the same width), so
+        # the ANN candidate set is restricted to rows stamped with the
+        # model that just embedded THIS query — the same string the embed
+        # stage stamps, since both take it from the llm.embed response.
+        qs = qs.filter(model=query_model)
     if workspace_id is not None:
         qs = qs.filter(segment__recording__workspace_id=workspace_id)
     if recording_ids is not None:

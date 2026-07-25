@@ -46,6 +46,14 @@ DEFAULT_VECTOR = {
     "MODEL": "",
     # Optional provider override forwarded to llm.embed ("" = agent default).
     "PROVIDER": "",
+    # Vector arm: restrict ANN candidates to rows stamped with the model
+    # that embedded the query (the model llm.embed REPORTS, not the MODEL
+    # pin above — they can differ in spelling, and "" means "agent
+    # default"). Vectors from two models are two incomparable spaces of
+    # the same width; mixing them makes cosine ranking silently garbage.
+    # Set False only to deliberately search across models (e.g. mid
+    # re-embed) — the reindex path is the `recordings_reembed` command.
+    "SEARCH_MODEL_FILTER": True,
     # Texts per llm.embed call.
     "BATCH_SIZE": 64,
     # timeout_seconds forwarded to llm.embed.

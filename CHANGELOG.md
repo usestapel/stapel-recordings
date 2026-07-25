@@ -4,6 +4,40 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.6.0] — 2026-07-25
+
+Minor (**behaviour change in vector search**): embedding spaces are now
+isolated per model, and there is a supported way back after an embedder
+swap.
+
+### Changed
+- **Vector arm filters by the query's embedding model** (`vector/
+  search.py`). Candidates are restricted to `SegmentEmbedding` rows whose
+  `model` equals the model `llm.embed` reported for THIS query — the same
+  string the embed stage stamps on every row. Previously the filter only
+  applied when `VECTOR["MODEL"]` was pinned (it is `""` by default), so a
+  host that changed embedders silently mixed two incomparable spaces of
+  the same width and cosine ranking degraded to noise. Now old-model rows
+  simply stop matching, which is decidable and repairable. Opt out with
+  `VECTOR["SEARCH_MODEL_FILTER"] = False` (e.g. to keep serving during a
+  migration).
+- `embed_recording(recording, store=None, *, force=False)` gained
+  `force`: with `VECTOR["MODEL"]` unpinned the content-hash check cannot
+  tell "already embedded by the CURRENT model" from "embedded by the
+  previous one" (the model name only arrives in the `llm.embed`
+  response), so a plain re-run after a swap skipped everything and left
+  the new space empty. The pipeline stage never sets it.
+
+### Added
+- **`manage.py recordings_reembed`** — the reindex path after an embedder
+  change. `--dry-run` reports the scope and stored rows per model without
+  calling any provider; `--force` re-embeds texts already stored;
+  `--prune-other-models --keep-model <name>` deletes rows left on the old
+  model (never implicit); scope narrows with `--workspace` / `--recording`
+  (repeatable) / `--limit`. A pass that embeds nothing without `--force`
+  says why.
+- `VECTOR["SEARCH_MODEL_FILTER"]` (default `True`).
+
 ## [0.5.2] — 2026-07-24
 
 ### Added

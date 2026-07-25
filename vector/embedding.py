@@ -212,11 +212,20 @@ def _hash_known(entries, h: str, cfg_model: str) -> bool:
     )
 
 
-def embed_recording(recording, store=None) -> dict:
+def embed_recording(recording, store=None, *, force: bool = False) -> dict:
     """Embed all missing segment texts + summary chunks for *recording*.
 
     Returns counters (``segments_embedded`` / ``summary_chunks_embedded``)
-    for logging/tests. Assumes the EmbedStage gate already passed."""
+    for logging/tests. Assumes the EmbedStage gate already passed.
+
+    ``force`` re-embeds every text even when its hash is already stored —
+    the reindex path after an embedder swap. It is needed because with
+    ``VECTOR["MODEL"]`` unpinned the hash check cannot tell "already
+    embedded by the CURRENT model" from "embedded by the previous one"
+    (the model name only arrives in the llm.embed response), so a plain
+    re-run would skip everything and leave the new-model space empty.
+    The ``recordings_reembed`` management command exposes it as
+    ``--force``; the pipeline stage never sets it."""
     from ..conf import vector_config
 
     cfg = vector_config()
@@ -229,7 +238,7 @@ def embed_recording(recording, store=None) -> dict:
     pending = []
     for seg in segments:
         h = content_hash(seg.text)
-        if _hash_known(known.get(seg.id, ()), h, cfg_model):
+        if not force and _hash_known(known.get(seg.id, ()), h, cfg_model):
             continue  # idempotent: unchanged text already embedded
         pending.append((seg, h))
 
@@ -250,7 +259,7 @@ def embed_recording(recording, store=None) -> dict:
         pending_chunks = [
             (idx, chunk, content_hash(chunk))
             for idx, chunk in enumerate(chunks)
-            if not any(
+            if force or not any(
                 ci == idx and hh == content_hash(chunk)
                 and (not cfg_model or m == cfg_model)
                 for ci, m, hh in known_chunks

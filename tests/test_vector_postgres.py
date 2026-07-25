@@ -56,6 +56,9 @@ def stub_embed():
     class Recorder:
         def __init__(self):
             self.calls = []
+            # Reported model — mutable so a test can simulate a swapped
+            # embedder (the search arm filters candidates by it).
+            self.model = "stub-embed-1"
             # Orthogonal-ish fixed vectors keyed by first word, so cosine
             # ordering is predictable.
             self.by_word = {
@@ -72,7 +75,7 @@ def stub_embed():
             ]
             return {
                 "status": "ok",
-                "embeddings": {"provider": "stub", "model": "stub-embed-1", "dim": 3, "vectors": vectors},
+                "embeddings": {"provider": "stub", "model": self.model, "dim": 3, "vectors": vectors},
             }
 
     recorder = Recorder()
@@ -164,3 +167,65 @@ def test_summary_chunks_persist(make_recording, stub_embed):
     chunks = RecordingEmbedding.objects.filter(recording=rec).order_by("chunk_index")
     assert chunks.count() >= 2
     assert list(chunks.values_list("chunk_index", flat=True)) == list(range(chunks.count()))
+
+
+# ─── Embedding-space isolation (model filter) + reindex command ────────
+
+
+def test_vector_arm_ignores_rows_of_another_model(embedded_recording, stub_embed):
+    """A swapped embedder must make old rows INVISIBLE, not silently
+    comparable: cosine distance across two models' spaces is noise."""
+    from stapel_recordings.vector.search import search_recordings
+
+    stub_embed.model = "stub-embed-2"  # the query now embeds under a new model
+    with override_settings(STAPEL_RECORDINGS=_VEC):
+        hits = search_recordings("charlie something", mode="vector", limit=5)
+    assert hits == []
+
+
+def test_search_model_filter_can_be_disabled(embedded_recording, stub_embed):
+    from stapel_recordings.vector.search import search_recordings
+
+    stub_embed.model = "stub-embed-2"
+    cfg = {"VECTOR": {**_VEC["VECTOR"], "SEARCH_MODEL_FILTER": False}}
+    with override_settings(STAPEL_RECORDINGS=cfg):
+        hits = search_recordings("charlie something", mode="vector", limit=5)
+    assert hits  # opt-out: the old-model rows are matched again
+
+
+def test_reembed_command_rebuilds_rows_under_the_new_model(embedded_recording, stub_embed):
+    from django.core.management import call_command
+
+    from stapel_recordings.vector.models import SegmentEmbedding
+
+    stub_embed.model = "stub-embed-2"
+    # Without --force the hash check cannot tell "already embedded by the
+    # CURRENT model" from "embedded by the previous one" — the pass is a
+    # documented no-op that says so.
+    with override_settings(STAPEL_RECORDINGS=_VEC):
+        call_command("recordings_reembed", "--recording", str(embedded_recording.id))
+    rows = SegmentEmbedding.objects.filter(segment__recording=embedded_recording)
+    assert rows.filter(model="stub-embed-2").count() == 0
+
+    with override_settings(STAPEL_RECORDINGS=_VEC):
+        call_command(
+            "recordings_reembed", "--recording", str(embedded_recording.id), "--force",
+        )
+    assert rows.filter(model="stub-embed-2").count() == 3
+    assert rows.filter(model="stub-embed-1").count() == 3  # kept until pruned
+
+    with override_settings(STAPEL_RECORDINGS=_VEC):
+        call_command(
+            "recordings_reembed", "--recording", str(embedded_recording.id),
+            "--prune-other-models", "--keep-model", "stub-embed-2",
+        )
+    assert list(rows.values_list("model", flat=True)) == ["stub-embed-2"] * 3
+
+
+def test_reembed_dry_run_calls_no_provider(embedded_recording, stub_embed):
+    from django.core.management import call_command
+
+    calls_before = len(stub_embed.calls)
+    with override_settings(STAPEL_RECORDINGS=_VEC):
+        call_command("recordings_reembed", "--dry-run")
+    assert len(stub_embed.calls) == calls_before

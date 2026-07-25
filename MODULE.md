@@ -224,7 +224,16 @@ limit=20) -> [SearchHit(segment_id, recording_id, score, snippet)]`.
   own GIN index / SearchVectorField. Off postgres this mode degrades to
   `icontains` (score 1.0) so it works everywhere.
 - *vector* — the query goes through `llm.embed`, then cosine distance over
-  `SegmentEmbedding` (score = 1 − distance).
+  `SegmentEmbedding` (score = 1 − distance). Candidates are restricted to
+  rows whose `model` equals the model that embedded **this query** (the
+  name `llm.embed` reports — exactly what the embed stage stamps), because
+  two models are two incomparable spaces of the same width: without the
+  filter a swapped embedder degrades ranking to noise instead of returning
+  nothing. Rows on an older model simply stop matching — rebuild them with
+  `manage.py recordings_reembed --force` (`--dry-run` lists what is stored
+  per model, `--prune-other-models --keep-model <name>` drops the old
+  space). `VECTOR["SEARCH_MODEL_FILTER"] = False` opts out, e.g. to keep
+  serving during a migration.
 - *hybrid* — both arms fetch up to `VECTOR["ARM_LIMIT"]` candidates and are
   fused with **reciprocal-rank fusion**: `score = Σ_arm WEIGHT_arm /
   (RRF_K + rank_arm)` — rank-based, so the arms' incomparable score scales
