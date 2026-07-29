@@ -19,6 +19,8 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
+from stapel_core.hashing import canonical_hash
+
 SCHEMA_VERSION = "1.0"
 PIPELINE_VERSION = "2.0.0"
 
@@ -97,7 +99,11 @@ class UnifiedTranscript:
 def from_db_segments(recording) -> UnifiedTranscript:
     """Build a UnifiedTranscript from persisted Segment/Speaker rows."""
     segments_qs = list(recording.segments.select_related("speaker").order_by("sequence_num"))
-    speakers_qs = list(recording.speakers.all())
+    # Explicit ORDER BY even though Speaker.Meta.ordering already supplies one:
+    # the positional ``spk_N`` ids assigned below are part of the transcript's
+    # identity, so the ordering they depend on is stated where it is relied upon
+    # rather than inherited silently from a model two files away.
+    speakers_qs = list(recording.speakers.order_by("label", "id"))
 
     pk_to_spk_id: dict[str, str] = {}
     unified_speakers: list[UnifiedSpeaker] = []
@@ -291,6 +297,100 @@ def build_summary_input(
     }
 
 
+# ─── Version key ───────────────────────────────────────────────────────
+#
+# Derived work needs to say which transcript it was built from: a summary, an
+# LLM extraction whose evidence anchors point at turn indices, a user's edit
+# log. ``updated_at`` cannot answer that (it moves when nothing meaningful
+# changed) and a revision counter cannot either. A hash of the content can —
+# but only if "the content" is decided deliberately.
+#
+# The criterion here is: **content is what the model saw, plus what an anchor
+# indexes into.** Everything the transcript carries for other reasons —
+# provenance, quality verdicts, colours, the recording's own bookkeeping — is
+# not content, because changing it does not move a single turn and must not
+# invalidate a single derived artifact.
+#
+# Getting this wrong is not a loud failure. Fold ``updated_at`` into the hash
+# and the key changes on every save, so every summary and every user
+# correction reads as stale forever, with nothing in the logs to say why. Fold
+# in ``title`` and renaming a meeting throws away its extraction. That is the
+# exact shape of the bug this classification exists to prevent, and it is why
+# both halves are listed explicitly below: a field added to the schema with no
+# decision recorded fails ``test_version_key`` rather than defaulting into
+# whichever half the author happened not to think about.
+
+#: Scalars of UnifiedTranscript that are content.
+_CONTENT_TRANSCRIPT_SCALARS = frozenset({"schema_version", "meeting_id", "duration_ms"})
+
+#: Fields of UnifiedTranscript that are content but need their own projection.
+_CONTENT_TRANSCRIPT_COMPOSITES = frozenset({"language", "speakers", "segments"})
+
+#: Fields of UnifiedTranscript deliberately outside the key.
+#: ``engine`` — which ASR produced this. Re-running a different provider yields
+#:   different segments, so a real re-transcription already changes the key
+#:   through them; the label alone is provenance.
+#: ``qa`` — a verdict *about* the transcript, computed from it. Hashing it
+#:   would let a change in the QA rules invalidate untouched transcripts.
+_NON_CONTENT_TRANSCRIPT = frozenset({"engine", "qa"})
+
+#: ``path`` records *how* the language was decided ("A" auto / "B" user), which
+#: never reaches the model; ``routed``/``detected`` are rendered in the header.
+_CONTENT_LANGUAGE = frozenset({"routed", "detected"})
+_NON_CONTENT_LANGUAGE = frozenset({"path"})
+
+#: ``name`` is content because it is rendered in place of the label — and
+#: because renaming a speaker is precisely the kind of user edit that must
+#: invalidate a summary quoting them. ``color`` is presentation; ``db_id`` is a
+#: join key that never reaches the model.
+_CONTENT_SPEAKER = frozenset({"speaker_id", "name"})
+_NON_CONTENT_SPEAKER = frozenset({"db_id", "color"})
+
+#: ``words`` is excluded: the word grid is never rendered and no anchor points
+#: into it, so re-aligning words leaves every turn anchor valid.
+#: TODO(word-level edits): a future split-segment edit operates on the word
+#: grid; when that ships, ``words`` becomes content and the key changes for
+#: every transcript that has one — a migration, not a patch.
+#: ``lang`` is per-segment detection metadata, not rendered.
+_CONTENT_SEGMENT = frozenset({"id", "start_ms", "end_ms", "speaker_id", "text"})
+_NON_CONTENT_SEGMENT = frozenset({"words", "lang"})
+
+
+def _project(obj, field_names: frozenset) -> dict:
+    """Pick exactly ``field_names`` off ``obj``, key-sorted.
+
+    Driven by the same frozensets the guard test checks, so the projection and
+    the classification cannot drift apart — a field marked as content that the
+    builder forgot is not a possible state.
+    """
+    return {name: getattr(obj, name) for name in sorted(field_names)}
+
+
+def transcript_content(transcript: UnifiedTranscript) -> dict:
+    """The content projection of ``transcript`` — the input to its version key.
+
+    Public because a digest tells you *that* two transcripts differ and nothing
+    about *where*; when a key changes unexpectedly, diffing two projections is
+    how you find out which turn moved.
+    """
+    return {
+        **_project(transcript, _CONTENT_TRANSCRIPT_SCALARS),
+        "language": _project(transcript.language, _CONTENT_LANGUAGE),
+        "speakers": [_project(s, _CONTENT_SPEAKER) for s in transcript.speakers],
+        "segments": [_project(s, _CONTENT_SEGMENT) for s in transcript.segments],
+    }
+
+
+def transcript_hash(transcript: UnifiedTranscript) -> str:
+    """Stable ``sha256:<hex>`` identifying this transcript's content.
+
+    Equal keys mean derived work is still about this transcript. Unequal means
+    it is not, and must be recomputed or flagged — a deterministic comparison,
+    never a heuristic about how much changed.
+    """
+    return canonical_hash(transcript_content(transcript))
+
+
 # ─── Helpers ───────────────────────────────────────────────────────────
 
 
@@ -314,4 +414,6 @@ __all__ = [
     "run_qa",
     "render_markdown",
     "build_summary_input",
+    "transcript_content",
+    "transcript_hash",
 ]

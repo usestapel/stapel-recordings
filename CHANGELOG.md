@@ -4,6 +4,53 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.7.0] — 2026-07-29
+
+### Added
+- **`transcript_hash()` / `transcript_content()`** — a version key for a
+  transcript. Anything derived from a transcript (a summary, an LLM extraction
+  whose evidence anchors point at turn indices, a user's edit log) needs to say
+  which transcript it came from, and needs that answer to survive being asked
+  again months later by a different process.
+- The key hashes a **content projection**, not the record. Content is defined
+  as *what the model saw, plus what an anchor indexes into*: turn ids, times,
+  text, speaker attribution, the speaker names that get rendered in place of
+  labels, and the header fields (duration, language). Everything the transcript
+  carries for other reasons — provenance, QA verdicts, colours, join keys, the
+  word grid — is outside the key, because changing it moves no turn.
+- Getting that boundary wrong fails quietly in both directions, so both are
+  tested. Hash the recording row wholesale — the obvious implementation — and
+  `updated_at` (an `auto_now` field) mints a new key on every save: every
+  summary and every user correction reads as stale forever, and a real edit
+  becomes indistinguishable from a touched row. Hash too little and a summary
+  keeps quoting a turn that was edited out.
+- Both halves of the classification are declared explicitly, so adding a field
+  to the schema fails `test_version_key` until someone decides which half it
+  belongs to. A field nobody classified is a field nobody thought about, and
+  defaulting it to "not content" is the wrong default: if it turns out to be
+  rendered, edits to it silently stop invalidating anything.
+
+### Fixed
+- **The canonical transcript was not, in fact, canonical.** Speakers are
+  numbered positionally (`spk_0`, `spk_1`, …) from `recording.speakers`, and
+  that queryset had no `ORDER BY` — so the database was free to return the rows
+  in any order it liked. The same untouched recording could canonicalize two
+  different ways between two reads: different speaker ids on the segments,
+  a different transcript rendered to the LLM, and a different version key.
+  `Speaker.Meta.ordering = ["label", "id"]` (migration `0002`, metadata only,
+  no SQL) plus an explicit `order_by` at the canonicalization site, stated
+  where it is relied upon rather than inherited silently from a model two files
+  away.
+
+### Changed
+- **BREAKING** — for a recording whose speaker rows were not inserted in label
+  order, `spk_N` ids now differ from what earlier versions emitted. Stored
+  `transcript.json` artifacts keep their old ids; a rebuild produces the
+  corrected ones. This is the fix above, not a separate decision.
+- Requires `stapel-core>=0.15.10` for `stapel_core.hashing`. Imported at module
+  level, so an older core is an ImportError at startup — not a missing feature
+  discovered later.
+
 ## [0.6.2] — 2026-07-26
 
 ### Fixed

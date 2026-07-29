@@ -168,6 +168,17 @@ class Speaker(models.Model):
 
     class Meta:
         db_table = "recordings_speaker"
+        # Load-bearing, not cosmetic. The canonical transcript numbers speakers
+        # positionally (``spk_0``, ``spk_1``, ...) from this queryset, and those
+        # ids are what segments reference, what the transcript renders to an LLM,
+        # and what the transcript version key hashes. Without an ORDER BY the
+        # database is free to hand rows back in any order it likes, so the same
+        # unedited recording could canonicalize two different ways between reads
+        # — one transcript, two version keys, and every derived artifact
+        # (summary, extraction, user corrections) reading as stale for no
+        # reason. ``label`` is the provider's own numbering; ``id`` only breaks
+        # ties so the order is total.
+        ordering = ["label", "id"]
         indexes = [models.Index(fields=["recording"], name="rec_speaker_rec_idx")]
 
 
