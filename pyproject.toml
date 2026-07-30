@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.7.0"
+version = "0.8.0"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
     # >=0.15.10 for stapel_core.hashing — transcript_schema imports it at module
     # level, so an older core is an ImportError at startup, not a missing feature.
-    "stapel-core>=0.15.10,<1.0",
+    "stapel-core>=0.16,<1.0",
 ]
 
 [project.urls]

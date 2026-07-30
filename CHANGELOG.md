@@ -4,6 +4,56 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.8.0] — 2026-07-30
+
+### Changed (BREAKING for anonymous callers) — a recording needs an owner who still exists tomorrow (#168)
+
+`stapel-core` 0.16 turns the `AUTH_ANONYMOUS` axis into a question this
+module never answered. A guest session is `is_authenticated`, so a bare
+`IsAuthenticated` gate lets it through — and all four views were gated on
+exactly that (`stapel_core.adoption` W002 reported all four against a real
+deployment).
+
+The answer is uniform here, because it follows from what a recording *is*:
+
+> **a recording is a durable, owned artifact with a processing pipeline
+> behind it — an anonymous session is not an owner.**
+
+All four views now carry `IsNotAnonymousUser`; an anonymous session gets
+**403** where it previously got 200/201.
+
+- `POST /recordings` is the one that was genuinely open, and the most
+  expensive endpoint in the module: it mints a row, opens an upload session
+  and enqueues transcription, diarization and summarization. Metering that on
+  an account stops meaning anything when a session costs one unauthenticated
+  POST to mint.
+- `POST /recordings/{id}/finalize` is what actually starts that pipeline, and
+  `POST /recordings/{id}/reprocess` is the one verb that can spend its cost a
+  second time.
+- `GET /recordings` and `GET /recordings/{id}` were already owner-scoped
+  (`_owned_qs`) or membership-scoped (`?workspace_id=`), so a guest's answers
+  were an empty list and 404 all along. For those two the change moves an
+  existing refusal to the door, where it can be read from the class header.
+
+No consumer is affected: nothing in the fleet calls this module's HTTP
+surface under a guest session, and the one product that mounts it
+(meettoday) had already closed its own six recording views the same way.
+
+Minor per this project's pre-1.0 rule (minor = breaking): for a deployment
+with `AUTH_ANONYMOUS` on this is a behaviour change on a live surface, and it
+is visible in the published contract — `docs/schema.json` now documents
+`IsNotAnonymousUser` on all five operations. Deployments without guest
+sessions are unaffected; an ordinary authenticated user passes
+`IsNotAnonymousUser` exactly as before.
+
+New `tests/test_guest_surface.py` pins the door shut, and pins that it is
+shut for *anonymous* rather than for *authenticated*.
+
+### Changed
+
+- Minimum `stapel-core` raised to `>=0.16` (the release that added
+  `ANONYMOUS_ALLOWED` / `ANONYMOUS_DENIED`).
+
 ## [0.7.0] — 2026-07-29
 
 ### Added

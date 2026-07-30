@@ -3,11 +3,32 @@
 Thin views over the service layer. Each view carries a request/response
 serializer seam (``SerializerSeamMixin``) so a host can swap the contract
 by subclassing — no need to rewrite the method bodies.
+
+Guest (anonymous session) stance
+--------------------------------
+With ``AUTH_ANONYMOUS`` on, a guest session is ``is_authenticated``, so a bare
+``IsAuthenticated`` says nothing about whether guests belong on a view
+(``stapel_core.adoption`` E001/W002). This module's answer is the same for all
+four views, because it follows from what a recording *is*:
+
+    **a recording is a durable, owned artifact with a processing pipeline
+    behind it — an anonymous session is not an owner.**
+
+Every per-recording verb here is already owner-scoped through
+:func:`_owned_qs`, so a guest's answer was 404 or an empty listing all along;
+for those, ``IsNotAnonymousUser`` only moves an existing refusal to the door
+where it can be read.
+
+``POST /recordings`` is the one that was genuinely open, and it is the most
+expensive endpoint in the module: it mints a row, opens an upload session,
+and enqueues transcription/diarization/summarization. Metering that on an
+account stops meaning anything when a session costs one unauthenticated POST
+to mint — so it is gated on a real account, not on being logged in.
 """
 from drf_spectacular.utils import OpenApiParameter, extend_schema
-from rest_framework import permissions
 from rest_framework.views import APIView
 from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse
+from stapel_core.django.api.permissions import IsNotAnonymousUser
 
 from . import pipeline, services
 from .dto import CreateRecordingResponse, recording_to_dto, upload_session_to_dto
@@ -70,7 +91,11 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
     genuine nor surface a distinct error for a value the client only ever
     obtains from a prior server response."""
 
-    permission_classes = [permissions.IsAuthenticated]
+    # POST mints a row, opens an upload session and enqueues the whole
+    # transcription pipeline — the most expensive endpoint here, and the only
+    # one a guest could actually have used. GET was already owner- or
+    # membership-scoped, so nothing readable is lost. See the module header.
+    permission_classes = [IsNotAnonymousUser]
     request_serializer_class = CreateRecordingRequestSerializer
     response_serializer_class = CreateRecordingResponseSerializer
 
@@ -145,7 +170,9 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
 class RecordingDetailView(SerializerSeamMixin, APIView):
     """Fetch a single recording."""
 
-    permission_classes = [permissions.IsAuthenticated]
+    # Owner-scoped via `_owned_qs`: a guest owns nothing, so this was already
+    # a 404 for every id. The gate now says so at the door.
+    permission_classes = [IsNotAnonymousUser]
     response_serializer_class = RecordingSerializer
 
     @extend_schema(responses={200: RecordingSerializer})
@@ -160,7 +187,10 @@ class RecordingDetailView(SerializerSeamMixin, APIView):
 class FinalizeUploadView(SerializerSeamMixin, APIView):
     """Finalize the upload and enqueue the pipeline."""
 
-    permission_classes = [permissions.IsAuthenticated]
+    # The second half of the expensive path: it is what actually starts the
+    # pipeline. Owner-scoped, and a guest can no longer own a recording to
+    # finalize.
+    permission_classes = [IsNotAnonymousUser]
     request_serializer_class = FinalizeUploadRequestSerializer
     response_serializer_class = RecordingSerializer
 
@@ -191,7 +221,9 @@ class ReprocessRecordingView(SerializerSeamMixin, APIView):
     (``error.409.recording_invalid_state``). Owner-scoped, like every other
     per-recording verb; an unknown/foreign/deleted recording is ``404``."""
 
-    permission_classes = [permissions.IsAuthenticated]
+    # Re-runs every pipeline stage from zero — the one endpoint that can spend
+    # the pipeline's cost twice. Owner-scoped, now also account-gated.
+    permission_classes = [IsNotAnonymousUser]
     response_serializer_class = RecordingSerializer
 
     @extend_schema(request=None, responses={200: RecordingSerializer})
