@@ -71,7 +71,9 @@ CANONICAL_PREFIX = "/recordings/api/v1/"
 # STAPEL_RECORDINGS, emitted from conf.py DEFAULTS + the urls.py gate
 # registry + schema.json + the curated docs/capabilities.meta.json.
 # Same emit/drift discipline.
-ARTIFACTS = TRIAD + ("capabilities.json",)
+# The fifth artifact (badge-canon §3): docs/llms.txt, rendered from
+# docs/capabilities.json (+schema/errors/flows) by stapel_tools.llms_txt.
+ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
 
 
 def _emit(out_dir: Path) -> None:
@@ -82,6 +84,15 @@ def _emit(out_dir: Path) -> None:
             check=True,
             capture_output=True,
         )
+    # llms.txt is rendered from the REAL committed docs/capabilities.json (not
+    # the just-regenerated tmp one) — same as `make contract-check` — so this
+    # step also catches a stale llms.txt independently of the loop above.
+    subprocess.run(
+        [sys.executable, "-m", "stapel_tools.llms_txt", ".", "--out", str(out_dir)],
+        cwd=str(REPO),
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_contract_artifacts_committed():
