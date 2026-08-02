@@ -60,7 +60,7 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-stapel_recordings = ["py.typed", "migrations/*.py", "vector/migrations/*.py", "schemas/**/*.json", "docs/capabilities.json", "docs/flows.json", "docs/errors.json", "CONFIG.MD"]
+stapel_recordings = ["py.typed", "migrations/*.py", "vector/migrations/*.py", "schemas/**/*.json", "docs/capabilities.json", "docs/flows.json", "docs/errors.json", "docs/llms.txt", "CONFIG.MD"]
 
 [tool.ruff]
 target-version = "py311"
