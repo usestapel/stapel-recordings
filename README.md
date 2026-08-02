@@ -1,8 +1,11 @@
 # stapel-recordings
 
-[![CI](https://github.com/usestapel/stapel-recordings/actions/workflows/ci.yml/badge.svg)](https://github.com/usestapel/stapel-recordings/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/usestapel/stapel-recordings/graph/badge.svg)](https://codecov.io/gh/usestapel/stapel-recordings)
-[![PyPI](https://img.shields.io/pypi/v/stapel-recordings.svg)](https://pypi.org/project/stapel-recordings/)
+[![CI](https://img.shields.io/github/actions/workflow/status/usestapel/stapel-recordings/ci.yml?branch=main&logo=github&label=CI)](https://github.com/usestapel/stapel-recordings/actions/workflows/ci.yml?query=branch%3Amain)
+[![coverage](https://img.shields.io/codecov/c/github/usestapel/stapel-recordings?branch=main&logo=codecov&label=coverage)](https://app.codecov.io/gh/usestapel/stapel-recordings)
+[![pypi](https://img.shields.io/pypi/v/stapel-recordings?logo=pypi&logoColor=white&label=pypi)](https://pypi.org/project/stapel-recordings/)
+[![downloads](https://static.pepy.tech/badge/stapel-recordings/month)](https://pepy.tech/project/stapel-recordings)
+[![python](https://img.shields.io/pypi/pyversions/stapel-recordings?logo=python&logoColor=white)](https://pypi.org/project/stapel-recordings/)
+[![license](https://img.shields.io/github/license/usestapel/stapel-recordings)](https://github.com/usestapel/stapel-recordings/blob/main/LICENSE)
 
 Recording lifecycle and transcription for the [Stapel framework](https://github.com/usestapel) —
 composable Django apps that deploy as a monolith or as microservices
