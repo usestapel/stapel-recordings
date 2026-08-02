@@ -4,6 +4,16 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.8.1] — 2026-08-02
+
+### Changed
+
+- Contract documents ship in the wheel (`package-data`) (#184).
+- Badge canon + Python 3.14 classifier.
+- `docs/llms.txt` — the fifth contract artifact (badge-canon §3), emitted
+  by `stapel_tools.llms_txt` and checked by the `make contract-check`
+  drift gate.
+
 ## [0.8.0] — 2026-07-30
 
 ### Changed (BREAKING for anonymous callers) — a recording needs an owner who still exists tomorrow (#168)
