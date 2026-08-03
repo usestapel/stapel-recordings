@@ -1,5 +1,5 @@
 {
-  "_comment": "Hand-curated layer of docs/capabilities.json (capability-config.md §2 p.3). The emitter (stapel_recordings/_capabilities.py) merges this over the derived axes; an axis present in conf.py DEFAULTS but missing here (or vice versa) is a loud emission error. Keep business_label/summary in business language — they surface in CTO conversations, not in code.",
+  "_comment": "Hand-curated layer of docs/capabilities.json (capability-config.md §2 p.3). The emitter (stapel_recordings/_capabilities.py) merges this over the derived axes; an axis present in conf.py DEFAULTS but missing here (or vice versa) is a loud emission error. Keep business_label/summary in business language — they surface in CTO conversations, not in code. `surface_roots` + `surface` are the third section (stapel_tools.surface): the usage surface — the symbols a host or a sibling module is meant to CALL instead of writing its own. The roots are scopes, not lists, so every public module-level function in a rooted file MUST carry an intent line here or emission fails naming it. Deliberately NOT rooted: events.py (the driver emits the lifecycle Actions itself, inside the stage transaction — host code that emits them double-publishes a public event), normalize.py (implementations of the NORMALIZER seam, reached by dotted path, never called) and checks.py (Django check callbacks, invoked by the check framework).",
   "provides": "Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.",
   "requires": [
     {
@@ -60,6 +60,180 @@
       "business_label": "Automatic meeting summaries",
       "summary": "When on, each completed transcript is additionally summarized (via the agent module's language model) and the summary is stored on the recording; the transcript itself is always produced.",
       "behavior": "When on, the merge stage calls llm.summarize on the finished transcript and stores the result; a summary failure never fails the recording."
+    }
+  },
+  "surface_roots": [
+    {
+      "select": "functions",
+      "path": "services.py"
+    },
+    {
+      "select": "functions",
+      "path": "storage.py"
+    },
+    {
+      "select": "functions",
+      "path": "pipeline.py"
+    },
+    {
+      "select": "functions",
+      "path": "stages.py"
+    },
+    {
+      "select": "functions",
+      "path": "sources.py"
+    },
+    {
+      "select": "functions",
+      "path": "resources.py"
+    }
+  ],
+  "surface": {
+    "validated_upload_ext": {
+      "kind": "gate_function",
+      "intent": "The one place an upload filename is judged: returns the object-key suffix (\".mp3\") when the extension is in UPLOAD_EXTENSION_ALLOWLIST, raises UnsupportedUploadExtension otherwise. Reach for this instead of a hand-rolled whitelist or a FileExtensionValidator with a literal list — a second allowlist is a second thing to extend when the host's NORMALIZER learns a new container, and the one that gets forgotten is the one that lets an unhandled file into the pipeline.",
+      "instead_of": [
+        "django.core.validators.FileExtensionValidator"
+      ]
+    },
+    "check_workspace_membership": {
+      "kind": "predicate",
+      "intent": "The fail-closed \"may this user see this workspace's recordings\" check — asks workspaces.check_membership by comm name, so it reads the same in a monolith and across services and never imports stapel-workspaces. Any wiring failure DENIES; hand-write the comm call and the natural except-branch is the permissive one, which is how an account that belongs to no workspace ends up listing someone else's recordings.",
+      "instead_of": [
+        "stapel_workspaces.services.get_membership",
+        "stapel_core.comm.call"
+      ]
+    },
+    "create_upload_session": {
+      "kind": "factory",
+      "intent": "Mint a single-PUT presigned upload for a recording — the sanctioned way to hand a client an upload URL, because the UploadSession row it writes carries the TTL, the size ceiling and the storage key that finalize_upload later validates against. A bare presigned_put_url() gives you the URL and none of that.",
+      "instead_of": [
+        "stapel_recordings.storage.RecordingStorage.presigned_put_url"
+      ]
+    },
+    "start_multipart_upload": {
+      "kind": "factory",
+      "intent": "The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects.",
+      "instead_of": [
+        "stapel_recordings.storage.RecordingStorage.create_multipart_upload"
+      ]
+    },
+    "abort_multipart_upload_session": {
+      "kind": "gate_function",
+      "intent": "Cancel an unfinished multipart upload: aborts it at the object store AND deletes the session row. Aborting at the storage layer alone leaves a live UploadSession pointing at a key that no longer exists, which a retrying client will happily finalize.",
+      "instead_of": [
+        "stapel_recordings.storage.RecordingStorage.abort_multipart_upload"
+      ]
+    },
+    "finalize_upload": {
+      "kind": "factory",
+      "intent": "Close an upload session and enter the pipeline: completes the multipart if there was one, stamps the real object size off a HEAD, moves the recording to queued and emits recording.uploaded through the outbox — idempotent under a concurrent second finalize. This is also the entry point for a programmatic import (a batch of historical recordings, a recorder that uploaded out of band); emitting recording.uploaded yourself skips every one of those steps.",
+      "instead_of": [
+        "stapel_recordings.events.emit_uploaded"
+      ]
+    },
+    "get_storage": {
+      "kind": "factory",
+      "intent": "THE object-store handle for anything that touches recording bytes — the configured RecordingStorage (Django default_storage, the bundled S3/MinIO backend, or the host's own), memoized per resolved class. An export script, a custom stage or an admin action goes through this rather than building its own boto3 client or reaching for default_storage: the STORAGE seam is what makes the bucket, the credentials and the presign policy one decision instead of one per call site.",
+      "instead_of": [
+        "boto3.client",
+        "django.core.files.storage.default_storage"
+      ]
+    },
+    "reset_storage_cache": {
+      "kind": "factory",
+      "intent": "Drop the memoized backend so the next get_storage() re-resolves the STORAGE setting — the supported way to make a runtime settings change (an override_settings block, a fixture) take effect. Overwhelmingly a test-harness concern: production code that finds itself calling this is configuring storage in the wrong place."
+    },
+    "default_pipeline_resolver": {
+      "kind": "factory",
+      "intent": "The stock PIPELINE_RESOLVER — returns the PIPELINE setting verbatim. It is already the seam's default value, so a host never wires it; call it only from inside a custom resolver that wants \"my per-workspace list, else the configured default\" as its fallback."
+    },
+    "resolve_pipeline": {
+      "kind": "factory",
+      "intent": "The stage list that will actually run for THIS recording, resolver included — read it whenever you need to show or reason about a pipeline (an admin page, a progress bar, a stage-count estimate). The PIPELINE setting is only the default resolver's answer, and a host that swapped PIPELINE_RESOLVER has made reading it a lie."
+    },
+    "start_pipeline": {
+      "kind": "gate_function",
+      "intent": "Kick processing for a recording whose file has landed. Idempotent under duplicate deliveries: it locks the row and writes the metadata.pipeline start marker in the same transaction as the stage-0 emit, so two deliveries produce one pipeline. Emitting recording.stage yourself gets you neither the lock nor the marker.",
+      "instead_of": [
+        "stapel_recordings.events.emit_stage"
+      ]
+    },
+    "run_stage": {
+      "kind": "gate_function",
+      "intent": "One step of the generic driver, normally reached only through the recording.stage consumer. Call it directly when you are driving the pipeline synchronously on purpose (a management command, an integration test) — and note the index is a duplicate-delivery hint, not a stage selector: which stage runs is decided by NAME against the currently resolved list, so this cannot be used to skip ahead."
+    },
+    "retry_recording": {
+      "kind": "gate_function",
+      "intent": "The ONLY way back from error: an explicit error -> queued transition that resumes at the first stage whose name has not completed. Expose it from a retry endpoint or admin action instead of setting status and re-emitting recording.stage by hand — a redelivered event deliberately never resurrects a DLQ'd recording, and a hand-reset status without the completed-set cursor re-runs stages whose results were already published.",
+      "instead_of": [
+        "stapel_recordings.events.emit_stage"
+      ]
+    },
+    "reprocess_recording": {
+      "kind": "gate_function",
+      "intent": "completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the ASR tier or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.",
+      "instead_of": [
+        "stapel_recordings.events.emit_stage"
+      ]
+    },
+    "register_stage": {
+      "kind": "factory",
+      "intent": "Add, replace or (with None) remove a pipeline stage at runtime — a Stage subclass, an instance, or a plain callable(recording, ctx) -> ctx, adapted automatically. The fork-free way for a plugin, an AppConfig.ready() or a test to contribute a stage when a dotted path in the STAGES setting is not an option; mutating BUILTIN_STAGES reaches the same map from the wrong side and loses to both the setting overlay and this registry.",
+      "instead_of": [
+        "stapel_recordings.stages.BUILTIN_STAGES"
+      ]
+    },
+    "unregister_stage": {
+      "kind": "factory",
+      "intent": "Undo one register_stage call, leaving whatever it shadowed — a built-in or a STAGES overlay entry — back in place. Distinct from register_stage(name, None), which actively REMOVES the stage from the resolved map."
+    },
+    "reset_runtime_stages": {
+      "kind": "factory",
+      "intent": "Drop every runtime registration at once — the teardown hook that stops one test's stage from leaking into the next. Not a production call: a host that registers its stages in AppConfig.ready() would be unregistering its own module."
+    },
+    "resolve_stages": {
+      "kind": "factory",
+      "intent": "The effective {name: handler} map — built-ins, then the STAGES overlay, then runtime registrations. Read this to answer \"which stages exist in this deployment\" (a pipeline editor's picker, a config check, an error message listing the options); BUILTIN_STAGES answers only \"which stages shipped\", which stops being the same question the moment a host configures anything.",
+      "instead_of": [
+        "stapel_recordings.stages.BUILTIN_STAGES"
+      ]
+    },
+    "get_stage": {
+      "kind": "factory",
+      "intent": "Resolve one stage name to a ready-to-run Stage instance — the lookup a custom driver, or a stage that delegates to another stage, needs. Lazy on purpose: only the requested handler is imported, so a broken dotted path elsewhere in the STAGES overlay breaks only the pipelines that include that stage instead of every recording at once."
+    },
+    "resolve_source_types": {
+      "kind": "factory",
+      "intent": "The effective {key: label} source-kind map: the built-in four with the SOURCE_TYPES overlay merged over them. Render pickers and admin labels from this — the SourceType model enum is only the default set, so a host that added \"zoom\" from settings gets a blank label everywhere the enum was read directly.",
+      "instead_of": [
+        "stapel_recordings.models.SourceType"
+      ]
+    },
+    "is_valid_source_type": {
+      "kind": "predicate",
+      "intent": "The membership test for a source kind — ask this rather than comparing against the model enum's values, which rejects exactly the kinds a host went to the trouble of registering.",
+      "instead_of": [
+        "stapel_recordings.models.SourceType.values"
+      ]
+    },
+    "registered_source_types": {
+      "kind": "factory",
+      "intent": "Every registered source-kind key, sorted — for a choices list, a filter parameter's enum, or an error message that has to name the valid options. Recording.source_type is a free CharField precisely so that this list, and not a migration, is what grows.",
+      "instead_of": [
+        "stapel_recordings.models.SourceType.values"
+      ]
+    },
+    "resource_key": {
+      "kind": "factory",
+      "intent": "The opaque, signed handle a recording is referenced by in API payloads. Anything rendering a recording for a client publishes this instead of the row's UUID: the list surface is workspace-scoped, so it returns recordings owned by other members, and their raw ids would cross the wire in a form a client can store, guess at and replay."
+    },
+    "resolve_resource_key": {
+      "kind": "factory",
+      "intent": "Turn a resource_key a client sent back into a recording id, or None when it is missing, forged or corrupt. Any host endpoint that accepts one of these tokens resolves it here — the signature is salted per purpose, so unsigning it yourself either fails or, with the wrong salt in place, accepts a token minted for something else.",
+      "instead_of": [
+        "django.core.signing.loads"
+      ]
     }
   }
 }

@@ -73,7 +73,15 @@ CANONICAL_PREFIX = "/recordings/api/v1/"
 # Same emit/drift discipline.
 # The fifth artifact (badge-canon §3): docs/llms.txt, rendered from
 # docs/capabilities.json (+schema/errors/flows) by stapel_tools.llms_txt.
+#
+# The usage surface (stapel_tools.surface: services / storage / pipeline /
+# stages / sources / resources — 24 entries, each one a symbol a product
+# would otherwise reimplement) does not fit the generator's default
+# 4000-token budget. Same exception stapel-auth (8000) and stapel-workspaces
+# (4500) already take: raise the ceiling to 4500 for this module, do not
+# shorten intents to fit. The budget stays enforced, just at 4500.
 ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
+LLMS_TXT_BUDGET = "4500"
 
 
 def _emit(out_dir: Path) -> None:
@@ -88,7 +96,10 @@ def _emit(out_dir: Path) -> None:
     # the just-regenerated tmp one) — same as `make contract-check` — so this
     # step also catches a stale llms.txt independently of the loop above.
     subprocess.run(
-        [sys.executable, "-m", "stapel_tools.llms_txt", ".", "--out", str(out_dir)],
+        [
+            sys.executable, "-m", "stapel_tools.llms_txt", ".",
+            "--out", str(out_dir), "--budget", LLMS_TXT_BUDGET,
+        ],
         cwd=str(REPO),
         check=True,
         capture_output=True,
