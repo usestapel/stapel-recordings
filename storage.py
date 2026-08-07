@@ -216,7 +216,30 @@ class S3Backend(RecordingStorage):
             aws_access_key_id=self._conf("S3_ACCESS_KEY"),
             aws_secret_access_key=self._conf("S3_SECRET_KEY"),
             region_name=self._conf("S3_REGION", "us-east-1"),
-            config=Config(signature_version="s3v4"),
+            # СРОКИ ЯВНО. Здесь стоял голый `Config(signature_version="s3v4")`,
+            # то есть дефолты botocore: connect 60с, read 60с, режим ретраев
+            # legacy с пятью попытками. Недоступное хранилище дало бы не
+            # ошибку, а МОЛЧАНИЕ почти на пять минут: HTTP-воркер занят,
+            # человек видит крутящийся индикатор и не знает ничего.
+            #
+            # ЭТО ЗАПАС, А НЕ РАЗБОР СЛУЧИВШЕГОСЯ. Замер на стенде айронмемо
+            # 08.08.2026 показал ровно обратное: upload-sessions отвечает за
+            # 0.31с (201), PUT по пресайну — за 1.4с (200). То есть жалоба
+            # «думает уже минут 40» этими дефолтами НЕ объясняется и остаётся
+            # необъяснённой. Сроки ставим потому, что путь до хранилища
+            # сетевой, а не потому, что он однажды подвёл.
+            #
+            # Решение владельца: «если падает — то падает». Отказ за секунды
+            # честнее ожидания, которое ничем не кончится.
+            config=Config(
+                signature_version="s3v4",
+                connect_timeout=self._conf("S3_CONNECT_TIMEOUT", 5),
+                read_timeout=self._conf("S3_READ_TIMEOUT", 15),
+                retries={
+                    "max_attempts": self._conf("S3_MAX_ATTEMPTS", 2),
+                    "mode": "standard",
+                },
+            ),
         )
 
     def presigned_put_url(self, key, *, expires_seconds=900, content_type=None):
