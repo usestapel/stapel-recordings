@@ -4,6 +4,19 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [0.13.1] — 2026-08-08
+
+### Fixed
+
+- Системный чек «нет приложения склада задач» переехал с занятого
+  `stapel_recordings.E001` на `stapel_recordings.E004`. Совпадение id было не
+  косметикой: id — это то, чем чек ГЛУШАТ (`SILENCED_SYSTEM_CHECKS`) и по чему
+  его ищут. Заглушив E001 ради «STORAGE не импортируется», хост молча выключал
+  бы и вторую проверку — а она блокирует старт сервиса, у которого расшифровка
+  не сможет отработать вовсе. Новый сторож (`test_ids_проверок_уникальны`)
+  читает ИСХОДНИК модуля, а не прогон: чек, ничего не вернувший в текущей
+  конфигурации, всё равно занимает свой id.
+
 ## [0.13.0] — 2026-08-08
 
 ### Added
