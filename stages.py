@@ -185,7 +185,23 @@ class TranscribeStage(Stage):
             payload["provider"] = provider
 
         try:
-            result = call("llm.transcribe", payload)
+            # СРОК ЖДАНИЯ, А НЕ ТОЛЬКО СРОК РАБОТЫ. `timeout_seconds` выше —
+            # это бюджет ИСПОЛНИТЕЛЯ; вызывающая сторона про него ничего не
+            # знает и без явного аргумента берёт `FUNCTION_TIMEOUT`, дефолт
+            # которого 5 секунд (stapel_core/comm/nats.py). Расшифровка
+            # получаса аудио в пять секунд не укладывается никогда — и
+            # каждая настоящая запись падала с TimeoutError, ретраилась три
+            # раза и уходила в error.
+            #
+            # Замер на стенде айронмемо 08.08.2026: встреча на 898 секунд
+            # падала так шесть раз подряд; четырёхсекундный тон проходил,
+            # потому что случайно укладывался в те же пять секунд — и ровно
+            # поэтому синтетический прогон эту дыру не показывал.
+            result = call(
+                "llm.transcribe",
+                payload,
+                timeout=float(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
+            )
         except CommError as exc:
             raise StageRetryable("transcribe_call_failed", str(exc)) from exc
 
@@ -297,7 +313,16 @@ def _summarize(recording, transcript) -> str | None:
     if recording.language:
         payload["language"] = recording.language
     try:
-        result = call("llm.summarize", payload)
+        # Та же дыра, что в transcribe, но злее: здесь отказ ГЛУШИТСЯ как
+        # best-effort, поэтому пятисекундный дефолт `FUNCTION_TIMEOUT` не
+        # ронял запись — он просто молча оставлял её без саммари. Сводка
+        # встречи по определению не пишется за пять секунд, то есть не
+        # появлялась никогда, и никто этого не видел.
+        result = call(
+            "llm.summarize",
+            payload,
+            timeout=float(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
+        )
     except CommError:
         logger.warning("merge: summarize call failed for %s", recording.id, exc_info=True)
         return None

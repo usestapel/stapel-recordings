@@ -173,6 +173,11 @@ DEFAULTS = {
         "MAX_STAGE_RETRIES": 3,
         "SUMMARIZE_ENABLED": True,
         "SUMMARIZE_MODEL": "medium",
+        # Сколько ЖДАТЬ ответа llm.summarize. Без явного аргумента вызов
+        # берёт FUNCTION_TIMEOUT (дефолт 5с), а сводка встречи за пять
+        # секунд не пишется — отказ при этом глушится как best-effort, то
+        # есть саммари просто не появлялось, и молча.
+        "SUMMARIZE_TIMEOUT_SECONDS": 300,
 
         # ── Reconcile watchdog ───────────────────────────────────────
         # STUCK_THRESHOLD_SECONDS MUST exceed the longest legitimate stage
