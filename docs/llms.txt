@@ -104,7 +104,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Every view declares request/response serializer seams (SerializerSeamMixin) — subclass the view, override the attribute, remount the URL.
 
 ## Fits with — fleet dependencies
-- stapel-agent (optional) — provides the llm.transcribe and llm.summarize comm Functions the transcribe/merge stages call; recordings passes audio and options by comm name, no import
+- stapel-agent (optional) — provides the llm.transcribe / llm.summarize / llm.embed / llm.complete comm Functions the pipeline stages and the question-answering path call by name, no import. One exception, the [qa] extra: stapel_recordings.vector.qa imports sanitize_for_rag from stapel_agent.safety.markers, because transcript text entering an LLM prompt must be stripped of injection markers and a second copy of that stripper is a second thing to update when a marker is added
 - stapel-auth (optional) — every endpoint requires an authenticated user (IsAuthenticated); stapel-auth is the shelf's session issuer — any stapel-core-compatible JWT issuer satisfies the check
 - stapel-core (required) — comm bus (recording.stage pipeline driving, llm.transcribe / llm.summarize calls), JWT authentication, GDPR provider registry, AppSettings config layer
 

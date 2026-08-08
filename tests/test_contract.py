@@ -78,10 +78,13 @@ CANONICAL_PREFIX = "/recordings/api/v1/"
 # stages / sources / resources — 24 entries, each one a symbol a product
 # would otherwise reimplement) does not fit the generator's default
 # 4000-token budget. Same exception stapel-auth (8000) and stapel-workspaces
-# (4500) already take: raise the ceiling to 4500 for this module, do not
-# shorten intents to fit. The budget stays enforced, just at 4500.
+# (4500) already take: raise the ceiling for this module, do not shorten
+# intents to fit. Было 4500; 08.08.2026 модуль вырос на способность «ответ
+# на вопрос по расшифровкам» (vector/qa.py) и упёрся в потолок — подняли до
+# 5000. Число обязано совпадать с Makefile: разъедутся — гейт начнёт мерить
+# не то, что генерит релиз.
 ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
-LLMS_TXT_BUDGET = "4500"
+LLMS_TXT_BUDGET = "5000"
 
 
 def _emit(out_dir: Path) -> None:

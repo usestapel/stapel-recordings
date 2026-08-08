@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.10.0"
+version = "0.11.0"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -46,7 +46,13 @@ s3 = ["boto3>=1.34"]
 # PostgreSQL with the pgvector extension at runtime; the base package
 # works (and is tested) without this extra.
 vector = ["pgvector>=0.3"]
-all = ["stapel-recordings[s3,vector]"]
+# Ответ на вопрос по расшифровкам (stapel_recordings.vector.qa). Единственное
+# место пакета, где stapel-agent нужен как БИБЛИОТЕКА, а не как имя на шине:
+# промпт собирается из чужого текста и обязан пройти через
+# ``stapel_agent.safety.markers.sanitize_for_rag``. Отдельный extra, потому
+# что развёртывание без ответов на вопросы не должно тащить агента в процесс.
+qa = ["stapel-recordings[vector]", "stapel-agent>=0.8"]
+all = ["stapel-recordings[s3,vector,qa]"]
 
 [tool.setuptools]
 package-dir = {"stapel_recordings" = "."}
