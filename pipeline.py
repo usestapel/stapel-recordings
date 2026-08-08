@@ -204,6 +204,7 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             return
 
         recording.retry_count = 0
+        _clear_last_error(recording)
         _store_ctx(recording, new_ctx)
         # Persist "stage N completed" in the same transaction as the success
         # events: a redelivery of a completed stage is now distinguishable
@@ -272,6 +273,7 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
 
         recording.retry_count = 0
         _clear_awaiting(recording)
+        _clear_last_error(recording)
         _store_ctx(recording, new_ctx)
         _mark_completed(recording, stage_index, stage_name)
         recording.save(update_fields=["retry_count", "metadata", "updated_at"])
@@ -508,6 +510,33 @@ def _set_last_error(recording: Recording, stage: str, reason: str, detail=None) 
         "detail": (str(detail)[:500] if detail else None),
         "at": timezone.now().isoformat(),
     }
+    recording.metadata = metadata
+
+
+def _clear_last_error(recording: Recording) -> None:
+    """Снять отметку об ошибке, когда конвейер снова поехал.
+
+    ``last_error`` пишется при падении стадии и до этой правки не снимался
+    НИКОГДА: ни при удачной повторной попытке, ни при ручном requeue, ни
+    при завершении записи. Запись доходила до ``completed`` и продолжала
+    носить причину давно пережитого падения.
+
+    Это ровно тот жанр, который дороже самого сбоя: 08.08.2026 восемь
+    встреч на стенде выглядели «встали на эмбеддингах» — с полной
+    расшифровкой, сводкой и всеми эмбеддингами на месте. Поле врало, и по
+    нему принимались решения (в том числе мной — я пошёл чинить то, что
+    уже работало).
+
+    Причину не выбрасываем, а переносим в ``recovered_error``: диагноз для
+    операций сохраняется, но перестаёт выдавать себя за текущее состояние.
+    Снимаем на КАЖДОЙ успешно завершённой стадии, а не только в финале, —
+    частично восстановившаяся запись обязана говорить правду тоже.
+    """
+    metadata = dict(recording.metadata or {})
+    previous = metadata.pop("last_error", None)
+    if previous is None:
+        return
+    metadata["recovered_error"] = {**previous, "recovered_at": timezone.now().isoformat()}
     recording.metadata = metadata
 
 
