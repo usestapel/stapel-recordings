@@ -18,6 +18,12 @@ class RecordingsConfig(AppConfig):
         # microservices — same code, transport chosen by STAPEL_COMM).
         from . import actions  # noqa: F401
 
+        # Мост задач: очередь и состояние живут у записей, работу берёт
+        # агент через шину. В монолите обработчик агента уже в этом
+        # процессе — мост тогда НЕ регистрируется (см. task_delegates).
+        from .task_delegates import register_default_task_delegates
+        register_default_task_delegates()
+
         # GDPR provider registration (monolith mode).
         from stapel_core.gdpr import gdpr_registry
 
