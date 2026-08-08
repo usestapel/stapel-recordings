@@ -133,3 +133,39 @@ def check_reconcile_threshold(app_configs, **kwargs):
             id="stapel_recordings.W005",
         )]
     return []
+
+
+@checks.register(checks.Tags.compatibility)
+def check_taskstore_installed(app_configs, **kwargs):
+    """Долгая работа идёт задачами — значит нужен их склад.
+
+    ``transcribe`` и ``merge`` отдают работу Task-примитиву
+    (``stapel_core.comm.tasks``): вызов возвращается сразу, а стадия
+    досчитывается по ``task.completed``. Примитив хранит состояние в
+    таблице ``TaskRecord``, которую заводит app
+    ``stapel_core.django.taskstore``.
+
+    Без него всё выглядит установленным и падает ПОЗЖЕ — на первой же
+    загрузке, из глубины конвейера, сообщением про отсутствующую таблицу.
+    Ровно тот жанр, из-за которого чек и пишется: несовместимость видна на
+    старте, а не глазами пользователя.
+    """
+    from django.apps import apps as django_apps
+
+    if django_apps.is_installed("stapel_core.django.taskstore"):
+        return []
+    return [
+        checks.Error(
+            "stapel_recordings ставит долгую работу (расшифровка, сводка) "
+            "Task-примитивом, а его таблица живёт в приложении "
+            "'stapel_core.django.taskstore' — его нет в INSTALLED_APPS.",
+            hint=(
+                "Добавьте 'stapel_core.django.taskstore' в INSTALLED_APPS и "
+                "накатите миграции. Плюс убедитесь, что задачи кто-то "
+                "ИСПОЛНЯЕТ: STAPEL_COMM['TASK_EXECUTOR'] ('inline' — в том "
+                "же процессе, что потребляет событие; 'celery' — воркером) "
+                "и что процесс с обработчиками llm.* запущен."
+            ),
+            id="stapel_recordings.E001",
+        )
+    ]

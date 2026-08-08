@@ -67,15 +67,60 @@ class StageFatal(StageError):
     """Permanent failure — DLQ, no retry."""
 
 
+class StageAwaiting(StageError):
+    """Работа ПОСТАВЛЕНА, стадия ждёт — это не отказ.
+
+    Третий исход рядом с Retryable и Fatal. Стадия отдала долгую работу
+    Task-примитиву (``stapel_core.comm.tasks``) и возвращает управление
+    немедленно: драйвер запоминает ``task_id``, оставляет стадию
+    незавершённой и НЕ считает это попыткой. Возобновление приходит
+    Action'ом ``task.completed``.
+
+    Зачем: раньше долгая работа шла синхронным Function — вызывающий
+    держал воркер и ждал ответа, а «сколько ждать» было неизвестно ни ему,
+    ни человеку у экрана. Отсюда и отказы 08.08.2026: расшифровка на 14
+    секунд против пятисекундного дефолта ожидания. Очередь эту модель
+    ломает окончательно: если исполнителей нет свободных, синхронный
+    вызов обязан либо соврать таймаутом, либо висеть.
+
+    С задачей состояние наблюдаемо: ``status(task_id)`` отдаёт
+    pending/running/done/failed и число попыток, и фронту есть что
+    показать — «в очереди», а не крутящийся индикатор без обещаний.
+    """
+
+    def __init__(self, task_id: str, kind: str):
+        super().__init__("awaiting_task", f"{kind}:{task_id}")
+        self.task_id = task_id
+        self.kind = kind
+
+
 class Stage:
     """Base class. Subclass and implement :meth:`run`, or register any
-    ``callable(recording, ctx) -> ctx`` — it is adapted automatically."""
+    ``callable(recording, ctx) -> ctx`` — it is adapted automatically.
+
+    Стадия, отдающая работу Task-примитиву, делится надвое: :meth:`run`
+    ставит задачу и поднимает :class:`StageAwaiting`, а :meth:`resume`
+    получает результат, когда он пришёл. Половинка ``resume`` не абстрактна
+    намеренно — стадии без долгой работы её не переопределяют.
+    """
 
     name: str = ""
     status: str = ""
 
     def run(self, recording, ctx: dict) -> dict:  # pragma: no cover - abstract
         raise NotImplementedError
+
+    def resume(self, recording, ctx: dict, result) -> dict:
+        """Досчитать стадию по результату задачи.
+
+        Вызывается драйвером при ``task.completed`` для стадии, которая
+        ранее подняла :class:`StageAwaiting`. По умолчанию — ошибка
+        программиста: раз стадия поставила задачу, она обязана уметь
+        принять её результат.
+        """
+        raise NotImplementedError(
+            f"стадия {self.name!r} поставила задачу, но не умеет принять результат"
+        )
 
 
 class _CallableStage(Stage):
@@ -152,17 +197,52 @@ class ConvertStage(Stage):
             shutil.rmtree(workdir, ignore_errors=True)
 
 
+def submit_task(kind, payload, *, recording, deadline_seconds=None, max_attempts=3):
+    """Поставить долгую работу задачей и вернуть управление немедленно.
+
+    Возвращает результат ТОЛЬКО в одном случае — когда развёртывание
+    диспетчеризует задачи синхронно (``STAPEL_COMM["TASK_DISPATCH"]="inline"``:
+    монолит без брокера, тесты, скрипты) и задача успела дойти до ``done``
+    внутри ``start()``. В остальных случаях поднимает :class:`StageAwaiting`,
+    и стадия продолжится в :meth:`Stage.resume` по ``task.completed``.
+
+    ``correlation_id`` — id записи: по нему возобновление находит, чью
+    стадию досчитывать. Он же — ключ партиционирования событий, поэтому
+    события одной записи не разъезжаются по порядку.
+    """
+    from stapel_core.comm import start, status
+    from stapel_core.comm.exceptions import CommError
+
+    try:
+        task_id = start(
+            kind,
+            payload,
+            correlation_id=str(recording.id),
+            deadline_seconds=deadline_seconds,
+            max_attempts=max_attempts,
+        )
+    except CommError as exc:
+        # Не удалось даже ПОСТАВИТЬ задачу — это про доступность шины, а не
+        # про работу; ретраибельно.
+        raise StageRetryable(f"{kind}_submit_failed", str(exc)) from exc
+
+    snapshot = status(task_id)
+    if snapshot.state == "done":
+        return snapshot.result
+    if snapshot.state == "failed":
+        raise StageRetryable(f"{kind}_failed", snapshot.error or "task failed")
+    raise StageAwaiting(task_id, kind)
+
+
 class TranscribeStage(Stage):
-    """Call ``llm.transcribe`` (stapel-agent) and persist Speaker/Segment
-    rows. STT provider selection/fallback lives in the agent."""
+    """Отдать расшифровку задаче ``llm.transcribe`` (stapel-agent) и записать
+    Speaker/Segment по её результату. Выбор STT-провайдера и фолбэк живут в
+    агенте."""
 
     name = "transcribe"
     status = RecordingStatus.TRANSCRIBING
 
     def run(self, recording, ctx):
-        from stapel_core.comm import call
-        from stapel_core.comm.exceptions import CommError
-
         if recording.segments.exists():
             return ctx  # idempotent: already transcribed
 
@@ -184,29 +264,28 @@ class TranscribeStage(Stage):
         if provider:
             payload["provider"] = provider
 
-        try:
-            # СРОК ЖДАНИЯ, А НЕ ТОЛЬКО СРОК РАБОТЫ. `timeout_seconds` выше —
-            # это бюджет ИСПОЛНИТЕЛЯ; вызывающая сторона про него ничего не
-            # знает и без явного аргумента берёт `FUNCTION_TIMEOUT`, дефолт
-            # которого 5 секунд (stapel_core/comm/nats.py). Расшифровка
-            # получаса аудио в пять секунд не укладывается никогда — и
-            # каждая настоящая запись падала с TimeoutError, ретраилась три
-            # раза и уходила в error.
-            #
-            # Замер на стенде айронмемо 08.08.2026: встреча на 898 секунд
-            # падала так шесть раз подряд; четырёхсекундный тон проходил,
-            # потому что случайно укладывался в те же пять секунд — и ровно
-            # поэтому синтетический прогон эту дыру не показывал.
-            result = call(
-                "llm.transcribe",
-                payload,
-                timeout=float(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
-            )
-        except CommError as exc:
-            raise StageRetryable("transcribe_call_failed", str(exc)) from exc
+        # ЗАДАЧА, А НЕ СИНХРОННЫЙ ВЫЗОВ. Расшифровка идёт минуты, а при
+        # занятых исполнителях — сколько угодно; ждать её ответа, держа
+        # воркер, нечестно по отношению и к системе, и к человеку у экрана.
+        # `submit_task` возвращает управление сразу, а стадия досчитывается
+        # в :meth:`resume`, когда результат придёт.
+        result = submit_task(
+            "llm.transcribe",
+            payload,
+            recording=recording,
+            deadline_seconds=int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
+        )
+        # Сюда попадаем только при синхронной диспетчеризации
+        # (TASK_DISPATCH="inline" — монолит без брокера, тесты, скрипты):
+        # задача уже выполнена к возврату из start().
+        return self.resume(recording, ctx, result)
 
+    def resume(self, recording, ctx, result):
         if not isinstance(result, dict) or result.get("status") != "ok":
-            reason = (result or {}).get("reason", "transcribe_failed") if isinstance(result, dict) else "transcribe_failed"
+            reason = (
+                (result or {}).get("reason", "transcribe_failed")
+                if isinstance(result, dict) else "transcribe_failed"
+            )
             raise StageRetryable("transcribe_failed", str(reason))
 
         _persist_transcript(
@@ -240,26 +319,51 @@ class MergeStage(Stage):
     def run(self, recording, ctx):
         from . import transcript_schema
 
-        if recording.transcript_storage_key:
+        if recording.transcript_storage_key and recording.summary:
             return ctx  # idempotent
 
         transcript = transcript_schema.from_db_segments(recording)
-        storage = get_storage()
-        key = _key(recording, "transcript.json")
-        try:
-            storage.put_bytes(
-                key, transcript.to_json().encode("utf-8"), content_type="application/json"
+        if not recording.transcript_storage_key:
+            storage = get_storage()
+            key = _key(recording, "transcript.json")
+            try:
+                storage.put_bytes(
+                    key, transcript.to_json().encode("utf-8"), content_type="application/json"
+                )
+            except Exception as exc:
+                raise StageRetryable("transcript_store_failed", str(exc)) from exc
+            recording.transcript_storage_key = key
+            recording.save(update_fields=["transcript_storage_key", "updated_at"])
+
+        if not (recordings_settings.SUMMARIZE_ENABLED and transcript.segments):
+            return ctx
+
+        # Стенограмма уже сохранена — она и есть главный артефакт. Сводка
+        # идёт ОТДЕЛЬНОЙ задачей: замер 08.08.2026 дал 36 секунд на
+        # пятнадцатиминутной встрече, и держать ради неё воркер незачем.
+        result = submit_task(
+            "llm.summarize",
+            _summarize_payload(recording, transcript),
+            recording=recording,
+            deadline_seconds=int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
+        )
+        return self.resume(recording, ctx, result)
+
+    def resume(self, recording, ctx, result):
+        # Сводка — best-effort: стенограмма уже лежит, и ронять из-за неё
+        # запись нельзя. Но МОЛЧАТЬ про отказ тоже нельзя — раньше именно
+        # это и происходило: пятисекундный дефолт ожидания съедал сводку
+        # начисто, и никто не знал, что её просто нет.
+        summary = None
+        if isinstance(result, dict) and result.get("status") == "ok":
+            summary = result.get("summary")
+        else:
+            logger.warning(
+                "merge: сводка для %s не получена: %.200s", recording.id, result
             )
-        except Exception as exc:
-            raise StageRetryable("transcript_store_failed", str(exc)) from exc
-        recording.transcript_storage_key = key
-
-        if recordings_settings.SUMMARIZE_ENABLED and transcript.segments:
-            summary = _summarize(recording, transcript)
-            if summary is not None:
-                recording.summary = summary
-
-        recording.save(update_fields=["transcript_storage_key", "summary", "updated_at"])
+        if summary:
+            recording.summary = summary
+            recording.save(update_fields=["summary", "updated_at"])
         return ctx
 
 
@@ -301,35 +405,27 @@ class EmbedStage(Stage):
 # ─── stage helpers ─────────────────────────────────────────────────────
 
 
-def _summarize(recording, transcript) -> str | None:
-    """Best-effort call to ``llm.summarize``. A summary failure must not
-    fail the recording — the transcript is the primary artifact."""
-    from stapel_core.comm import call
-    from stapel_core.comm.exceptions import CommError
+def _summarize_payload(recording, transcript) -> dict:
+    """Полезная нагрузка для ``llm.summarize``.
 
+    Язык берём из записи, а при ``language_mode="auto"`` — из того, что
+    определил STT (``ctx``/поле заполняются на стадии transcribe). Без него
+    модель выбирает язык сама: 08.08.2026 на стенде русская встреча
+    получила сводку по-китайски. Сводка не на языке разговора бесполезна
+    ровно настолько же, насколько её отсутствие.
+    """
     from . import transcript_schema
 
-    payload = {"text": transcript_schema.render_markdown(transcript), "model": recordings_settings.SUMMARIZE_MODEL}
-    if recording.language:
-        payload["language"] = recording.language
-    try:
-        # Та же дыра, что в transcribe, но злее: здесь отказ ГЛУШИТСЯ как
-        # best-effort, поэтому пятисекундный дефолт `FUNCTION_TIMEOUT` не
-        # ронял запись — он просто молча оставлял её без саммари. Сводка
-        # встречи по определению не пишется за пять секунд, то есть не
-        # появлялась никогда, и никто этого не видел.
-        result = call(
-            "llm.summarize",
-            payload,
-            timeout=float(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
-        )
-    except CommError:
-        logger.warning("merge: summarize call failed for %s", recording.id, exc_info=True)
-        return None
-    if isinstance(result, dict) and result.get("status") == "ok":
-        return result.get("summary")
-    logger.warning("merge: summarize returned failure for %s", recording.id)
-    return None
+    payload = {
+        "text": transcript_schema.render_markdown(transcript),
+        "model": recordings_settings.SUMMARIZE_MODEL,
+    }
+    language = recording.language or getattr(transcript, "language", "") or ""
+    if language:
+        payload["language"] = language
+    return payload
+
+
 
 
 def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_used) -> None:

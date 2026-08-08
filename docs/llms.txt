@@ -2,7 +2,7 @@
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 24 · extension points 7 · operations 5 · error codes 47.
+Contract: axes 1 · surface 27 · extension points 7 · operations 5 · error codes 47.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -16,9 +16,13 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - abort_multipart_upload_session — stapel_recordings.services.abort_multipart_upload_session
   instead of: stapel_recordings.storage.RecordingStorage.abort_multipart_upload
   Cancel an unfinished multipart upload: aborts it at the object store AND deletes the session row. Aborting at the storage layer alone leaves a live UploadSession pointing at a key that no longer exists, which a retrying client will happily finalize.
+- fail_stage — stapel_recordings.pipeline.fail_stage
+  Увести запись в DLQ, когда ждавшаяся задача провалилась окончательно. Именно DLQ: Task-примитив уже отработал свои max_attempts.
 - reprocess_recording — stapel_recordings.pipeline.reprocess_recording
   instead of: stapel_recordings.events.emit_stage
   completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the ASR tier or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.
+- resume_stage — stapel_recordings.pipeline.resume_stage
+  Досчитать стадию, ждавшую задачу, по её результату — симметрия успешного хвоста run_stage: тот же замок, отметка о завершении и события. Сверяет task_id: доставка at-least-once, и ответ устаревшей попытки применять нельзя.
 - retry_recording — stapel_recordings.pipeline.retry_recording
   instead of: stapel_recordings.events.emit_stage
   The ONLY way back from error: an explicit error -> queued transition that resumes at the first stage whose name has not completed. Expose it from a retry endpoint or admin action instead of setting status and re-emitting recording.stage by hand — a redelivered event deliberately never resurrects a DLQ'd recording, and a hand-reset status without the completed-set cursor re-runs stages whose results were already published.
@@ -77,6 +81,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - start_multipart_upload — stapel_recordings.services.start_multipart_upload
   instead of: stapel_recordings.storage.RecordingStorage.create_multipart_upload
   The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects.
+- submit_task — stapel_recordings.stages.submit_task
+  instead of: stapel_core.comm.call
+  Поставить долгую работу (расшифровка, сводка) задачей и вернуть управление сразу: результат приходит только при синхронной диспетчеризации, иначе поднимается StageAwaiting и стадия продолжится в Stage.resume по task.completed. Вместо comm.call: синхронный вызов держит воркер всё время работы модели и требует угадать срок ожидания, а он неугадываем при очереди.
 - unregister_stage — stapel_recordings.stages.unregister_stage
   Undo one register_stage call, leaving whatever it shadowed — a built-in or a STAGES overlay entry — back in place. Distinct from register_stage(name, None), which actively REMOVES the stage from the resolved map.
 

@@ -54,7 +54,7 @@ from stapel_core.comm import mutate_and_emit
 from . import events
 from .conf import recordings_settings
 from .models import Recording, RecordingStatus
-from .stages import StageFatal, StageRetryable, get_stage
+from .stages import StageAwaiting, StageFatal, StageRetryable, get_stage
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +179,19 @@ def run_stage(recording_id: str, stage_index: int) -> None:
         ctx = (recording.metadata or {}).get("pipeline", {}).get("ctx") or {}
         try:
             new_ctx = stage.run(recording, ctx) or {}
+        except StageAwaiting as exc:
+            # Работа ПОСТАВЛЕНА, а не провалена: стадия не завершается, но и
+            # попытка не тратится. Запоминаем task_id, чтобы возобновление
+            # (и только оно) могло досчитать именно эту стадию; статус
+            # записи остаётся стадийным — человек видит «расшифровываем», а
+            # не пустоту.
+            _set_awaiting(recording, next_index, stage_name, exc.task_id, exc.kind)
+            recording.save(update_fields=["metadata", "updated_at"])
+            logger.info(
+                "pipeline: recording %s стадия %s ждёт задачу %s (%s)",
+                recording.id, stage_name, exc.task_id, exc.kind,
+            )
+            return
         except StageFatal as exc:
             _dlq(recording, stage=stage_name, reason=exc.reason, detail=exc.detail)
             return
@@ -202,6 +215,92 @@ def run_stage(recording_id: str, stage_index: int) -> None:
 
         events.emit_stage_completed(recording, stage_name, next_index)
         events.emit_stage(recording.id, next_index + 1)
+
+
+def resume_stage(recording_id: str, task_id: str, result) -> None:
+    """Досчитать стадию, которая ждала задачу *task_id*, по её результату.
+
+    Вызывается подписчиком на ``task.completed``. Симметрична успешному
+    хвосту :func:`run_stage`: тот же замок, та же отметка о завершении, те
+    же события — разница лишь в том, что работа делалась не здесь.
+
+    ЗАЩИТА ОТ ЧУЖОГО РЕЗУЛЬТАТА. Доставка событий at-least-once, а задача
+    могла быть перезапущена — поэтому сверяем ``task_id`` с записанным.
+    Не совпал: значит пришёл ответ на отменённую или устаревшую попытку, и
+    применять его к текущей стадии нельзя.
+    """
+    with transaction.atomic():
+        try:
+            recording = Recording.objects.select_for_update().get(pk=recording_id)
+        except Recording.DoesNotExist:
+            logger.warning("resume_stage: recording %s not found", recording_id)
+            return
+        if recording.status in _TERMINAL:
+            return
+
+        awaiting = _pipeline_meta(recording).get("awaiting") or {}
+        if awaiting.get("task_id") != str(task_id):
+            logger.info(
+                "resume_stage: recording %s ждёт %r, а результат от %r — игнорирую",
+                recording_id, awaiting.get("task_id"), task_id,
+            )
+            return
+
+        stage_name = awaiting.get("stage") or ""
+        stage_index = int(awaiting.get("index", 0))
+        try:
+            stage = get_stage(stage_name)
+        except (KeyError, TypeError, ImportError) as exc:
+            _dlq(recording, stage=stage_name, reason=f"unresolvable_stage: {exc}")
+            return
+
+        ctx = _pipeline_meta(recording).get("ctx") or {}
+        try:
+            new_ctx = stage.resume(recording, ctx, result) or {}
+        except StageFatal as exc:
+            _dlq(recording, stage=stage_name, reason=exc.reason, detail=exc.detail)
+            return
+        except StageRetryable as exc:
+            _clear_awaiting(recording)
+            _handle_retry(recording, stage_name, exc.reason, exc.detail)
+            return
+        except Exception as exc:  # unexpected — reconcile can re-drive
+            logger.exception("resume_stage: unexpected error in %s for %s", stage_name, recording_id)
+            _clear_awaiting(recording)
+            _handle_retry(recording, stage_name, "unexpected", str(exc))
+            return
+
+        recording.retry_count = 0
+        _clear_awaiting(recording)
+        _store_ctx(recording, new_ctx)
+        _mark_completed(recording, stage_index, stage_name)
+        recording.save(update_fields=["retry_count", "metadata", "updated_at"])
+
+        events.emit_stage_completed(recording, stage_name, stage_index)
+        events.emit_stage(recording.id, stage_index + 1)
+
+
+def fail_stage(recording_id: str, task_id: str, error: str) -> None:
+    """Задача, которую ждала стадия, окончательно провалилась.
+
+    Task-примитив уже отработал свои ``max_attempts`` — поэтому здесь не
+    ретрай, а DLQ: считать попытки второй раз значило бы умножать
+    ожидание, которое человек и так уже отсидел.
+    """
+    with transaction.atomic():
+        try:
+            recording = Recording.objects.select_for_update().get(pk=recording_id)
+        except Recording.DoesNotExist:
+            return
+        if recording.status in _TERMINAL:
+            return
+        awaiting = _pipeline_meta(recording).get("awaiting") or {}
+        if awaiting.get("task_id") != str(task_id):
+            return
+        stage_name = awaiting.get("stage") or "<awaiting>"
+        _clear_awaiting(recording)
+        recording.save(update_fields=["metadata", "updated_at"])
+        _dlq(recording, stage=stage_name, reason="task_failed", detail=error)
 
 
 def retry_recording(recording_id: str) -> bool:
@@ -356,6 +455,39 @@ def _set_current(recording: Recording, stage_index: int, stage_name: str) -> Non
     pl["stage_index"] = stage_index
     pl["stage"] = stage_name
     pl["updated_at"] = timezone.now().isoformat()
+    metadata["pipeline"] = pl
+    recording.metadata = metadata
+
+
+def _set_awaiting(
+    recording: Recording, stage_index: int, stage_name: str, task_id: str, kind: str
+) -> None:
+    """Запомнить, какой стадии какой задачи ждать.
+
+    Хранится ИМЯ стадии вместе с индексом — по той же причине, по которой
+    курсор завершённых ведётся именами: список стадий может быть изменён
+    под живой записью, и один индекс доверия не заслуживает.
+    """
+    metadata = dict(recording.metadata or {})
+    pl = dict(metadata.get("pipeline") or {})
+    pl["awaiting"] = {
+        "task_id": str(task_id),
+        "kind": kind,
+        "stage": stage_name,
+        "index": stage_index,
+        "since": timezone.now().isoformat(),
+    }
+    pl["stage_index"] = stage_index
+    pl["stage"] = stage_name
+    pl["updated_at"] = timezone.now().isoformat()
+    metadata["pipeline"] = pl
+    recording.metadata = metadata
+
+
+def _clear_awaiting(recording: Recording) -> None:
+    metadata = dict(recording.metadata or {})
+    pl = dict(metadata.get("pipeline") or {})
+    pl.pop("awaiting", None)
     metadata["pipeline"] = pl
     recording.metadata = metadata
 

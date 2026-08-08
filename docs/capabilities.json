@@ -64,6 +64,12 @@
       "intent": "The stock PIPELINE_RESOLVER — returns the PIPELINE setting verbatim. It is already the seam's default value, so a host never wires it; call it only from inside a custom resolver that wants \"my per-workspace list, else the configured default\" as its fallback."
     },
     {
+      "name": "fail_stage",
+      "kind": "gate_function",
+      "path": "stapel_recordings.pipeline.fail_stage",
+      "intent": "Увести запись в DLQ, когда ждавшаяся задача провалилась окончательно. Именно DLQ: Task-примитив уже отработал свои max_attempts."
+    },
+    {
       "name": "reprocess_recording",
       "kind": "gate_function",
       "path": "stapel_recordings.pipeline.reprocess_recording",
@@ -77,6 +83,12 @@
       "kind": "factory",
       "path": "stapel_recordings.pipeline.resolve_pipeline",
       "intent": "The stage list that will actually run for THIS recording, resolver included — read it whenever you need to show or reason about a pipeline (an admin page, a progress bar, a stage-count estimate). The PIPELINE setting is only the default resolver's answer, and a host that swapped PIPELINE_RESOLVER has made reading it a lie."
+    },
+    {
+      "name": "resume_stage",
+      "kind": "gate_function",
+      "path": "stapel_recordings.pipeline.resume_stage",
+      "intent": "Досчитать стадию, ждавшую задачу, по её результату — симметрия успешного хвоста run_stage: тот же замок, отметка о завершении и события. Сверяет task_id: доставка at-least-once, и ответ устаревшей попытки применять нельзя."
     },
     {
       "name": "retry_recording",
@@ -227,6 +239,15 @@
       "intent": "The effective {name: handler} map — built-ins, then the STAGES overlay, then runtime registrations. Read this to answer \"which stages exist in this deployment\" (a pipeline editor's picker, a config check, an error message listing the options); BUILTIN_STAGES answers only \"which stages shipped\", which stops being the same question the moment a host configures anything.",
       "instead_of": [
         "stapel_recordings.stages.BUILTIN_STAGES"
+      ]
+    },
+    {
+      "name": "submit_task",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.submit_task",
+      "intent": "Поставить долгую работу (расшифровка, сводка) задачей и вернуть управление сразу: результат приходит только при синхронной диспетчеризации, иначе поднимается StageAwaiting и стадия продолжится в Stage.resume по task.completed. Вместо comm.call: синхронный вызов держит воркер всё время работы модели и требует угадать срок ожидания, а он неугадываем при очереди.",
+      "instead_of": [
+        "stapel_core.comm.call"
       ]
     },
     {

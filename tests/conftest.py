@@ -96,6 +96,20 @@ def drain():
     return _drain
 
 
+
+def _register_task(kind, handler):
+    """Перерегистрировать обработчик задачи между тестами.
+
+    ``register_task`` запрещает переопределение (одно имя — один
+    исполнитель), а фикстура создаёт НОВЫЙ рекордер на каждый тест.
+    Снимаем прежний и ставим свежий.
+    """
+    from stapel_core.comm import tasks as _tasks
+
+    _tasks._handlers.pop(kind, None)
+    _tasks.register_task(kind, handler)
+
+
 @pytest.fixture
 def stub_transcribe():
     """Register a stub ``llm.transcribe`` comm Function; returns a recorder
@@ -131,6 +145,10 @@ def stub_transcribe():
 
     recorder = Recorder()
     register_function("llm.transcribe", recorder)
+    # Расшифровка теперь ставится ЗАДАЧЕЙ, а не зовётся синхронно —
+    # заглушка обязана отвечать на том же примитиве, что и продакшен,
+    # иначе набор проверял бы путь, которого больше нет.
+    _register_task("llm.transcribe", recorder)
     return recorder
 
 
@@ -175,4 +193,5 @@ def stub_summarize():
 
     recorder = Recorder()
     register_function("llm.summarize", recorder)
+    _register_task("llm.summarize", recorder)
     return recorder
