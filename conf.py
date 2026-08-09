@@ -96,26 +96,22 @@ DEFAULT_VECTOR = {
         "TIMEOUT_SECONDS": 60,
         "FAIL_OPEN": True,
     },
-    # ── Ответ на вопрос по расшифровкам (vector/qa.py) ────────────────
-    # Сколько ЖДАТЬ ответа llm.complete. Без явного аргумента вызов берёт
-    # FUNCTION_TIMEOUT (дефолт 5с) — тот же дефект, что стоил айронмемо
-    # каждой настоящей расшифровки (линтер R009 про него же): исправная
-    # система отказывала бы по таймауту всегда. 120с — с запасом на
-    # генерацию по восьми фрагментам, но всё же конечны: за спиной вызова
-    # стоит человек с открытой страницей.
+    # ── Question answering over transcripts (vector/qa.py) ────────────
+    # How long to WAIT for llm.complete. Without an explicit argument the
+    # call falls back to FUNCTION_TIMEOUT (default 5s), which a real answer
+    # over eight excerpts won't fit in. 120s leaves headroom while staying
+    # bounded — a human is waiting on an open page behind this call.
     "QA_TIMEOUT_SECONDS": 120,
-    # Размер модели для ответа (алиас llm.complete: small|medium|large).
-    # medium, а не large: вопрос по восьми найденным фрагментам — это
-    # чтение с цитированием, а не рассуждение, и large здесь покупает
-    # стоимость, а не качество. Хост, который считает иначе, меняет одну
-    # строку.
+    # Model size for the answer (llm.complete alias: small|medium|large).
+    # medium, not large: answering from eight retrieved excerpts is reading
+    # with citation, not reasoning, so large buys cost, not quality. Hosts
+    # that disagree change one line.
     "QA_MODEL": "medium",
-    # Необязательный пин провайдера ("" = дефолт агента).
+    # Optional provider pin ("" = the agent's default).
     "QA_PROVIDER": "",
-    # Потолок на ОДИН фрагмент в промпте. Существует не ради качества, а
-    # ради транспорта: llm.complete идёт через comm, у NATS предел
-    # сообщения 1 МиБ, и превышение теряет уже выполненную (оплаченную)
-    # работу — измерено на айронмемо 06.08.2026.
+    # Cap on a SINGLE excerpt in the prompt. This exists for transport, not
+    # taste: llm.complete goes through comm, NATS caps messages at 1 MiB,
+    # and going over loses work that's already been done (and paid for).
     "QA_CONTEXT_CHARS": 1200,
 }
 
@@ -149,19 +145,15 @@ DEFAULTS = {
         # provided for environments without ffmpeg / for tests.
         "NORMALIZER": "stapel_recordings.normalize.ffmpeg_normalize",
 
-        # ── Сроки обращений к S3/MinIO ───────────────────────────────
-        # Голый botocore-дефолт — connect 60с, read 60с, пять попыток —
-        # превращает недоступное хранилище не в ошибку, а в МОЛЧАНИЕ почти
-        # на пять минут: HTTP-воркер занят, человек видит крутящийся
-        # индикатор и не знает ничего.
+        # ── S3/MinIO call timeouts ────────────────────────────────────
+        # The bare botocore defaults (connect 60s, read 60s, five retries)
+        # turn an unreachable store into near-five-minutes of SILENCE
+        # instead of an error: the HTTP worker sits busy and the user just
+        # sees a spinner.
         #
-        # Запас, а не разбор случившегося: живой замер на стенде айронмемо
-        # 08.08.2026 дал 0.31с на upload-sessions и 1.4с на PUT — путь
-        # исправен, и жалоба «думает уже минут 40» им не объясняется.
-        #
-        # Значения намеренно жёсткие: presign — операция локальная и
-        # мгновенная, а список/загрузка идут против хранилища в той же сети.
-        # Отказ за секунды честнее ожидания, которое ничем не кончится.
+        # These values are deliberately tight: presigning is local and
+        # instant, while list/upload hit the store over the network. A
+        # fast failure beats a wait that never resolves.
         "S3_CONNECT_TIMEOUT": 5,
         "S3_READ_TIMEOUT": 15,
         "S3_MAX_ATTEMPTS": 2,
@@ -194,16 +186,17 @@ DEFAULTS = {
         "MAX_STAGE_RETRIES": 3,
         "SUMMARIZE_ENABLED": True,
         "SUMMARIZE_MODEL": "medium",
-        # Сколько ЖДАТЬ ответа llm.summarize. Без явного аргумента вызов
-        # берёт FUNCTION_TIMEOUT (дефолт 5с), а сводка встречи за пять
-        # секунд не пишется — отказ при этом глушится как best-effort, то
-        # есть саммари просто не появлялось, и молча.
+        # How long to WAIT for llm.summarize. Without an explicit argument
+        # the call falls back to FUNCTION_TIMEOUT (default 5s), and a
+        # meeting summary doesn't get written in five seconds — the failure
+        # is swallowed as best-effort, so the summary just silently never
+        # appears.
         "SUMMARIZE_TIMEOUT_SECONDS": 300,
-        # Кто исполняет задачи llm.* в ЭТОМ процессе. True (дефолт): если
-        # настоящего обработчика рядом нет (микросервисы — у агента своя
-        # база, и запись задачи ему не видна), регистрируем мост, который
-        # отдаёт работу агенту Function-вызовом. False — развёртыванию,
-        # которое исполняет llm.* иначе.
+        # Who executes llm.* tasks in THIS process. True (default): if no
+        # real handler is nearby (microservices — the agent has its own
+        # database and can't see this process's task record), register the
+        # bridge that hands work to the agent via a Function call. False is
+        # for deployments that execute llm.* some other way.
         "DELEGATE_TASKS_TO_AGENT": True,
 
         # ── Reconcile watchdog ───────────────────────────────────────

@@ -20,22 +20,15 @@ PYTHON ?= python3
 # Emit the contract triad + capabilities.json + llms.txt (the fifth contract
 # artifact, stapel_tools.llms_txt) into docs/.
 #
-# The llms.txt budget is raised from the generator's default 4000 to 5000.
-# Было 4500 (~4209 токенов); 08.08.2026 модуль вырос на целую способность —
-# ответ на вопрос по расшифровкам (vector/qa.py) с собственной поверхностью
-# и осями, — и упёрся в потолок. Поднимаем ОСОЗНАННО, как и раньше: резать
-# `intent` под лимит нельзя, потому что подрезанный контекст-файл в точке
-# использования неотличим от полного, а это ровно тот отказ, ради которого
-# жёсткий гейт и заведён. This is the fleet's most file-rich module and its
-# usage surface is 27 entries across six roots — services, storage, pipeline,
-# stages, sources, resources — every one of them a symbol a product would
-# otherwise reimplement (its own S3 client, its own extension whitelist, its
-# own pipeline restart). The owner's call, same as stapel-auth (8000) and
-# stapel-workspaces (4500): raise the ceiling, do NOT shorten `intent` lines
-# in docs/capabilities.meta.json to fit — a trimmed-to-fit context file is
-# indistinguishable from a complete one at the point of use, which is the
-# failure mode the hard-budget gate exists to prevent. contract-check below
-# enforces the same 5000 ceiling; the check is not disabled.
+# The llms.txt budget is raised from the generator's default 4000 to 5000,
+# same exception stapel-auth (8000) and stapel-workspaces (4500) already
+# take. This is the fleet's most file-rich module (27 usage-surface entries
+# across services, storage, pipeline, stages, sources, resources), and the
+# QA capability (vector/qa.py) pushed it past the old 4500 ceiling. Raise
+# the ceiling, do NOT shorten `intent` lines in docs/capabilities.meta.json
+# to fit — a trimmed context file is indistinguishable from a complete one
+# at the point of use, which is the failure mode the budget gate exists to
+# prevent. contract-check below enforces the same 5000 ceiling.
 contract:
 	$(PYTHON) -m stapel_recordings._codegen --out docs
 	$(PYTHON) -m stapel_recordings._capabilities --out docs

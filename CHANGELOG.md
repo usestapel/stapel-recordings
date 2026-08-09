@@ -8,75 +8,75 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ### Fixed
 
-- Системный чек «нет приложения склада задач» переехал с занятого
-  `stapel_recordings.E001` на `stapel_recordings.E004`. Совпадение id было не
-  косметикой: id — это то, чем чек ГЛУШАТ (`SILENCED_SYSTEM_CHECKS`) и по чему
-  его ищут. Заглушив E001 ради «STORAGE не импортируется», хост молча выключал
-  бы и вторую проверку — а она блокирует старт сервиса, у которого расшифровка
-  не сможет отработать вовсе. Новый сторож (`test_ids_проверок_уникальны`)
-  читает ИСХОДНИК модуля, а не прогон: чек, ничего не вернувший в текущей
-  конфигурации, всё равно занимает свой id.
+- The "task store app missing" system check moved from the already-taken
+  `stapel_recordings.E001` to `stapel_recordings.E004`. The id collision
+  wasn't cosmetic: hosts silence and search checks by id
+  (`SILENCED_SYSTEM_CHECKS`). Silencing E001 for "STORAGE not importable"
+  would have silently disabled this check too, blocking a real startup
+  failure. A new guard (`test_check_ids_are_unique`) reads the check
+  module's SOURCE, not a live run, so an id collision is caught even for a
+  check that returns nothing under the current config.
 
 ## [0.13.0] — 2026-08-08
 
 ### Added
 
-- `ffmpeg_normalize(..., max_duration_seconds=...)` — обрезка по длительности
-  на входе конвейера, основа бесплатных тарифов вида «первые N минут любой
-  записи». Обрезка стоит ИМЕННО ЗДЕСЬ: всё, что дальше — расшифровка,
-  диаризация, сводка, эмбеддинги, — работает с обрезанным аудио, не зная о
-  тарифах, и не может обработать (и оплатить провайдеру) то, за что клиент не
-  платил. Возвращается длительность ЗАПИСАННОГО файла, а не исходника: это
-  число уходит в поле длительности записи и обязано описывать то, что лежит.
-- `probe_duration(path)` — публичная проба длительности без перекодирования.
-  Нужна, чтобы сказать «первые 10 минут из 47»: без неё хост лезет в приватный
-  `_probe_audio` или заводит второй вызов ffprobe, который разъедется с этим.
+- `ffmpeg_normalize(..., max_duration_seconds=...)` — a duration cap at the
+  pipeline entrance, the basis for free-tier plans ("first N minutes of any
+  recording"). The cut happens RIGHT HERE: everything downstream
+  (transcription, diarization, summary, embeddings) works on the capped
+  audio without knowing about plans, and can't process (or pay a provider
+  for) minutes the client didn't buy. Returns the duration of the file
+  actually WRITTEN, not the source.
+- `probe_duration(path)` — a public duration probe without transcoding.
+  Needed for an honest "first 10 of 47 minutes" label; without it a host
+  would reach into the private `_probe_audio` or add a second ffprobe call
+  that could drift from this one.
 
 ## [0.12.0] — 2026-08-08
 
 ### Fixed
 
-- `metadata["last_error"]` снимается, когда конвейер снова поехал. Раньше
-  отметка о падении не снималась НИКОГДА — ни при удачной повторной
-  попытке, ни при requeue, ни при доведении записи до `completed`, — и
-  полностью обработанная запись вечно носила причину пережитого сбоя. На
-  стенде айронмемо восемь встреч с готовой расшифровкой, сводкой и
-  эмбеддингами выглядели вставшими именно из-за этого. Причина не
-  теряется: переезжает в `metadata["recovered_error"]` с отметкой
-  `recovered_at` — диагноз для операций сохраняется, но перестаёт
-  выдавать себя за текущее состояние.
+- `metadata["last_error"]` now clears once the pipeline recovers. It used
+  to never clear — not on a successful retry, not on requeue, not even on
+  reaching `completed` — so a fully processed recording could keep
+  carrying the reason for a long-resolved failure. The reason isn't
+  discarded: it moves to `metadata["recovered_error"]` with a
+  `recovered_at` marker, keeping the diagnosis for ops without it posing as
+  current state.
 
 ## [0.11.0] — 2026-08-08
 
 ### Added
 
-- `vector.qa.answer_question()` — ответ на вопрос по расшифровкам:
-  гибридный поиск → промпт из найденных фрагментов → `llm.complete` со
-  схемой на выходе. Каждая цитата указывает на реальный сегмент;
-  выдуманные ссылки отбрасываются. Текст расшифровки считается
-  недоверенным вводом (`sanitize_for_rag` + разделение инструкций и
-  данных).
+- `vector.qa.answer_question()` — question answering over transcripts:
+  hybrid search → prompt built from the found excerpts → `llm.complete`
+  with an output schema. Every citation points at a real segment;
+  fabricated references are dropped. Transcript text is treated as
+  untrusted input (`sanitize_for_rag` + separation of instructions and
+  data).
 
 ## [0.10.0] — 2026-08-08
 
 ### Added
 
-- Мост задач для микросервисных развёрток (`task_delegates.py`): стадия
-  ставит задачу через Task-примитив, работу делает сервис агента. Делегат
-  регистрируется ТОЛЬКО на те `kind`, которые никто не занял, — в
-  монолите настоящий обработчик всегда выигрывает.
+- A task bridge for microservices deployments (`task_delegates.py`): a
+  stage submits a task via the Task primitive, and the agent service does
+  the work. The bridge registers ONLY for `kind`s nobody has claimed — in a
+  monolith, a real handler always wins.
 
 ## [0.9.0] — 2026-08-08
 
 ### Fixed
 
-- **Долгая работа идёт Task-примитивом, а не синхронным Function.**
-  `call("llm.transcribe", …)` звался без `timeout=`, то есть на дефолтных
-  5 секундах comm, при реальной расшифровке в 14 с и сводке в 36 с:
-  расшифровка падала ВСЕГДА, три попытки и DLQ через ~2.5 часа. Стадии
-  теперь возвращают `StageAwaiting`, а `task.completed` / `task.failed`
-  досчитывают их (`resume_stage` / `fail_stage`).
-- Явные сроки обращений к S3/MinIO вместо дефолтов botocore.
+- **Long-running work now goes through the Task primitive instead of a
+  synchronous Function call.** `call("llm.transcribe", …)` used to be
+  called without `timeout=`, i.e. at comm's 5-second default, against a
+  real transcription taking ~14s and a summary ~36s: transcription ALWAYS
+  failed, retried three times, and hit the DLQ after ~2.5 hours. Stages now
+  return `StageAwaiting`, and `task.completed` / `task.failed` complete
+  them (`resume_stage` / `fail_stage`).
+- Explicit S3/MinIO call timeouts instead of botocore defaults.
 
 ## [0.8.1] — 2026-08-02
 

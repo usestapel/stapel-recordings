@@ -1,106 +1,103 @@
-"""Обрезка по длительности на входе конвейера — основа бесплатных тарифов.
+"""Duration cap at the pipeline entrance — the basis for free-tier plans.
 
-«Первые N минут любой записи бесплатно» реализуется ровно здесь и больше
-нигде. Причина в деньгах: обрезав аудио на нормализации, мы отдаём провайдеру
-расшифровки только оплаченные минуты. Любая обрезка ПОЗЖЕ означала бы, что за
-сорок седьмую минуту мы уже заплатили, а показывать её не будем, — худший из
-возможных исходов.
+"First N minutes of any recording, free" is implemented exactly here and
+nowhere else: cut the audio at normalization time, and every later stage
+(transcription, diarization, summary, embeddings) only ever sees the paid
+minutes.
 
-Тесты держат три вещи, каждая из которых ломается молча:
-  • без потолка команда ffmpeg обязана остаться БАЙТ В БАЙТ прежней — иначе
-    обрезка меняет поведение всех, кто её не просил;
-  • ``-t`` стоит ПОСЛЕ ``-i``: перед ``-i`` он ограничивает ввод по времени
-    декодирования, и для потоковых контейнеров это другая длительность;
-  • возвращается длительность ТОГО, ЧТО ЗАПИСАНО. Вернуть исходную значит
-    положить в поле длительности число, которого в файле нет, и весь интерфейс
-    начнёт обещать минуты, которых не существует.
+The tests guard three things, each of which can break silently:
+  - with no cap, the ffmpeg command must stay byte-for-byte the same;
+  - ``-t`` must sit AFTER ``-i``: before ``-i`` it limits input decode time,
+    which is a different duration for streaming containers;
+  - the duration returned is that of what was ACTUALLY WRITTEN, not the
+    source — otherwise the interface promises minutes that don't exist.
 """
 import pytest
 
 from stapel_recordings import normalize
 
 
-class _Готово:
+class _Done:
     returncode = 0
     stdout = b""
     stderr = b""
 
 
 @pytest.fixture
-def прогон(monkeypatch):
-    """Перехватывает subprocess: проверяем НАСТОЯЩУЮ команду, а не пересказ.
+def run(monkeypatch):
+    """Intercepts subprocess: verifies the REAL command, not a paraphrase.
 
-    Подменяется именно ``subprocess.run``, а не ``_run_ffmpeg``: подмена
-    сборщика команды означала бы, что тест проверяет тест. Здесь же в
-    ``записано["cmd"]`` попадает то, что ушло бы в ffmpeg.
+    Patches ``subprocess.run`` itself rather than ``_run_ffmpeg``, so the
+    test doesn't just check its own stand-in. ``captured["cmd"]`` ends up
+    holding exactly what would have gone to ffmpeg.
     """
-    записано = {}
+    captured = {}
 
     def fake_run(cmd, **kwargs):
-        записано["cmd"] = list(cmd)
-        return _Готово()
+        captured["cmd"] = list(cmd)
+        return _Done()
 
     def fake_probe(path):
-        return True, записано.get("длительность_исходника", 2820.0)  # 47 минут
+        return True, captured.get("source_duration", 2820.0)  # 47 minutes
 
     monkeypatch.setattr(normalize.subprocess, "run", fake_run)
     monkeypatch.setattr(normalize, "_probe_audio", fake_probe)
-    return записано
+    return captured
 
 
-def test_без_потолка_команда_прежняя(прогон):
+def test_no_cap_command_unchanged(run):
     normalize.ffmpeg_normalize("in.mp4", "out.wav")
-    assert "-t" not in прогон["cmd"], (
-        "ограничение просочилось в вызов, которого о нём не просили"
+    assert "-t" not in run["cmd"], (
+        "cap leaked into a call that didn't ask for one"
     )
 
 
-def test_потолок_уходит_в_ffmpeg_после_ввода(прогон):
+def test_cap_placed_after_input(run):
     normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600)
-    cmd = прогон["cmd"]
+    cmd = run["cmd"]
     assert "-t" in cmd
     assert cmd[cmd.index("-t") + 1] == "600.000"
     assert cmd.index("-t") > cmd.index("in.mp4"), (
-        "-t стоит перед -i: это ограничение ВВОДА, а не вывода"
+        "-t must come after -i: this caps OUTPUT, not input"
     )
 
 
-def test_возвращается_длительность_записанного(прогон):
+def test_returns_written_duration(run):
     assert normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600) == 600.0
 
 
-def test_короткая_запись_не_растягивается(прогон):
-    прогон["длительность_исходника"] = 120.0
+def test_short_recording_is_not_stretched(run):
+    run["source_duration"] = 120.0
     assert normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600) == 120.0
 
 
-def test_нулевой_и_отрицательный_потолок_игнорируются(прогон):
-    for кривой in (0, -1, -600):
-        normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=кривой)
-        assert "-t" not in прогон["cmd"], (
-            f"потолок {кривой} принят всерьёз — это дало бы файл нулевой длины"
+def test_zero_and_negative_cap_are_ignored(run):
+    for bad_value in (0, -1, -600):
+        normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=bad_value)
+        assert "-t" not in run["cmd"], (
+            f"cap {bad_value} was taken seriously — that would produce a zero-length file"
         )
 
 
-def test_неизвестная_длительность_с_потолком(monkeypatch, прогон):
-    """ffprobe не отдал длительность, но обрезка применена.
+def test_unknown_duration_with_cap(monkeypatch, run):
+    """ffprobe returned no duration, but a cap was requested.
 
-    Потолок — лучшее, что мы знаем о файле на диске; None означал бы «не знаем
-    ничего», хотя мы сами и ограничили запись.
+    The cap is the best information we have about the file on disk; None
+    would mean "we know nothing", even though we ourselves capped it.
     """
     monkeypatch.setattr(normalize, "_probe_audio", lambda path: (True, None))
     assert normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600) == 600.0
 
 
-def test_probe_duration_не_перекодирует(monkeypatch):
-    """Публичная проба нужна ради честной надписи «первые 10 минут из 47»."""
-    вызовы = []
+def test_probe_duration_does_not_transcode(monkeypatch):
+    """The public probe exists for an honest "first 10 of 47 minutes" label."""
+    calls = []
 
     def fake_run(cmd, **kwargs):
-        вызовы.append(list(cmd))
-        return _Готово()
+        calls.append(list(cmd))
+        return _Done()
 
     monkeypatch.setattr(normalize.subprocess, "run", fake_run)
     monkeypatch.setattr(normalize, "_probe_audio", lambda path: (True, 2820.0))
     assert normalize.probe_duration("in.mp4") == 2820.0
-    assert вызовы == [], "проба запустила перекодирование"
+    assert calls == [], "the probe triggered a transcode"

@@ -1,19 +1,19 @@
-"""Ответ на вопрос по расшифровкам (``vector/qa.py``).
+"""Answering a question over transcripts (``vector/qa.py``).
 
-Весь набор идёт на канонической sqlite-сборке:
+The whole suite runs on the canonical sqlite build:
 
-- ``llm.complete`` подменяется зарегистрированной заглушкой на границе
-  реестра comm — та же схема, что у ``stub_rerank``/``stub_embed``: код
-  проходит настоящий ``call()``, включая проверку payload по схеме;
-- гибридный поиск разблокирован на sqlite тем же приёмом, что в
-  ``test_vector_rerank.py`` — гейт postgres заглушается, векторное плечо
-  отдаёт пусто, текстовое (``icontains``, равномерный счёт) остаётся
-  настоящим и даёт детерминированный порядок;
-- срок вызова (``timeout=``) проверяется отдельно, подменой самого
-  ``stapel_core.comm.call``: внутрипроцессный транспорт аргумент не
-  использует, и через заглушку-Function его не увидеть — а именно он
-  отделяет исправную систему от той, что всегда отваливается по пяти
-  секундам FUNCTION_TIMEOUT.
+- ``llm.complete`` is replaced by a registered stub at the comm registry
+  boundary — same pattern as ``stub_rerank``/``stub_embed``: the code still
+  goes through a real ``call()``, including payload schema validation;
+- hybrid search is unlocked on sqlite the same way as in
+  ``test_vector_rerank.py`` — the postgres gate is stubbed out, the vector
+  arm returns nothing, and the text arm (``icontains``, flat scoring) stays
+  real and gives a deterministic order;
+- the call timeout (``timeout=``) is checked separately by patching
+  ``stapel_core.comm.call`` itself: the in-process transport ignores that
+  argument, so a Function stub can't observe it — yet it's exactly what
+  separates a healthy system from one that always fails at the five-second
+  FUNCTION_TIMEOUT.
 """
 import pytest
 from django.test import override_settings
@@ -26,7 +26,7 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def stub_complete():
-    """Заглушка ``llm.complete``: пишет payload, отдаёт заданный конверт."""
+    """Stub for ``llm.complete``: records the payload, returns a canned envelope."""
     from stapel_core.comm import register_function
 
     class Recorder:
@@ -52,7 +52,7 @@ def stub_complete():
 
 @pytest.fixture
 def transcripts(make_recording):
-    """Одна запись, три сегмента со словом roadmap — опора для вопроса."""
+    """One recording, three segments containing "roadmap" — grounding for the question."""
     from stapel_recordings.models import Segment
 
     rec = make_recording(status="completed", language="en")
@@ -72,8 +72,8 @@ def transcripts(make_recording):
 
 @pytest.fixture
 def hybrid_on_sqlite(monkeypatch):
-    """Разблокировать hybrid без postgres: гейт — в no-op, векторное плечо —
-    пустое. Текстовое плечо и границы comm остаются настоящими."""
+    """Unlock hybrid search without postgres: the gate becomes a no-op and
+    the vector arm returns nothing. The text arm and comm boundary stay real."""
     from stapel_recordings.vector import search as search_mod
 
     monkeypatch.setattr(search_mod, "_require_vector_search", lambda: None)
@@ -91,7 +91,7 @@ def _segment_ids(recording):
     ]
 
 
-# ─── Счастливый путь ───────────────────────────────────────────────────
+# ─── Happy path ─────────────────────────────────────────────────────────
 
 
 def test_answer_carries_text_and_resolved_citations(
@@ -107,7 +107,7 @@ def test_answer_carries_text_and_resolved_citations(
     assert isinstance(answer, Answer)
     assert answer.text == "Sign-off is on Friday."
     assert answer.degraded is False
-    # Порядок — модельный, и каждая цитата это настоящая находка поиска.
+    # Order comes from the model, and each citation is a real search hit.
     assert [str(h.segment_id) for h in answer.citations] == [ids[2], ids[0]]
     assert all(isinstance(h, SearchHit) for h in answer.citations)
 
@@ -118,14 +118,14 @@ def test_prompt_carries_full_texts_and_ids_and_the_question(
     answer_question("roadmap", transcripts.workspace_id)
 
     (payload,) = stub_complete.calls
-    assert payload["model"] == "medium"  # VECTOR["QA_MODEL"] по умолчанию
+    assert payload["model"] == "medium"  # VECTOR["QA_MODEL"] default
     assert payload["schema"]["required"] == ["answer", "citations"]
     assert "CONTEXT" in payload["system_prompt"]
     prompt = payload["prompt"]
     assert "QUESTION: roadmap" in prompt
     for seg_id in _segment_ids(transcripts):
         assert f"[id: {seg_id}]" in prompt
-    # Полный текст сегмента, а не сниппет-окно.
+    # Full segment text, not a snippet window.
     assert "we sign off the roadmap on Friday" in prompt
 
 
@@ -143,9 +143,8 @@ def test_model_size_and_provider_are_forwarded(
 def test_scope_narrows_to_the_given_recordings(
     transcripts, make_recording, hybrid_on_sqlite, stub_complete
 ):
-    """``recording_ids`` — это список ВИДИМЫХ записей у хоста: мягко
-    удалённая запись сохраняет сегменты, и без сужения они попали бы в
-    опору ответа."""
+    """``recording_ids`` is the host's list of VISIBLE recordings: a soft-deleted
+    recording keeps its segments, and without narrowing they'd leak into the answer."""
     from stapel_recordings.models import Segment
 
     other = make_recording(
@@ -179,13 +178,13 @@ def test_other_workspaces_are_invisible(
     assert "another tenant" not in payload["prompt"]
 
 
-# ─── Защита от инъекции ────────────────────────────────────────────────
+# ─── Injection protection ────────────────────────────────────────────────
 
 
 def test_injection_markers_are_stripped_before_the_prompt(
     make_recording, hybrid_on_sqlite, stub_complete
 ):
-    """Маркер из расшифровки не должен доехать до модели."""
+    """A marker from the transcript must not reach the model."""
     from stapel_recordings.models import Segment
 
     rec = make_recording(status="completed", language="en")
@@ -199,7 +198,7 @@ def test_injection_markers_are_stripped_before_the_prompt(
     lowered = payload["prompt"].lower()
     assert "ignore all previous instructions" not in lowered
     assert "pwned" not in lowered
-    # Полезная часть фрагмента при этом сохранилась.
+    # The useful part of the excerpt survives.
     assert "roadmap notes" in payload["prompt"]
 
 
@@ -220,8 +219,8 @@ def test_segment_that_is_only_an_injection_is_dropped(
     answer_question("roadmap", rec.workspace_id)
 
     (payload,) = stub_complete.calls
-    # Сегмент нашёлся поиском, но после чистки в нём остаётся только слово
-    # запроса — блок с ним всё равно выдан, а вот маркера нет нигде.
+    # The segment was found by search, but after cleanup only the query word
+    # remains — its block is still emitted, but the marker is gone entirely.
     assert "pwned" not in payload["prompt"].lower()
     assert str(poison.id) in payload["prompt"]
 
@@ -229,8 +228,8 @@ def test_segment_that_is_only_an_injection_is_dropped(
 def test_context_chars_caps_each_excerpt(
     make_recording, hybrid_on_sqlite, stub_complete
 ):
-    """Потолок на фрагмент — про транспорт (предел сообщения), а не про
-    вкус: превышение теряет уже оплаченную работу."""
+    """The per-excerpt cap is about transport (message size limit), not
+    taste: going over it loses work that's already been paid for."""
     from stapel_recordings.models import Segment
 
     rec = make_recording(status="completed", language="en")
@@ -247,14 +246,14 @@ def test_context_chars_caps_each_excerpt(
     assert "…" in excerpt
 
 
-# ─── Цитаты ────────────────────────────────────────────────────────────
+# ─── Citations ───────────────────────────────────────────────────────────
 
 
 def test_invented_citation_ids_are_dropped(
     transcripts, hybrid_on_sqlite, stub_complete
 ):
-    """Цитата существует ради проверяемости — ссылка в никуда ломает ровно
-    то, ради чего она есть."""
+    """A citation exists to be verifiable — a link to nowhere defeats the
+    entire point of having one."""
     ids = _segment_ids(transcripts)
     stub_complete.result = {
         "status": "ok",
@@ -279,7 +278,7 @@ def test_duplicate_citations_collapse(transcripts, hybrid_on_sqlite, stub_comple
     assert [str(h.segment_id) for h in answer.citations] == [ids[0], ids[1]]
 
 
-# ─── Отказы ────────────────────────────────────────────────────────────
+# ─── Failures ────────────────────────────────────────────────────────────
 
 
 def test_provider_error_degrades_instead_of_raising(
@@ -291,8 +290,8 @@ def test_provider_error_degrades_instead_of_raising(
     answer = answer_question("roadmap", transcripts.workspace_id)
 
     assert answer.degraded is True
-    assert answer.text  # понятная строка, а не пустота
-    # Находки поиска сохранены: опора без ответа полезнее, чем ничего.
+    assert answer.text  # a readable string, not empty
+    # Search hits are preserved: grounding without an answer beats nothing.
     assert len(answer.citations) == 3
 
 
@@ -323,9 +322,9 @@ def test_unusable_result_degrades(
 
 
 def test_vector_search_unavailable_propagates(transcripts, stub_complete):
-    """Без postgres/pgvector/приложения гибридный поиск невозможен — это про
-    развёртывание, и хост отвечает на неё своим кодом (503), а не
-    деградированным ответом."""
+    """Without postgres/pgvector/the app, hybrid search is impossible — this
+    is a deployment issue, and the host answers it with its own code (503),
+    not a degraded answer."""
     with pytest.raises(VectorSearchUnavailable):
         answer_question("roadmap", transcripts.workspace_id)
     assert stub_complete.calls == []
@@ -346,19 +345,19 @@ def test_blank_query_never_reaches_the_model(transcripts, stub_complete):
 
 
 def test_unknown_model_size_is_a_loud_error(transcripts, stub_complete):
-    """Опечатка в настройке — ошибка вызывающего; спрятать её за «модель не
-    ответила» значит сделать её ненаходимой."""
+    """A typo in the setting is the caller's mistake; hiding it behind "the
+    model didn't answer" would make it unfindable."""
     with pytest.raises(ValueError, match="model_size"):
         answer_question("roadmap", transcripts.workspace_id, model_size="xl")
     assert stub_complete.calls == []
 
 
-# ─── Срок вызова ───────────────────────────────────────────────────────
+# ─── Call timeout ────────────────────────────────────────────────────────
 
 
 def test_timeout_is_passed_explicitly(transcripts, hybrid_on_sqlite, monkeypatch):
-    """Без явного ``timeout=`` вызов берёт FUNCTION_TIMEOUT (5с) — тот самый
-    дефект, из-за которого исправная система отказывала бы всегда."""
+    """Without an explicit ``timeout=``, the call falls back to FUNCTION_TIMEOUT
+    (5s) — the exact defect that would make a healthy system always fail."""
     seen = {}
 
     def fake_call(name, payload=None, *, timeout=None):
@@ -375,12 +374,12 @@ def test_timeout_is_passed_explicitly(transcripts, hybrid_on_sqlite, monkeypatch
     assert seen["timeout"] == 90.0
 
 
-# ─── Чистая часть ──────────────────────────────────────────────────────
+# ─── Pure functions ──────────────────────────────────────────────────────
 
 
 def test_build_prompt_falls_back_to_the_snippet_for_a_vanished_segment(db):
-    """Сегмент мог быть удалён между поиском и сборкой промпта — тогда в
-    контекст идёт сниппет, а не пустая дырка."""
+    """The segment may have been deleted between search and prompt assembly —
+    then the context gets the snippet instead of an empty hole."""
     import uuid
 
     hit = SearchHit(uuid.uuid4(), uuid.uuid4(), 1.0, "…the roadmap review…")
@@ -391,8 +390,8 @@ def test_build_prompt_falls_back_to_the_snippet_for_a_vanished_segment(db):
 
 
 def test_build_prompt_sanitizes_the_question_too(db):
-    """Вопрос пишет пользователь — это такой же недоверенный ввод, как и
-    расшифровка, и второй способ дотянуться до инструкций."""
+    """The question is user-written — just as untrusted as the transcript,
+    and a second way to reach the instructions."""
     import uuid
 
     hit = SearchHit(uuid.uuid4(), uuid.uuid4(), 1.0, "the roadmap review")

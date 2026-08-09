@@ -180,15 +180,15 @@ def run_stage(recording_id: str, stage_index: int) -> None:
         try:
             new_ctx = stage.run(recording, ctx) or {}
         except StageAwaiting as exc:
-            # Работа ПОСТАВЛЕНА, а не провалена: стадия не завершается, но и
-            # попытка не тратится. Запоминаем task_id, чтобы возобновление
-            # (и только оно) могло досчитать именно эту стадию; статус
-            # записи остаётся стадийным — человек видит «расшифровываем», а
-            # не пустоту.
+            # Work was SUBMITTED, not failed: the stage doesn't complete,
+            # but no attempt is spent either. Remember task_id so resume
+            # (and only resume) can complete this exact stage; the
+            # recording's status stays stage-specific — the user sees
+            # "transcribing", not a blank.
             _set_awaiting(recording, next_index, stage_name, exc.task_id, exc.kind)
             recording.save(update_fields=["metadata", "updated_at"])
             logger.info(
-                "pipeline: recording %s стадия %s ждёт задачу %s (%s)",
+                "pipeline: recording %s stage %s awaiting task %s (%s)",
                 recording.id, stage_name, exc.task_id, exc.kind,
             )
             return
@@ -219,16 +219,16 @@ def run_stage(recording_id: str, stage_index: int) -> None:
 
 
 def resume_stage(recording_id: str, task_id: str, result) -> None:
-    """Досчитать стадию, которая ждала задачу *task_id*, по её результату.
+    """Complete a stage that was awaiting task *task_id*, using its result.
 
-    Вызывается подписчиком на ``task.completed``. Симметрична успешному
-    хвосту :func:`run_stage`: тот же замок, та же отметка о завершении, те
-    же события — разница лишь в том, что работа делалась не здесь.
+    Called by the ``task.completed`` subscriber. Mirrors the success tail of
+    :func:`run_stage`: same lock, same completion marker, same events — the
+    only difference is the work happened elsewhere.
 
-    ЗАЩИТА ОТ ЧУЖОГО РЕЗУЛЬТАТА. Доставка событий at-least-once, а задача
-    могла быть перезапущена — поэтому сверяем ``task_id`` с записанным.
-    Не совпал: значит пришёл ответ на отменённую или устаревшую попытку, и
-    применять его к текущей стадии нельзя.
+    GUARDS AGAINST A FOREIGN RESULT. Delivery is at-least-once and the task
+    could have been restarted, so we check ``task_id`` against the one we
+    recorded. A mismatch means this is a response to a cancelled or stale
+    attempt, which must not be applied to the current stage.
     """
     with transaction.atomic():
         try:
@@ -242,7 +242,7 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
         awaiting = _pipeline_meta(recording).get("awaiting") or {}
         if awaiting.get("task_id") != str(task_id):
             logger.info(
-                "resume_stage: recording %s ждёт %r, а результат от %r — игнорирую",
+                "resume_stage: recording %s is awaiting %r, ignoring result from %r",
                 recording_id, awaiting.get("task_id"), task_id,
             )
             return
@@ -283,11 +283,11 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
 
 
 def fail_stage(recording_id: str, task_id: str, error: str) -> None:
-    """Задача, которую ждала стадия, окончательно провалилась.
+    """The task a stage was awaiting has failed for good.
 
-    Task-примитив уже отработал свои ``max_attempts`` — поэтому здесь не
-    ретрай, а DLQ: считать попытки второй раз значило бы умножать
-    ожидание, которое человек и так уже отсидел.
+    The Task primitive has already exhausted its own ``max_attempts``, so
+    this is DLQ, not a retry: retrying again would just double the wait the
+    user already sat through.
     """
     with transaction.atomic():
         try:
@@ -464,11 +464,11 @@ def _set_current(recording: Recording, stage_index: int, stage_name: str) -> Non
 def _set_awaiting(
     recording: Recording, stage_index: int, stage_name: str, task_id: str, kind: str
 ) -> None:
-    """Запомнить, какой стадии какой задачи ждать.
+    """Remember which stage is awaiting which task.
 
-    Хранится ИМЯ стадии вместе с индексом — по той же причине, по которой
-    курсор завершённых ведётся именами: список стадий может быть изменён
-    под живой записью, и один индекс доверия не заслуживает.
+    The stage NAME is stored alongside the index, for the same reason the
+    completed-stages cursor tracks names: the stage list can change under a
+    live recording, and an index alone can't be trusted.
     """
     metadata = dict(recording.metadata or {})
     pl = dict(metadata.get("pipeline") or {})
@@ -514,23 +514,17 @@ def _set_last_error(recording: Recording, stage: str, reason: str, detail=None) 
 
 
 def _clear_last_error(recording: Recording) -> None:
-    """Снять отметку об ошибке, когда конвейер снова поехал.
+    """Clear the error marker once the pipeline is moving again.
 
-    ``last_error`` пишется при падении стадии и до этой правки не снимался
-    НИКОГДА: ни при удачной повторной попытке, ни при ручном requeue, ни
-    при завершении записи. Запись доходила до ``completed`` и продолжала
-    носить причину давно пережитого падения.
+    ``last_error`` is set on stage failure and used to never clear: not on a
+    successful retry, not on manual requeue, not on completion. A recording
+    could reach ``completed`` while still carrying a long-resolved failure
+    reason, which then misled decisions made from that field.
 
-    Это ровно тот жанр, который дороже самого сбоя: 08.08.2026 восемь
-    встреч на стенде выглядели «встали на эмбеддингах» — с полной
-    расшифровкой, сводкой и всеми эмбеддингами на месте. Поле врало, и по
-    нему принимались решения (в том числе мной — я пошёл чинить то, что
-    уже работало).
-
-    Причину не выбрасываем, а переносим в ``recovered_error``: диагноз для
-    операций сохраняется, но перестаёт выдавать себя за текущее состояние.
-    Снимаем на КАЖДОЙ успешно завершённой стадии, а не только в финале, —
-    частично восстановившаяся запись обязана говорить правду тоже.
+    The reason isn't discarded, it moves to ``recovered_error``: kept for
+    diagnostics but no longer posing as current state. Cleared on EVERY
+    successfully completed stage, not just at the end, so a partially
+    recovered recording also tells the truth.
     """
     metadata = dict(recording.metadata or {})
     previous = metadata.pop("last_error", None)

@@ -1,14 +1,13 @@
-"""Отметка об ошибке обязана сниматься, когда конвейер снова поехал.
+"""The error marker must clear once the pipeline recovers.
 
-До 08.08.2026 ``metadata["last_error"]`` писалась при падении стадии и не
-снималась НИКОГДА: ни при удачной повторной попытке, ни при requeue, ни при
-доведении записи до ``completed``. Запись с полной расшифровкой, сводкой и
-эмбеддингами продолжала носить причину давно пережитого падения — и по этому
-полю принимались решения. На стенде айронмемо восемь встреч выглядели
-вставшими на эмбеддингах, будучи полностью обработанными.
+Before 2026-08-08, ``metadata["last_error"]`` was set on stage failure and
+never cleared: not on a successful retry, not on requeue, not even once the
+recording reached ``completed``. A fully transcribed, summarized, embedded
+recording kept carrying the reason for a long-past failure — and that field
+drove decisions.
 
-Причина не выбрасывается, а переезжает в ``recovered_error``: диагноз для
-операций сохраняется, но перестаёт выдавать себя за текущее состояние.
+The reason isn't discarded, it moves to ``recovered_error``: the diagnosis
+stays available for ops but stops posing as current state.
 """
 import pytest
 from django.test import override_settings
@@ -25,85 +24,86 @@ _FAKE = {
 }
 
 
-class ФлакающаяСтадия(Stage):
-    """Падает на первом прогоне, проходит на втором — как сеть или квота."""
+class FlakyStage(Stage):
+    """Fails on the first run, passes on the second — like a flaky network or quota."""
 
     name = "flaky"
     status = RecordingStatus.MERGING
 
-    падений = 0
+    failures = 0
 
     def run(self, recording, ctx):
-        type(self).падений += 1
-        if type(self).падений == 1:
-            raise StageRetryable(reason="эмбеддер отбил пачку", detail="413")
+        type(self).failures += 1
+        if type(self).failures == 1:
+            raise StageRetryable(reason="embedder rejected the batch", detail="413")
         return ctx
 
 
 @pytest.fixture
-def флака():
-    ФлакающаяСтадия.падений = 0
-    stages.register_stage("flaky", ФлакающаяСтадия())
-    yield ФлакающаяСтадия
+def flaky():
+    FlakyStage.failures = 0
+    stages.register_stage("flaky", FlakyStage())
+    yield FlakyStage
 
 
-def _прогнать(recording_id, drain, индекс=0):
-    """Один проход конвейера ``convert -> flaky``.
+def _run_pipeline(recording_id, drain, index=0):
+    """One pass of the ``convert -> flaky`` pipeline.
 
-    *индекс* — то же, что кладёт в событие reconcile, пере-driving
-    припаркованную запись: он бьёт в ТЕКУЩУЮ стадию, а не в нулевую
-    (повторная выдача уже завершённой отбрасывается сторожем дублей).
+    *index* mirrors what reconcile puts in the event when re-driving a
+    parked recording: it targets the CURRENT stage, not stage zero (a
+    duplicate re-emit of an already-completed stage is dropped by the
+    dedup guard).
     """
     with override_settings(STAPEL_RECORDINGS={**_FAKE, "PIPELINE": ["convert", "flaky"]}):
         from stapel_recordings import storage
 
         storage.reset_storage_cache()
-        events.emit_stage(recording_id, индекс)
+        events.emit_stage(recording_id, index)
         drain()
 
 
-def test_отметка_ставится_при_падении(ready_recording, флака, drain):
-    _прогнать(ready_recording.id, drain)
+def test_marker_set_on_failure(ready_recording, flaky, drain):
+    _run_pipeline(ready_recording.id, drain)
 
     r = Recording.objects.get(pk=ready_recording.id)
-    assert r.metadata["last_error"]["reason"] == "эмбеддер отбил пачку"
+    assert r.metadata["last_error"]["reason"] == "embedder rejected the batch"
     assert "recovered_error" not in r.metadata
 
 
-def test_отметка_снимается_когда_стадия_прошла(ready_recording, флака, drain):
-    _прогнать(ready_recording.id, drain)  # падение, запись припаркована
-    _прогнать(ready_recording.id, drain, 1)  # повтор — стадия проходит
+def test_marker_cleared_when_stage_succeeds(ready_recording, flaky, drain):
+    _run_pipeline(ready_recording.id, drain)  # failure, recording parked
+    _run_pipeline(ready_recording.id, drain, 1)  # retry — stage passes
 
     r = Recording.objects.get(pk=ready_recording.id)
     assert "last_error" not in r.metadata, (
-        "запись доехала, а поле продолжает утверждать, что она сломана"
+        "recording completed but the field still claims it's broken"
     )
     assert r.status == RecordingStatus.COMPLETED
 
 
-def test_причина_не_теряется_а_переезжает(ready_recording, флака, drain):
-    _прогнать(ready_recording.id, drain)
-    _прогнать(ready_recording.id, drain, 1)
+def test_reason_moves_to_recovered_error(ready_recording, flaky, drain):
+    _run_pipeline(ready_recording.id, drain)
+    _run_pipeline(ready_recording.id, drain, 1)
 
     r = Recording.objects.get(pk=ready_recording.id)
-    восстановлено = r.metadata["recovered_error"]
-    assert восстановлено["reason"] == "эмбеддер отбил пачку"
-    assert восстановлено["stage"] == "flaky"
-    assert восстановлено["recovered_at"], "нужна отметка, КОГДА отпустило"
+    recovered = r.metadata["recovered_error"]
+    assert recovered["reason"] == "embedder rejected the batch"
+    assert recovered["stage"] == "flaky"
+    assert recovered["recovered_at"], "needs a timestamp for WHEN it recovered"
 
 
-def test_на_чистой_записи_ничего_не_появляется(ready_recording, флака, drain):
-    """Успех без предшествующего падения не должен плодить пустых полей."""
-    ФлакающаяСтадия.падений = 1  # первый же прогон успешный
-    _прогнать(ready_recording.id, drain)
+def test_no_fields_added_on_clean_success(ready_recording, flaky, drain):
+    """Success with no prior failure must not add empty fields."""
+    FlakyStage.failures = 1  # first run already succeeds
+    _run_pipeline(ready_recording.id, drain)
 
     r = Recording.objects.get(pk=ready_recording.id)
     assert "last_error" not in r.metadata
     assert "recovered_error" not in r.metadata
 
 
-def test_пока_запись_сломана_поле_остаётся(ready_recording, флака, drain):
-    """Обратная сторона: у по-настоящему упавшей записи причина обязана быть."""
+def test_field_persists_while_recording_broken(ready_recording, flaky, drain):
+    """The flip side: a recording that's truly stuck must keep the reason."""
     with override_settings(
         STAPEL_RECORDINGS={**_FAKE, "PIPELINE": ["convert", "flaky"], "MAX_STAGE_RETRIES": 0}
     ):

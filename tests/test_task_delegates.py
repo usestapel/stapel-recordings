@@ -1,15 +1,14 @@
-"""Мост задач: очередь у записей, работа у агента.
+"""Task bridge: the queue lives with the recording, the work goes to the agent.
 
-ПОЧЕМУ МОСТ ВООБЩЕ НУЖЕН. Task-примитив хранит состояние в таблице
-``TaskRecord``, и исполнить задачу может только процесс, который эту
-таблицу видит. Замер на стенде ironmemo 08.08.2026: у сервисов РАЗНЫЕ базы
-(``iron_recordings`` против ``iron_agent``). Значит задача, поставленная
-конвейером записей, агенту не видна: его подписчик молча пропустит
-незнакомый вид, и запись останется PENDING навсегда — то есть человек
-снова смотрел бы на «обрабатывается», только теперь вечно.
+WHY THE BRIDGE EXISTS. The Task primitive keeps its state in the
+``TaskRecord`` table, which only the process that can see that table can
+execute. In a microservices layout the recordings and agent databases are
+different, so a task submitted by the recordings pipeline is invisible to
+the agent: its subscriber would silently skip the unknown kind, and the
+recording would stay PENDING forever.
 
-Мост оставляет очередь, состояние и попытки там, где живёт запись, а
-работу отдаёт агенту обычным Function-вызовом через шину.
+The bridge keeps the queue, state and retries where the recording lives, and
+hands the work to the agent as an ordinary Function call over the bus.
 """
 import pytest
 from django.test import override_settings
@@ -30,16 +29,16 @@ def clean_handlers():
     tp._handlers.update(saved)
 
 
-class TestМостВстаётТолькоКогдаНекому:
-    def test_регистрирует_виды_которые_никто_не_взял(self, clean_handlers):
+class TestBridgeRegistersOnlyWhenNoHandler:
+    def test_registers_kinds_nobody_claimed(self, clean_handlers):
         task_delegates.register_default_task_delegates()
         assert set(clean_handlers.registered_kinds()) == set(task_delegates.DELEGATED)
 
-    def test_не_подменяет_настоящий_обработчик(self, clean_handlers):
-        """Монолит: обработчик агента уже в этом процессе.
+    def test_does_not_override_real_handler(self, clean_handlers):
+        """Monolith: the agent's handler already runs in this process.
 
-        Молчаливая подмена настоящего исполнителя заглушкой-мостом была бы
-        худшим из возможных исходов — работа ушла бы по кругу.
+        Silently swapping the real executor for the bridge stub would be the
+        worst possible outcome — the work would go in a circle.
         """
         real = lambda payload: {"status": "ok", "from": "agent"}  # noqa: E731
         clean_handlers.register_task("llm.transcribe", real)
@@ -49,13 +48,13 @@ class TestМостВстаётТолькоКогдаНекому:
         assert clean_handlers._handlers["llm.transcribe"] is real
 
     @override_settings(STAPEL_RECORDINGS={"DELEGATE_TASKS_TO_AGENT": False})
-    def test_выключается_настройкой(self, clean_handlers):
+    def test_disabled_by_setting(self, clean_handlers):
         task_delegates.register_default_task_delegates()
         assert clean_handlers.registered_kinds() == []
 
 
-class TestМостОтдаётРаботуСДлиннымСроком:
-    def test_зовёт_функцию_того_же_имени(self, clean_handlers, monkeypatch):
+class TestBridgeDelegatesWithLongTimeout:
+    def test_calls_function_of_same_name(self, clean_handlers, monkeypatch):
         seen = {}
 
         def fake_call(name, payload, *, timeout=None):
@@ -72,11 +71,11 @@ class TestМостОтдаётРаботуСДлиннымСроком:
         assert result == {"status": "ok"}
         assert seen["name"] == "llm.transcribe"
         assert seen["payload"] == {"audio_url": "u"}
-        # Тот самый срок, которого не было: дефолт FUNCTION_TIMEOUT — пять
-        # секунд, и на нём падала КАЖДАЯ настоящая расшифровка.
+        # The timeout that used to be missing: the FUNCTION_TIMEOUT default
+        # is five seconds, which every real transcription used to exceed.
         assert seen["timeout"] == 1800.0
 
-    def test_у_сводки_свой_срок(self, clean_handlers, monkeypatch):
+    def test_summary_has_its_own_timeout(self, clean_handlers, monkeypatch):
         seen = {}
 
         def fake_call(name, payload, *, timeout=None):

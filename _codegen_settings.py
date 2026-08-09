@@ -135,10 +135,10 @@ def settings_kwargs(
             "stapel_core.django.apps.CommonDjangoConfig",
             "stapel_core.django.users",
             "stapel_core.django.outbox",
-            # Task-примитив: долгая работа (расшифровка, сводка) ставится
-            # задачей и досчитывается по task.completed. Без этого app'а нет
-            # таблицы TaskRecord — конвейер не сможет ПОСТАВИТЬ работу.
-            # Хосту про это говорит системный чек (checks.py, W006).
+            # Task primitive: long-running work (transcription, summary) is
+            # dispatched as a task and resumed on task.completed. Without
+            # this app there's no TaskRecord table, so the pipeline can't
+            # submit work. A system check flags this (checks.py, W006).
             "stapel_core.django.taskstore",
             "rest_framework",
             "drf_spectacular",
@@ -166,23 +166,21 @@ def settings_kwargs(
         # §7.21) and schema validation is ON — the committed contracts in
         # schemas/ are enforced by the tests. Schema emission never executes
         # an action, so this only needs to be present, not exercised.
-        # Задачи в наборе исполняются СИНХРОННО внутри start(). Это не
-        # поблажка тестам, а честная модель монолита без брокера
-        # (TASK_DISPATCH="inline" — штатный режим, задокументированный в
-        # comm/tasks.py): стадия ставит задачу, та тут же выполняется, и
-        # stage.run досчитывает её сам, не поднимая StageAwaiting. Ветка с
-        # ожиданием проверяется отдельно, в test_task_pipeline.py.
+        # Tasks in this suite run SYNCHRONOUSLY inside start(). This isn't a
+        # test shortcut — it's the honest model for a brokerless monolith
+        # (TASK_DISPATCH="inline", documented in comm/tasks.py): the stage
+        # submits a task, it runs immediately, and stage.run resumes it
+        # itself without raising StageAwaiting. The awaiting branch is
+        # covered separately in test_task_pipeline.py.
         STAPEL_BUS_BACKEND="stapel_core.bus.backends.memory.MemoryBus",
         STAPEL_COMM={
             "OUTBOX_ENABLED": True,
             "ACTION_TRANSPORT": "inprocess",
             "FUNCTION_TRANSPORT": "inprocess",
             "VALIDATE_SCHEMAS": True,
-            # Задачи исполняются СИНХРОННО внутри start(). Это не поблажка
-            # тестам, а честная модель монолита без брокера (штатный режим,
-            # задокументированный в comm/tasks.py): стадия ставит задачу, та
-            # тут же выполняется, и stage.run досчитывает её сам, не поднимая
-            # StageAwaiting. Ветка с ожиданием — отдельным набором.
+            # Tasks run SYNCHRONOUSLY inside start() — the honest brokerless
+            # monolith model. The awaiting branch has its own suite
+            # (test_task_pipeline.py).
             "TASK_DISPATCH": "inline",
         },
         MIGRATION_MODULES={

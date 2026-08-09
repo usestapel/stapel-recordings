@@ -1,20 +1,20 @@
-"""Долгая работа ставится задачей, а стадия ждёт и досчитывается потом.
+"""Long-running work is dispatched as a task; the stage waits and resumes later.
 
-ПОЧЕМУ ЭТОТ НАБОР ОТДЕЛЬНЫЙ. Остальной набор гоняет задачи синхронно
-(``TASK_DISPATCH="inline"`` — честная модель монолита без брокера), и в нём
-ветка ожидания просто не встречается: ``start()`` успевает выполнить
-обработчик, ``submit_task`` возвращает результат, стадия завершается в один
-проход. Ровно поэтому её надо проверять отдельно — иначе главное свойство
-перехода останется непокрытым, а набор будет выглядеть зелёным.
+WHY THIS SUITE IS SEPARATE. The rest of the suite runs tasks synchronously
+(``TASK_DISPATCH="inline"`` — the honest model for a brokerless monolith), so
+the awaiting branch never triggers there: ``start()`` runs the handler,
+``submit_task`` returns a result, and the stage completes in one pass. That's
+exactly why it needs its own coverage — otherwise the core property of the
+transition would go untested while the suite looked green.
 
-ЧТО ЭТО ЗА ПЕРЕХОД. Раньше расшифровка звалась синхронным Function:
-вызывающий держал воркер и ждал ответа, а «сколько ждать» брал из
-``FUNCTION_TIMEOUT`` — пять секунд по умолчанию. Замер на стенде айронмемо
-08.08.2026: настоящая расшифровка укладывается в 14 секунд, сводка — в 36.
-То есть КАЖДАЯ настоящая запись падала по таймауту, ретраилась трижды и
-уходила в error спустя два с половиной часа, а человек всё это время
-смотрел на «обрабатывается». Очередь ломает синхронную модель до конца:
-занятых исполнителей нельзя дождаться за фиксированный срок в принципе.
+WHAT THIS TRANSITION IS. Transcription used to be a synchronous Function
+call: the caller held the worker and waited, with "how long to wait" coming
+from ``FUNCTION_TIMEOUT`` (five seconds by default). A real transcription
+takes on the order of seconds to tens of seconds — comfortably past that
+default — so every real recording used to time out, retry three times, and
+land in error a couple of hours later while the user stared at "processing".
+A queue breaks the synchronous model for good: busy workers can't be waited
+out within a fixed deadline.
 """
 import uuid
 
@@ -49,11 +49,11 @@ TRANSCRIPT_OK = {
 
 @pytest.fixture
 def deferred_tasks():
-    """Задачи НЕ исполняются в start() — ровно как с брокером и очередью."""
+    """Tasks are NOT executed in start() — matching a real broker + queue."""
     from stapel_core.comm import tasks as _tasks
 
-    # Обработчик снят: никакой процесс здесь llm.transcribe не исполняет,
-    # значит задача останется PENDING, а стадия обязана уйти в ожидание.
+    # Handler removed: no process here executes llm.transcribe, so the task
+    # stays PENDING and the stage must go into awaiting.
     saved = dict(_tasks._handlers)
     _tasks._handlers.pop("llm.transcribe", None)
     _tasks._handlers.pop("llm.summarize", None)
@@ -71,12 +71,8 @@ def deferred_tasks():
     _tasks._handlers.update(saved)
 
 
-class ОжиданиеЭтоНеОтказ:
-    """Пометка-заголовок: StageAwaiting не должен считаться попыткой."""
-
-
-class TestСтадияУходитВОжидание:
-    def test_transcribe_поднимает_awaiting_а_не_ошибку(
+class TestStageEntersAwaiting:
+    def test_transcribe_raises_awaiting_not_error(
         self, ready_recording, use_fakes, deferred_tasks
     ):
         with pytest.raises(StageAwaiting) as caught:
@@ -84,7 +80,7 @@ class TestСтадияУходитВОжидание:
         assert caught.value.kind == "llm.transcribe"
         assert caught.value.task_id
 
-    def test_задача_создана_и_ждёт_исполнителя(
+    def test_task_created_and_awaits_worker(
         self, ready_recording, use_fakes, deferred_tasks
     ):
         from stapel_core.comm import status
@@ -94,10 +90,10 @@ class TestСтадияУходитВОжидание:
         snapshot = status(caught.value.task_id)
         assert snapshot.state == "pending"
         assert snapshot.kind == "llm.transcribe"
-        # Работа НЕ потеряна: она лежит в таблице и переживёт рестарт —
-        # именно этого не умел синхронный вызов.
+        # The work isn't lost: it lives in the table and survives a
+        # restart — which the synchronous call never could.
 
-    def test_корреляция_ведёт_к_записи(self, ready_recording, use_fakes, deferred_tasks):
+    def test_correlation_id_points_to_recording(self, ready_recording, use_fakes, deferred_tasks):
         from stapel_core.django.taskstore.models import TaskRecord
 
         with pytest.raises(StageAwaiting) as caught:
@@ -106,27 +102,26 @@ class TestСтадияУходитВОжидание:
         assert record.correlation_id == str(ready_recording.id)
 
 
-class TestДрайверЗапоминаетОжидание:
+class TestDriverRemembersAwaiting:
     def _drive(self, recording):
         pipeline.run_stage(str(recording.id), 0)  # convert
-        pipeline.run_stage(str(recording.id), 1)  # transcribe -> ожидание
+        pipeline.run_stage(str(recording.id), 1)  # transcribe -> awaiting
 
-    def test_запись_не_падает_и_не_завершается(
+    def test_recording_neither_fails_nor_completes(
         self, ready_recording, use_fakes, deferred_tasks
     ):
         self._drive(ready_recording)
         r = Recording.objects.get(pk=ready_recording.id)
         assert r.status == RecordingStatus.TRANSCRIBING
-        # Не error и не completed: работа идёт, и статус об этом ЧЕСТНО
-        # говорит. Человеку есть что показать — «расшифровываем», а не
-        # индикатор без обещаний.
+        # Not error, not completed: work is in progress and the status says
+        # so honestly — "transcribing", not an indicator with no promises.
 
-    def test_ожидание_не_тратит_попытку(self, ready_recording, use_fakes, deferred_tasks):
+    def test_awaiting_does_not_consume_attempt(self, ready_recording, use_fakes, deferred_tasks):
         self._drive(ready_recording)
         r = Recording.objects.get(pk=ready_recording.id)
         assert r.retry_count == 0
 
-    def test_стадия_не_отмечена_завершённой(
+    def test_stage_not_marked_completed(
         self, ready_recording, use_fakes, deferred_tasks
     ):
         self._drive(ready_recording)
@@ -135,13 +130,13 @@ class TestДрайверЗапоминаетОжидание:
         assert r.metadata["pipeline"]["awaiting"]["kind"] == "llm.transcribe"
 
 
-class TestВозобновление:
+class TestResume:
     def _await_task(self, recording):
         pipeline.run_stage(str(recording.id), 0)
         pipeline.run_stage(str(recording.id), 1)
         return Recording.objects.get(pk=recording.id).metadata["pipeline"]["awaiting"]["task_id"]
 
-    def test_результат_досчитывает_стадию(
+    def test_result_completes_stage(
         self, ready_recording, use_fakes, deferred_tasks
     ):
         task_id = self._await_task(ready_recording)
@@ -153,13 +148,13 @@ class TestВозобновление:
         assert "transcribe" in r.metadata["pipeline"]["completed"]
         assert "awaiting" not in r.metadata["pipeline"]
 
-    def test_чужой_результат_игнорируется(
+    def test_foreign_result_is_ignored(
         self, ready_recording, use_fakes, deferred_tasks
     ):
-        """Доставка at-least-once, задача могла быть перезапущена.
+        """Delivery is at-least-once, and the task could have been restarted.
 
-        Ответ на устаревшую попытку обязан быть отброшен — иначе стадия
-        досчитается по данным, которых у неё уже не просили.
+        A response to a stale attempt must be dropped — otherwise the stage
+        would complete with data it never asked for.
         """
         self._await_task(ready_recording)
         pipeline.resume_stage(str(ready_recording.id), str(uuid.uuid4()), TRANSCRIPT_OK)
@@ -168,20 +163,20 @@ class TestВозобновление:
         assert r.segments_count == 0
         assert "transcribe" not in (r.metadata["pipeline"].get("completed") or [])
 
-    def test_повторная_доставка_того_же_результата_безвредна(
+    def test_duplicate_delivery_is_harmless(
         self, ready_recording, use_fakes, deferred_tasks
     ):
         task_id = self._await_task(ready_recording)
         pipeline.resume_stage(str(ready_recording.id), task_id, TRANSCRIPT_OK)
-        # Второй раз: ожидания уже нет, применять нечего.
+        # Second delivery: nothing is awaiting anymore, nothing to apply.
         pipeline.resume_stage(str(ready_recording.id), task_id, TRANSCRIPT_OK)
 
         r = Recording.objects.get(pk=ready_recording.id)
         assert r.segments_count == 1
 
 
-class TestПровалЗадачи:
-    def test_окончательный_отказ_уводит_в_dlq(
+class TestTaskFailure:
+    def test_final_failure_goes_to_dlq(
         self, ready_recording, use_fakes, deferred_tasks
     ):
         pipeline.run_stage(str(ready_recording.id), 0)
@@ -190,11 +185,11 @@ class TestПровалЗадачи:
             pk=ready_recording.id
         ).metadata["pipeline"]["awaiting"]["task_id"]
 
-        pipeline.fail_stage(str(ready_recording.id), task_id, "провайдер недоступен")
+        pipeline.fail_stage(str(ready_recording.id), task_id, "provider unavailable")
 
         r = Recording.objects.get(pk=ready_recording.id)
         assert r.status == RecordingStatus.ERROR
-        # Причина названа, а не спрятана: раньше на этом месте был
-        # TimeoutError без единого слова о том, что именно не получилось.
+        # The reason is named, not hidden: this used to be a bare
+        # TimeoutError with no word on what actually failed.
         assert r.metadata["last_error"]["reason"] == "task_failed"
-        assert "провайдер недоступен" in str(r.metadata["last_error"]["detail"])
+        assert "provider unavailable" in str(r.metadata["last_error"]["detail"])

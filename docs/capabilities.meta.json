@@ -237,19 +237,19 @@
     },
     "submit_task": {
       "kind": "factory",
-      "intent": "Поставить долгую работу (расшифровка, сводка) задачей и вернуть управление сразу: результат приходит только при синхронной диспетчеризации, иначе поднимается StageAwaiting и стадия продолжится в Stage.resume по task.completed. Вместо comm.call: синхронный вызов держит воркер всё время работы модели и требует угадать срок ожидания, а он неугадываем при очереди.",
+      "intent": "Submit long-running work (transcription, summary) as a task and return control right away: a result comes back only under synchronous dispatch, otherwise StageAwaiting is raised and the stage resumes in Stage.resume on task.completed. Unlike comm.call, a synchronous call would hold the worker for the model's entire runtime and requires guessing a timeout that a queue makes unguessable.",
       "instead_of": [
         "stapel_core.comm.call"
       ]
     },
     "resume_stage": {
       "kind": "gate_function",
-      "intent": "Досчитать стадию, ждавшую задачу, по её результату — симметрия успешного хвоста run_stage: тот же замок, отметка о завершении и события. Сверяет task_id: доставка at-least-once, и ответ устаревшей попытки применять нельзя.",
+      "intent": "Complete a stage that was awaiting a task, using its result — mirrors the successful tail of run_stage: same lock, same completion marker, same events. Checks task_id: delivery is at-least-once, and a response to a stale attempt must not be applied.",
       "instead_of": []
     },
     "fail_stage": {
       "kind": "gate_function",
-      "intent": "Увести запись в DLQ, когда ждавшаяся задача провалилась окончательно. Именно DLQ: Task-примитив уже отработал свои max_attempts.",
+      "intent": "Move a recording to the DLQ once the task it was awaiting has failed for good. DLQ, not retry: the Task primitive has already exhausted its own max_attempts.",
       "instead_of": []
     }
   }

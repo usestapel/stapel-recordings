@@ -44,10 +44,10 @@ def test_unknown_pipeline_stage_is_warning():
 
 
 def test_missing_taskstore_is_error():
-    """Нет склада задач — сервис не может работать, и это видно на старте.
+    """No task store means the service cannot run, and this is caught at startup.
 
-    Пин на id: им чек глушат (``SILENCED_SYSTEM_CHECKS``) и по нему ищут, так
-    что смена id — это смена публичного контракта модуля.
+    The id is pinned: hosts silence and search checks by it, so changing it
+    is a public contract change.
     """
     from stapel_recordings.checks import check_taskstore_installed
 
@@ -56,16 +56,16 @@ def test_missing_taskstore_is_error():
     assert any(e.id == "stapel_recordings.E004" for e in errors)
 
 
-def test_ids_проверок_уникальны():
-    """Два чека под одним id — тихая ловушка, а не косметика.
+def test_check_ids_are_unique():
+    """Two checks sharing one id is a silent trap, not cosmetics.
 
-    До 08.08.2026 ``stapel_recordings.E001`` выдавали ДВЕ разные проверки:
-    «STORAGE не импортируется» и «нет приложения склада задач». Хост, заглушив
-    E001 ради первой, молча выключал бы и вторую — а она блокирует старт
-    сервиса, у которого расшифровка не сможет отработать вовсе.
+    Before 2026-08-08, ``stapel_recordings.E001`` was raised by TWO different
+    checks: "STORAGE not importable" and "task store app missing". Silencing
+    E001 for the first would have silently disabled the second too — which
+    blocks startup for a service whose transcription cannot run at all.
 
-    Сторож смотрит на ИСХОДНИК, а не на прогон: чек, который в текущей
-    конфигурации ничего не вернул, всё равно занимает свой id.
+    This guard reads the SOURCE, not a live run: a check that returns nothing
+    under the current configuration still owns its id.
     """
     import ast
     import pathlib
@@ -73,7 +73,7 @@ def test_ids_проверок_уникальны():
     from stapel_recordings import checks as checks_module
 
     tree = ast.parse(pathlib.Path(checks_module.__file__).read_text())
-    занято: dict[str, list[str]] = {}
+    used: dict[str, list[str]] = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
@@ -82,7 +82,7 @@ def test_ids_проверок_уникальны():
                 continue
             for kw in inner.keywords:
                 if kw.arg == "id" and isinstance(kw.value, ast.Constant):
-                    занято.setdefault(str(kw.value.value), []).append(node.name)
+                    used.setdefault(str(kw.value.value), []).append(node.name)
 
-    дубли = {i: fns for i, fns in занято.items() if len(set(fns)) > 1}
-    assert not дубли, f"один id на несколько проверок: {дубли}"
+    duplicates = {i: fns for i, fns in used.items() if len(set(fns)) > 1}
+    assert not duplicates, f"one id shared by multiple checks: {duplicates}"

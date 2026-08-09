@@ -51,21 +51,21 @@ def handle_user_deleted(event):
     logger.info("recordings erased for deleted user %s", user_id)
 
 
-# ─── Возобновление стадии, ждавшей задачу ──────────────────────────────
+# ─── Resuming a stage that was awaiting a task ─────────────────────────
 #
-# Долгая работа (расшифровка, сводка) идёт Task-примитивом: стадия ставит
-# задачу и отпускает воркер, а досчитывается здесь, когда результат придёт.
-# Раньше на её месте был синхронный вызов, и вся система стояла ровно
-# столько, сколько работала модель, — с потолком в пять секунд, за которым
-# начинались отказы (инцидент 08.08.2026).
+# Long-running work (transcription, summarization) goes through the Task
+# primitive: the stage submits a task and releases the worker, then resumes
+# here once the result arrives. This used to be a synchronous call that held
+# the whole system for as long as the model took.
 #
-# Фильтруем по ``kind``: подписка на ``task.completed`` общая для всего
-# процесса, и мимо неё едут задачи чужих модулей. Дальше решает сама запись
-# — сверка ``task_id`` с ожидаемым живёт в ``resume_stage``.
+# We don't filter by ``kind`` here: the ``task.completed`` subscription is
+# process-wide, so tasks from other modules pass through too. The recording
+# itself decides — matching ``task_id`` against what it's awaiting lives in
+# ``resume_stage``.
 
 
 def _recording_of(event):
-    """id записи из correlation_id задачи (его ставит ``submit_task``)."""
+    """The recording id from the task's correlation_id (set by ``submit_task``)."""
     return event.payload.get("correlation_id") or ""
 
 
@@ -82,7 +82,7 @@ def handle_task_completed(event):
     try:
         snapshot = status(task_id)
     except Exception:
-        logger.exception("task.completed: не удалось прочитать задачу %s", task_id)
+        logger.exception("task.completed: failed to read task %s", task_id)
         return
     resume_stage(recording_id, task_id, snapshot.result)
 

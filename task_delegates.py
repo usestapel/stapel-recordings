@@ -1,32 +1,32 @@
-"""Исполнитель задач по умолчанию: держим очередь у себя, работу отдаём агенту.
+"""Default task executor: keep the queue here, hand the work to the agent.
 
-ЗАЧЕМ ЭТОТ МОСТ. Task-примитив хранит состояние в таблице ``TaskRecord``, и
-исполнить задачу может только процесс, который эту таблицу ВИДИТ. В
-монолите это одна база, и обработчик ``llm.transcribe`` из stapel-agent
-живёт в том же процессе — мост не нужен, ничего не регистрируем.
+WHY THIS BRIDGE EXISTS. The Task primitive keeps its state in the
+``TaskRecord`` table, and only a process that can SEE that table can
+execute a task. In a monolith that's one database, and stapel-agent's
+``llm.transcribe`` handler lives in the same process — no bridge needed,
+nothing is registered.
 
-В микросервисной раскладке базы РАЗНЫЕ (замер на стенде ironmemo
-08.08.2026: ``iron_recordings`` против ``iron_agent``). Задача, поставленная
-конвейером записей, лежит в базе записей, и агент про неё не знает —
-``handle_task_requested`` в его процессе молча пропустит незнакомый вид, а
-запись останется PENDING навсегда.
+In a microservices layout the databases are DIFFERENT. A task submitted by
+the recordings pipeline lives in the recordings database, and the agent
+doesn't know about it — ``handle_task_requested`` in its process silently
+skips the unknown kind, and the recording stays PENDING forever.
 
-ПОЭТОМУ: очередь, состояние, попытки и наблюдаемость остаются у записей —
-там, где живёт и сама запись, и человек, который ждёт результата. А работу
-исполнитель отдаёт агенту обычным Function-вызовом через шину, как и всё
-остальное межсервисное.
+SO: the queue, state, attempts and observability stay with the recording —
+where the recording itself lives, and the person waiting on the result. The
+executor hands the work to the agent as an ordinary Function call over the
+bus, same as any other cross-service call.
 
-Это НЕ возврат к синхронному вызову, от которого мы ушли:
+This is NOT a return to the synchronous call we moved away from:
 
-* ждёт фоновый исполнитель задач, а не HTTP-воркер — занятость воркера
-  больше не оплачивается временем работы модели;
-* срок ожидания задан явно и по-настоящему длинный, а не пятисекундный
-  дефолт ``FUNCTION_TIMEOUT``, на котором падала каждая настоящая запись;
-* пока идёт работа, у человека есть ``status(task_id)``: pending / running,
-  число попыток — то, чего у синхронного вызова не было в принципе.
+* a background task executor waits, not an HTTP worker — worker time is no
+  longer spent on model latency;
+* the timeout is explicit and genuinely long, not the five-second
+  ``FUNCTION_TIMEOUT`` default that every real recording used to exceed;
+* while work is in flight, ``status(task_id)`` is available: pending /
+  running, attempt count — none of which a synchronous call ever had.
 
-Отключается ``STAPEL_RECORDINGS["DELEGATE_TASKS_TO_AGENT"] = False`` —
-развёртыванию, которое исполняет ``llm.*`` как-то иначе.
+Disable with ``STAPEL_RECORDINGS["DELEGATE_TASKS_TO_AGENT"] = False`` for a
+deployment that executes ``llm.*`` some other way.
 """
 from __future__ import annotations
 
@@ -34,8 +34,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-#: Виды задач, которые мост берёт на себя, и срок ожидания каждой.
-#: Ключ — имя настройки со сроком; None — берём общий бюджет расшифровки.
+#: Task kinds the bridge takes on, and the timeout setting for each.
+#: Key is the timeout setting name; None would mean falling back to the
+#: general transcription budget.
 DELEGATED = {
     "llm.transcribe": "TRANSCRIBE_TIMEOUT_SECONDS",
     "llm.summarize": "SUMMARIZE_TIMEOUT_SECONDS",
@@ -49,27 +50,27 @@ def _make_delegate(kind: str, timeout_setting: str):
         from .conf import recordings_settings
 
         timeout = float(getattr(recordings_settings, timeout_setting))
-        # noqa: R009 — это и есть САНКЦИОНИРОВАННЫЙ мост, а не тот дефект,
-        # против которого правило писалось. Здесь: (1) ждёт фоновый
-        # исполнитель задачи, а не HTTP-воркер; (2) срок задан явно и
-        # длинный; (3) состояние ожидания видно снаружи через status().
-        # Правило запрещает ждать долгую операцию ТАМ, где ждать нельзя, —
-        # а не запрещает межсервисный вызов как таковой.
+        # noqa: R009 — this IS the sanctioned bridge, not the defect the
+        # rule targets: (1) a background task executor waits, not an HTTP
+        # worker; (2) the timeout is explicit and long; (3) waiting state is
+        # visible externally via status(). The rule forbids waiting on a
+        # long operation WHERE waiting isn't safe, not cross-service calls
+        # as such.
         return call(kind, payload, timeout=timeout)  # noqa: R009
 
     delegate.__name__ = f"delegate_{kind.replace('.', '_')}"
-    delegate.__doc__ = f"Отдать {kind} агенту через шину и вернуть его ответ."
+    delegate.__doc__ = f"Hand {kind} to the agent over the bus and return its response."
     return delegate
 
 
 def register_default_task_delegates() -> None:
-    """Зарегистрировать мост для видов, которые НИКТО ЕЩЁ не взял.
+    """Register the bridge for kinds NOBODY has claimed yet.
 
-    Порядок важен и держится на одном свойстве: если stapel-agent уже
-    зарегистрировал настоящий обработчик в этом же процессе (монолит), мы
-    не трогаем его — ``register_task`` на занятое имя поднял бы ValueError,
-    и молчаливая подмена настоящего исполнителя заглушкой-мостом была бы
-    худшим из возможных исходов.
+    Order matters and rests on one property: if stapel-agent already
+    registered a real handler in this same process (monolith), we leave it
+    alone — ``register_task`` on a taken name would raise ValueError, and
+    silently swapping the real executor for the bridge stub would be the
+    worst possible outcome.
     """
     from stapel_core.comm import tasks as task_primitive
 
@@ -81,6 +82,6 @@ def register_default_task_delegates() -> None:
     taken = set(task_primitive.registered_kinds())
     for kind, timeout_setting in DELEGATED.items():
         if kind in taken:
-            continue  # настоящий обработчик рядом — мост не нужен
+            continue  # a real handler is already here — no bridge needed
         task_primitive.register_task(kind, _make_delegate(kind, timeout_setting))
-        logger.debug("recordings: мост задачи %s → Function того же имени", kind)
+        logger.debug("recordings: bridging task %s -> Function of the same name", kind)

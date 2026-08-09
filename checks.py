@@ -137,18 +137,17 @@ def check_reconcile_threshold(app_configs, **kwargs):
 
 @checks.register(checks.Tags.compatibility)
 def check_taskstore_installed(app_configs, **kwargs):
-    """Долгая работа идёт задачами — значит нужен их склад.
+    """E: long-running work is dispatched as tasks, so the task store must be installed.
 
-    ``transcribe`` и ``merge`` отдают работу Task-примитиву
-    (``stapel_core.comm.tasks``): вызов возвращается сразу, а стадия
-    досчитывается по ``task.completed``. Примитив хранит состояние в
-    таблице ``TaskRecord``, которую заводит app
-    ``stapel_core.django.taskstore``.
+    ``transcribe`` and ``merge`` hand work off to the Task primitive
+    (``stapel_core.comm.tasks``): the call returns immediately, and the stage
+    resumes on ``task.completed``. The primitive keeps its state in the
+    ``TaskRecord`` table, which lives in the ``stapel_core.django.taskstore``
+    app.
 
-    Без него всё выглядит установленным и падает ПОЗЖЕ — на первой же
-    загрузке, из глубины конвейера, сообщением про отсутствующую таблицу.
-    Ровно тот жанр, из-за которого чек и пишется: несовместимость видна на
-    старте, а не глазами пользователя.
+    Without it, everything looks configured and fails LATER — deep in the
+    pipeline, on the first real run, with a missing-table error. That is
+    exactly the failure mode this check exists to catch at startup instead.
     """
     from django.apps import apps as django_apps
 
@@ -156,21 +155,21 @@ def check_taskstore_installed(app_configs, **kwargs):
         return []
     return [
         checks.Error(
-            "stapel_recordings ставит долгую работу (расшифровка, сводка) "
-            "Task-примитивом, а его таблица живёт в приложении "
-            "'stapel_core.django.taskstore' — его нет в INSTALLED_APPS.",
+            "stapel_recordings dispatches long-running work (transcription, "
+            "summarization) via the Task primitive, whose table lives in "
+            "'stapel_core.django.taskstore' — that app is not in "
+            "INSTALLED_APPS.",
             hint=(
-                "Добавьте 'stapel_core.django.taskstore' в INSTALLED_APPS и "
-                "накатите миграции. Плюс убедитесь, что задачи кто-то "
-                "ИСПОЛНЯЕТ: STAPEL_COMM['TASK_EXECUTOR'] ('inline' — в том "
-                "же процессе, что потребляет событие; 'celery' — воркером) "
-                "и что процесс с обработчиками llm.* запущен."
+                "Add 'stapel_core.django.taskstore' to INSTALLED_APPS and run "
+                "its migrations. Also make sure something EXECUTES tasks: "
+                "STAPEL_COMM['TASK_EXECUTOR'] ('inline' — same process that "
+                "consumes the event; 'celery' — a worker) and that a process "
+                "with llm.* handlers is running."
             ),
-            # E004, а не E001: под E001 уже живёт «STORAGE не импортируется».
-            # Совпадение было не косметикой — id системного чека это то, чем
-            # его ГЛУШАТ (SILENCED_SYSTEM_CHECKS) и по чему ищут. Заглушив
-            # E001 ради одной причины, хост молча выключал бы и эту, а она
-            # блокирует старт сервиса, у которого нет склада задач.
+            # E004, not E001: E001 is already taken by "STORAGE not importable".
+            # The id is part of the public contract — it's what hosts silence
+            # via SILENCED_SYSTEM_CHECKS and search for, so reusing E001 would
+            # let silencing one error accidentally silence this one too.
             id="stapel_recordings.E004",
         )
     ]

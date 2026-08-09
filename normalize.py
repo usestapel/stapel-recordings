@@ -13,12 +13,12 @@ Two implementations ship:
   environments without ffmpeg or when the upload is already normalized.
   Also the natural choice in tests.
 
-:func:`ffmpeg_normalize` принимает необязательный ``max_duration_seconds`` —
-обрезку по длительности для бесплатных тарифов («первые N минут любой
-записи»). Обрезка стоит ЗДЕСЬ, на входе конвейера, поэтому ни одна следующая
-стадия не знает о тарифах и не может обработать — и оплатить провайдеру — то,
-за что клиент не платил. Исходную длительность, когда обрезка применена и
-человеку надо сказать «первые 10 минут из 47», отдаёт :func:`probe_duration`.
+:func:`ffmpeg_normalize` accepts an optional ``max_duration_seconds`` — a
+duration cap for free-tier plans ("first N minutes of any recording"). The
+cut happens HERE, at the pipeline entrance, so no later stage knows about
+plans or can process (and pay a provider for) minutes the client didn't buy.
+:func:`probe_duration` returns the source duration for an honest "first 10
+of 47 minutes" label.
 """
 from __future__ import annotations
 
@@ -51,14 +51,14 @@ def passthrough_normalize(src_path: str, dst_path: str) -> Optional[float]:
 
 
 def probe_duration(src_path: str) -> Optional[float]:
-    """Длительность исходника в секундах, без перекодирования.
+    """Source duration in seconds, without transcoding.
 
-    Публичная, потому что у хоста есть законная причина знать ИСХОДНУЮ
-    длительность отдельно от той, что получилась: если запись обрезана по
-    тарифу, человеку надо сказать «первые 10 минут из 47», а не просто
-    «10 минут». Без этой функции хост либо лезет в приватный ``_probe_audio``,
-    либо заводит свой вызов ffprobe — то есть вторую копию логики, которая
-    разъедется с этой на первом же изменении.
+    Public because a host has a legitimate reason to know the SOURCE
+    duration separately from the resulting one: if a recording was capped
+    by a plan, it needs to say "first 10 of 47 minutes", not just "10
+    minutes". Without this, a host would reach into the private
+    ``_probe_audio`` or add its own ffprobe call — a second copy of this
+    logic that would drift from it on the first change.
     """
     _, duration = _probe_audio(src_path)
     return duration
@@ -72,17 +72,18 @@ def ffmpeg_normalize(
 ) -> Optional[float]:
     """Probe + transcode to 16 kHz mono PCM WAV. Returns duration seconds.
 
-    ``max_duration_seconds`` обрезает результат по длительности (ffmpeg ``-t``).
-    Нужен бесплатным тарифам: «первые N минут любой записи» — это обрезка
-    ИМЕННО ЗДЕСЬ, на входе конвейера, а не позже. Обрезав на этом шаге, всё
-    остальное — расшифровка, диаризация, сводка, эмбеддинги — работает с
-    обрезанным аудио, не зная о тарифах вообще, и не может случайно
-    обработать (и оплатить провайдеру) то, за что клиент не платил.
+    ``max_duration_seconds`` caps the result's duration (ffmpeg ``-t``).
+    Needed for free-tier plans: "first N minutes of any recording" is cut
+    RIGHT HERE, at the pipeline entrance, not later. With the cut applied at
+    this step, everything downstream — transcription, diarization, summary,
+    embeddings — works on the capped audio without knowing about plans at
+    all, and can't accidentally process (and pay a provider for) minutes the
+    client didn't buy.
 
-    Возвращается длительность ТОГО, ЧТО ЗАПИСАНО, а не исходника: вызывающий
-    кладёт её в поле длительности записи, и она обязана описывать файл,
-    который действительно лежит. Исходную длительность, если она нужна для
-    честной надписи, берут через :func:`probe_duration`.
+    Returns the duration of WHAT WAS WRITTEN, not the source: the caller
+    stores it as the recording's duration, and it must describe the file
+    that actually exists. Use :func:`probe_duration` for the source duration
+    when an honest label is needed.
     """
     has_audio, duration = _probe_audio(src_path)
     if not has_audio:
@@ -93,8 +94,8 @@ def ffmpeg_normalize(
     _run_ffmpeg(src_path, dst_path, max_duration_seconds=cap)
     if cap is not None and duration is not None:
         return min(duration, cap)
-    # Длительность неизвестна (ffprobe её не отдал), но обрезка запрошена и
-    # применена — потолок и есть лучшее, что мы знаем о файле на диске.
+    # Duration unknown (ffprobe didn't return one), but a cap was requested
+    # and applied — the cap is the best we know about the file on disk.
     return cap if duration is None else duration
 
 
@@ -104,9 +105,9 @@ def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = N
         "-i", src, "-vn",
     ]
     if max_duration_seconds is not None:
-        # После -i: ограничение применяется к ВЫВОДУ. Перед -i оно резало бы
-        # ввод по времени декодирования — для потоковых контейнеров это не то
-        # же самое.
+        # After -i: the limit applies to OUTPUT. Before -i it would cap
+        # input decode time instead — a different duration for streaming
+        # containers.
         cmd += ["-t", f"{max_duration_seconds:.3f}"]
     cmd += [
         "-ac", str(TARGET_CHANNELS), "-ar", str(TARGET_SAMPLE_RATE),

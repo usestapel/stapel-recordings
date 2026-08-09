@@ -98,11 +98,10 @@ def drain():
 
 
 def _register_task(kind, handler):
-    """Перерегистрировать обработчик задачи между тестами.
+    """Re-register a task handler between tests.
 
-    ``register_task`` запрещает переопределение (одно имя — один
-    исполнитель), а фикстура создаёт НОВЫЙ рекордер на каждый тест.
-    Снимаем прежний и ставим свежий.
+    ``register_task`` refuses redefinition (one name, one executor), but
+    each test builds a NEW recorder — drop the old one before adding it.
     """
     from stapel_core.comm import tasks as _tasks
 
@@ -145,9 +144,8 @@ def stub_transcribe():
 
     recorder = Recorder()
     register_function("llm.transcribe", recorder)
-    # Расшифровка теперь ставится ЗАДАЧЕЙ, а не зовётся синхронно —
-    # заглушка обязана отвечать на том же примитиве, что и продакшен,
-    # иначе набор проверял бы путь, которого больше нет.
+    # Transcription is now dispatched as a TASK, not called synchronously —
+    # the stub must answer on the same primitive as production.
     _register_task("llm.transcribe", recorder)
     return recorder
 

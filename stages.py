@@ -68,24 +68,22 @@ class StageFatal(StageError):
 
 
 class StageAwaiting(StageError):
-    """Работа ПОСТАВЛЕНА, стадия ждёт — это не отказ.
+    """Work was SUBMITTED, the stage is waiting — this is not a failure.
 
-    Третий исход рядом с Retryable и Fatal. Стадия отдала долгую работу
-    Task-примитиву (``stapel_core.comm.tasks``) и возвращает управление
-    немедленно: драйвер запоминает ``task_id``, оставляет стадию
-    незавершённой и НЕ считает это попыткой. Возобновление приходит
-    Action'ом ``task.completed``.
+    A third outcome alongside Retryable and Fatal. The stage handed
+    long-running work to the Task primitive (``stapel_core.comm.tasks``) and
+    returns control immediately: the driver remembers ``task_id``, leaves
+    the stage incomplete, and does NOT count this as an attempt. Resumption
+    arrives as a ``task.completed`` Action.
 
-    Зачем: раньше долгая работа шла синхронным Function — вызывающий
-    держал воркер и ждал ответа, а «сколько ждать» было неизвестно ни ему,
-    ни человеку у экрана. Отсюда и отказы 08.08.2026: расшифровка на 14
-    секунд против пятисекундного дефолта ожидания. Очередь эту модель
-    ломает окончательно: если исполнителей нет свободных, синхронный
-    вызов обязан либо соврать таймаутом, либо висеть.
+    Why: long-running work used to be a synchronous Function call, with the
+    caller holding a worker and no reliable way to know how long to wait. A
+    queue breaks that model entirely — if no worker is free, a synchronous
+    call must either lie with a timeout or hang.
 
-    С задачей состояние наблюдаемо: ``status(task_id)`` отдаёт
-    pending/running/done/failed и число попыток, и фронту есть что
-    показать — «в очереди», а не крутящийся индикатор без обещаний.
+    With a task, state is observable: ``status(task_id)`` returns
+    pending/running/done/failed and an attempt count, so the frontend has
+    something to show — "queued", not a spinner with no promises.
     """
 
     def __init__(self, task_id: str, kind: str):
@@ -98,10 +96,11 @@ class Stage:
     """Base class. Subclass and implement :meth:`run`, or register any
     ``callable(recording, ctx) -> ctx`` — it is adapted automatically.
 
-    Стадия, отдающая работу Task-примитиву, делится надвое: :meth:`run`
-    ставит задачу и поднимает :class:`StageAwaiting`, а :meth:`resume`
-    получает результат, когда он пришёл. Половинка ``resume`` не абстрактна
-    намеренно — стадии без долгой работы её не переопределяют.
+    A stage that hands work to the Task primitive splits in two:
+    :meth:`run` submits the task and raises :class:`StageAwaiting`, while
+    :meth:`resume` receives the result once it arrives. ``resume`` is
+    deliberately not abstract — stages without long-running work simply
+    don't override it.
     """
 
     name: str = ""
@@ -111,15 +110,15 @@ class Stage:
         raise NotImplementedError
 
     def resume(self, recording, ctx: dict, result) -> dict:
-        """Досчитать стадию по результату задачи.
+        """Complete the stage from a task's result.
 
-        Вызывается драйвером при ``task.completed`` для стадии, которая
-        ранее подняла :class:`StageAwaiting`. По умолчанию — ошибка
-        программиста: раз стадия поставила задачу, она обязана уметь
-        принять её результат.
+        Called by the driver on ``task.completed`` for a stage that
+        previously raised :class:`StageAwaiting`. Not overriding this is a
+        programmer error: a stage that submits a task must know how to
+        accept its result.
         """
         raise NotImplementedError(
-            f"стадия {self.name!r} поставила задачу, но не умеет принять результат"
+            f"stage {self.name!r} submitted a task but cannot accept its result"
         )
 
 
@@ -198,17 +197,17 @@ class ConvertStage(Stage):
 
 
 def submit_task(kind, payload, *, recording, deadline_seconds=None, max_attempts=3):
-    """Поставить долгую работу задачей и вернуть управление немедленно.
+    """Submit long-running work as a task and return control immediately.
 
-    Возвращает результат ТОЛЬКО в одном случае — когда развёртывание
-    диспетчеризует задачи синхронно (``STAPEL_COMM["TASK_DISPATCH"]="inline"``:
-    монолит без брокера, тесты, скрипты) и задача успела дойти до ``done``
-    внутри ``start()``. В остальных случаях поднимает :class:`StageAwaiting`,
-    и стадия продолжится в :meth:`Stage.resume` по ``task.completed``.
+    Returns a result ONLY when the deployment dispatches tasks synchronously
+    (``STAPEL_COMM["TASK_DISPATCH"]="inline"``: brokerless monolith, tests,
+    scripts) and the task already reached ``done`` inside ``start()``.
+    Otherwise raises :class:`StageAwaiting`, and the stage continues in
+    :meth:`Stage.resume` on ``task.completed``.
 
-    ``correlation_id`` — id записи: по нему возобновление находит, чью
-    стадию досчитывать. Он же — ключ партиционирования событий, поэтому
-    события одной записи не разъезжаются по порядку.
+    ``correlation_id`` is the recording id: resume uses it to find which
+    stage to complete. It's also the event partition key, so a recording's
+    events stay in order.
     """
     from stapel_core.comm import start, status
     from stapel_core.comm.exceptions import CommError
@@ -222,8 +221,8 @@ def submit_task(kind, payload, *, recording, deadline_seconds=None, max_attempts
             max_attempts=max_attempts,
         )
     except CommError as exc:
-        # Не удалось даже ПОСТАВИТЬ задачу — это про доступность шины, а не
-        # про работу; ретраибельно.
+        # Couldn't even SUBMIT the task — a bus availability issue, not a
+        # work failure; retryable.
         raise StageRetryable(f"{kind}_submit_failed", str(exc)) from exc
 
     snapshot = status(task_id)
@@ -235,9 +234,9 @@ def submit_task(kind, payload, *, recording, deadline_seconds=None, max_attempts
 
 
 class TranscribeStage(Stage):
-    """Отдать расшифровку задаче ``llm.transcribe`` (stapel-agent) и записать
-    Speaker/Segment по её результату. Выбор STT-провайдера и фолбэк живут в
-    агенте."""
+    """Hand transcription to the ``llm.transcribe`` task (stapel-agent) and
+    persist Speaker/Segment from its result. STT provider choice and
+    fallback live in the agent."""
 
     name = "transcribe"
     status = RecordingStatus.TRANSCRIBING
@@ -264,20 +263,20 @@ class TranscribeStage(Stage):
         if provider:
             payload["provider"] = provider
 
-        # ЗАДАЧА, А НЕ СИНХРОННЫЙ ВЫЗОВ. Расшифровка идёт минуты, а при
-        # занятых исполнителях — сколько угодно; ждать её ответа, держа
-        # воркер, нечестно по отношению и к системе, и к человеку у экрана.
-        # `submit_task` возвращает управление сразу, а стадия досчитывается
-        # в :meth:`resume`, когда результат придёт.
+        # A TASK, NOT A SYNCHRONOUS CALL. Transcription takes minutes, or
+        # arbitrarily longer under busy workers; holding a worker to wait
+        # for it is unfair to both the system and the person watching.
+        # `submit_task` returns control right away, and the stage completes
+        # in :meth:`resume` once the result arrives.
         result = submit_task(
             "llm.transcribe",
             payload,
             recording=recording,
             deadline_seconds=int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
         )
-        # Сюда попадаем только при синхронной диспетчеризации
-        # (TASK_DISPATCH="inline" — монолит без брокера, тесты, скрипты):
-        # задача уже выполнена к возврату из start().
+        # Reached only under synchronous dispatch (TASK_DISPATCH="inline" —
+        # brokerless monolith, tests, scripts): the task already completed
+        # by the time start() returns.
         return self.resume(recording, ctx, result)
 
     def resume(self, recording, ctx, result):
@@ -338,9 +337,9 @@ class MergeStage(Stage):
         if not (recordings_settings.SUMMARIZE_ENABLED and transcript.segments):
             return ctx
 
-        # Стенограмма уже сохранена — она и есть главный артефакт. Сводка
-        # идёт ОТДЕЛЬНОЙ задачей: замер 08.08.2026 дал 36 секунд на
-        # пятнадцатиминутной встрече, и держать ради неё воркер незачем.
+        # The transcript is already saved — it's the main artifact. The
+        # summary runs as a SEPARATE task: it can take tens of seconds, and
+        # there's no reason to hold a worker for it.
         result = submit_task(
             "llm.summarize",
             _summarize_payload(recording, transcript),
@@ -350,16 +349,15 @@ class MergeStage(Stage):
         return self.resume(recording, ctx, result)
 
     def resume(self, recording, ctx, result):
-        # Сводка — best-effort: стенограмма уже лежит, и ронять из-за неё
-        # запись нельзя. Но МОЛЧАТЬ про отказ тоже нельзя — раньше именно
-        # это и происходило: пятисекундный дефолт ожидания съедал сводку
-        # начисто, и никто не знал, что её просто нет.
+        # The summary is best-effort: the transcript already exists, and the
+        # recording must not fail because of it. But staying SILENT about a
+        # failure is also wrong — that used to be exactly what happened.
         summary = None
         if isinstance(result, dict) and result.get("status") == "ok":
             summary = result.get("summary")
         else:
             logger.warning(
-                "merge: сводка для %s не получена: %.200s", recording.id, result
+                "merge: summary for %s not produced: %.200s", recording.id, result
             )
         if summary:
             recording.summary = summary
@@ -406,13 +404,13 @@ class EmbedStage(Stage):
 
 
 def _summarize_payload(recording, transcript) -> dict:
-    """Полезная нагрузка для ``llm.summarize``.
+    """Payload for ``llm.summarize``.
 
-    Язык берём из записи, а при ``language_mode="auto"`` — из того, что
-    определил STT (``ctx``/поле заполняются на стадии transcribe). Без него
-    модель выбирает язык сама: 08.08.2026 на стенде русская встреча
-    получила сводку по-китайски. Сводка не на языке разговора бесполезна
-    ровно настолько же, насколько её отсутствие.
+    Language comes from the recording, or from what STT detected when
+    ``language_mode="auto"`` (filled in during the transcribe stage).
+    Without it the model picks its own language, which has produced a
+    summary in the wrong language for the conversation — about as useless
+    as no summary at all.
     """
     from . import transcript_schema
 
