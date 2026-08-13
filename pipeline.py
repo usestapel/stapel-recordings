@@ -18,7 +18,7 @@ Progress cursor — **names, not positions**. The pipeline may be edited at
 runtime (``PIPELINE_RESOLVER``), so a positional index alone cannot be
 trusted across deliveries. ``run_stage`` persists, in the same transaction
 as each successful stage, the *names* of the completed stages
-(``metadata.pipeline.completed``) plus the position of the last completion
+(``workflow_state.pipeline.completed``) plus the position of the last completion
 (``completed_index``). On every delivery it:
 
 - drops the event if ``stage_index <= completed_index`` (a duplicate of an
@@ -32,6 +32,13 @@ as each successful stage, the *names* of the completed stages
   that returns an **empty list** is treated as a misconfiguration → DLQ
   (never a silent ``completed``). Stage names within one pipeline must be
   unique — the completed-set treats a repeated name as already done.
+
+Where that state lives — ``Recording.workflow_state``, never
+``Recording.metadata`` — is load-bearing (audit REC-01). ``metadata`` is the
+client's field; a cursor kept there is a cursor a client PATCH can rewrite,
+which means marking stages complete, suppressing the start marker, or
+injecting the ``ctx`` the next stage reads. Nothing in this driver reads the
+client's field.
 
 ``run_stage`` locks the recording (``select_for_update``) for the whole
 stage and classifies stage errors into retry vs DLQ. ``error`` is terminal
@@ -85,7 +92,7 @@ def resolve_pipeline(recording) -> list[str]:
 def start_pipeline(recording_id: str) -> None:
     """Kick the pipeline for a freshly uploaded recording. Idempotent under
     concurrent duplicate deliveries: the row is locked and a
-    ``metadata.pipeline`` marker is written in the same transaction as the
+    ``workflow_state.pipeline`` marker is written in the same transaction as the
     ``recording.stage(0)`` emit, so a second delivery (or a concurrent one —
     it serializes on the lock) sees the marker and skips."""
     with transaction.atomic():
@@ -96,12 +103,12 @@ def start_pipeline(recording_id: str) -> None:
             return
         if recording.status in _TERMINAL:
             return
-        if (recording.metadata or {}).get("pipeline"):
+        if (recording.workflow_state or {}).get("pipeline"):
             return  # already started
-        metadata = dict(recording.metadata or {})
-        metadata["pipeline"] = {"started_at": timezone.now().isoformat()}
-        recording.metadata = metadata
-        recording.save(update_fields=["metadata", "updated_at"])
+        state = dict(recording.workflow_state or {})
+        state["pipeline"] = {"started_at": timezone.now().isoformat()}
+        recording.workflow_state = state
+        recording.save(update_fields=["workflow_state", "updated_at"])
         events.emit_stage(recording.id, 0)
 
 
@@ -157,7 +164,7 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             return
         stage_name = pipeline[next_index]
 
-        started = (recording.metadata or {}).get("pipeline", {}).get("stage")
+        started = (recording.workflow_state or {}).get("pipeline", {}).get("stage")
         if started and started != stage_name and started not in pipeline and started not in completed:
             logger.warning(
                 "pipeline: recording %s pending stage %r was removed from the "
@@ -174,9 +181,9 @@ def run_stage(recording_id: str, stage_index: int) -> None:
         _set_current(recording, next_index, stage_name)
         if stage.status:
             recording.status = stage.status
-        recording.save(update_fields=["status", "metadata", "updated_at"])
+        recording.save(update_fields=["status", "workflow_state", "updated_at"])
 
-        ctx = (recording.metadata or {}).get("pipeline", {}).get("ctx") or {}
+        ctx = (recording.workflow_state or {}).get("pipeline", {}).get("ctx") or {}
         try:
             new_ctx = stage.run(recording, ctx) or {}
         except StageAwaiting as exc:
@@ -186,7 +193,7 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             # recording's status stays stage-specific — the user sees
             # "transcribing", not a blank.
             _set_awaiting(recording, next_index, stage_name, exc.task_id, exc.kind)
-            recording.save(update_fields=["metadata", "updated_at"])
+            recording.save(update_fields=["workflow_state", "updated_at"])
             logger.info(
                 "pipeline: recording %s stage %s awaiting task %s (%s)",
                 recording.id, stage_name, exc.task_id, exc.kind,
@@ -212,7 +219,7 @@ def run_stage(recording_id: str, stage_index: int) -> None:
         # after it, the duplicate is dropped by the completed_index guard
         # above and public events are never re-emitted with fresh event_ids).
         _mark_completed(recording, next_index, stage_name)
-        recording.save(update_fields=["retry_count", "metadata", "updated_at"])
+        recording.save(update_fields=["retry_count", "workflow_state", "updated_at"])
 
         events.emit_stage_completed(recording, stage_name, next_index)
         events.emit_stage(recording.id, next_index + 1)
@@ -276,7 +283,7 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
         _clear_last_error(recording)
         _store_ctx(recording, new_ctx)
         _mark_completed(recording, stage_index, stage_name)
-        recording.save(update_fields=["retry_count", "metadata", "updated_at"])
+        recording.save(update_fields=["retry_count", "workflow_state", "updated_at"])
 
         events.emit_stage_completed(recording, stage_name, stage_index)
         events.emit_stage(recording.id, stage_index + 1)
@@ -301,7 +308,7 @@ def fail_stage(recording_id: str, task_id: str, error: str) -> None:
             return
         stage_name = awaiting.get("stage") or "<awaiting>"
         _clear_awaiting(recording)
-        recording.save(update_fields=["metadata", "updated_at"])
+        recording.save(update_fields=["workflow_state", "updated_at"])
         _dlq(recording, stage=stage_name, reason="task_failed", detail=error)
 
 
@@ -349,7 +356,16 @@ def reprocess_recording(recording_id: str) -> bool:
     self-guard on persisted artifacts, so a host that needs derived data
     (segments, transcript, summary) regenerated clears the relevant keys as
     part of its reprocess flow — the module never destroys transcript data on
-    its own."""
+    its own.
+
+    ORDER MATTERS (audit REC-03). Everything that can refuse — the row
+    exists, the status allows it — is checked before anything is written,
+    and the artifacts of the finished run are recorded in
+    ``workflow_state["previous_run"]`` before the pipeline is requeued. A
+    reprocess flow that deletes first and validates afterwards turns a
+    refused transition into permanent data loss; a host wiring its own
+    cleanup should delete only after this returns True, and only after its
+    retention window on the snapshot has passed."""
     with transaction.atomic():
         try:
             recording = Recording.objects.select_for_update().get(pk=recording_id)
@@ -358,19 +374,30 @@ def reprocess_recording(recording_id: str) -> bool:
             return False
         if recording.status != RecordingStatus.COMPLETED:
             return False
-        metadata = dict(recording.metadata or {})
-        pl = dict(metadata.get("pipeline") or {})
+        state = dict(recording.workflow_state or {})
+        pl = dict(state.get("pipeline") or {})
         pl.pop("completed", None)
         pl.pop("completed_index", None)
         pl.pop("ctx", None)
         pl.pop("stage", None)
         pl.pop("stage_index", None)
         pl["reprocess_at"] = timezone.now().isoformat()
-        metadata["pipeline"] = pl
-        recording.metadata = metadata
+        # Note what the finished run produced BEFORE re-running it. The
+        # module never deletes transcript artifacts (see the docstring), and
+        # this snapshot is what makes that promise usable: after a reprocess
+        # overwrites the pointers, the previous artifact is still named
+        # somewhere the host can find it for its retention window.
+        state["previous_run"] = {
+            "transcript_storage_key": recording.transcript_storage_key,
+            "normalized_storage_key": recording.normalized_storage_key,
+            "segments_count": recording.segments_count,
+            "at": timezone.now().isoformat(),
+        }
+        state["pipeline"] = pl
+        recording.workflow_state = state
         recording.status = RecordingStatus.QUEUED
         recording.retry_count = 0
-        recording.save(update_fields=["status", "retry_count", "metadata", "updated_at"])
+        recording.save(update_fields=["status", "retry_count", "workflow_state", "updated_at"])
         events.emit_stage(recording.id, 0)
     logger.info("pipeline: recording %s requeued for reprocess", recording_id)
     return True
@@ -402,7 +429,7 @@ def _handle_retry(recording: Recording, stage_name: str, reason: str, detail=Non
     # Park it: reconcile re-emits recording.stage(current) after the stuck
     # threshold. Avoids a tight in-process retry loop.
     recording.status = RecordingStatus.QUEUED
-    recording.save(update_fields=["retry_count", "status", "metadata", "updated_at"])
+    recording.save(update_fields=["retry_count", "status", "workflow_state", "updated_at"])
     logger.info("pipeline: %s stage %s retryable (%s), attempt %d — parked",
                 recording.id, stage_name, reason, recording.retry_count)
 
@@ -416,16 +443,16 @@ def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_
     # events still leave only on outer commit) and keeps the pair atomic even
     # if a future caller invokes _dlq() outside run_stage.
     with mutate_and_emit():
-        recording.save(update_fields=["status", "metadata", "updated_at"])
+        recording.save(update_fields=["status", "workflow_state", "updated_at"])
         events.emit_failed(recording, stage=stage, reason=reason, user_retryable=True)
     logger.warning("pipeline: recording %s DLQ at stage %s (%s)", recording.id, stage, reason)
 
 
-# ─── metadata helpers ──────────────────────────────────────────────────
+# ─── workflow-state helpers ──────────────────────────────────────────────────
 
 
 def _pipeline_meta(recording: Recording) -> dict:
-    return (recording.metadata or {}).get("pipeline") or {}
+    return (recording.workflow_state or {}).get("pipeline") or {}
 
 
 def _completed_index(recording: Recording) -> int:
@@ -440,25 +467,25 @@ def _completed_stages(recording: Recording) -> list[str]:
 
 
 def _mark_completed(recording: Recording, stage_index: int, stage_name: str) -> None:
-    metadata = dict(recording.metadata or {})
-    pl = dict(metadata.get("pipeline") or {})
+    state = dict(recording.workflow_state or {})
+    pl = dict(state.get("pipeline") or {})
     done = list(pl.get("completed") or [])
     if stage_name not in done:
         done.append(stage_name)
     pl["completed"] = done
     pl["completed_index"] = stage_index
-    metadata["pipeline"] = pl
-    recording.metadata = metadata
+    state["pipeline"] = pl
+    recording.workflow_state = state
 
 
 def _set_current(recording: Recording, stage_index: int, stage_name: str) -> None:
-    metadata = dict(recording.metadata or {})
-    pl = dict(metadata.get("pipeline") or {})
+    state = dict(recording.workflow_state or {})
+    pl = dict(state.get("pipeline") or {})
     pl["stage_index"] = stage_index
     pl["stage"] = stage_name
     pl["updated_at"] = timezone.now().isoformat()
-    metadata["pipeline"] = pl
-    recording.metadata = metadata
+    state["pipeline"] = pl
+    recording.workflow_state = state
 
 
 def _set_awaiting(
@@ -470,8 +497,8 @@ def _set_awaiting(
     completed-stages cursor tracks names: the stage list can change under a
     live recording, and an index alone can't be trusted.
     """
-    metadata = dict(recording.metadata or {})
-    pl = dict(metadata.get("pipeline") or {})
+    state = dict(recording.workflow_state or {})
+    pl = dict(state.get("pipeline") or {})
     pl["awaiting"] = {
         "task_id": str(task_id),
         "kind": kind,
@@ -482,35 +509,35 @@ def _set_awaiting(
     pl["stage_index"] = stage_index
     pl["stage"] = stage_name
     pl["updated_at"] = timezone.now().isoformat()
-    metadata["pipeline"] = pl
-    recording.metadata = metadata
+    state["pipeline"] = pl
+    recording.workflow_state = state
 
 
 def _clear_awaiting(recording: Recording) -> None:
-    metadata = dict(recording.metadata or {})
-    pl = dict(metadata.get("pipeline") or {})
+    state = dict(recording.workflow_state or {})
+    pl = dict(state.get("pipeline") or {})
     pl.pop("awaiting", None)
-    metadata["pipeline"] = pl
-    recording.metadata = metadata
+    state["pipeline"] = pl
+    recording.workflow_state = state
 
 
 def _store_ctx(recording: Recording, ctx: dict) -> None:
-    metadata = dict(recording.metadata or {})
-    pl = dict(metadata.get("pipeline") or {})
+    state = dict(recording.workflow_state or {})
+    pl = dict(state.get("pipeline") or {})
     pl["ctx"] = ctx
-    metadata["pipeline"] = pl
-    recording.metadata = metadata
+    state["pipeline"] = pl
+    recording.workflow_state = state
 
 
 def _set_last_error(recording: Recording, stage: str, reason: str, detail=None) -> None:
-    metadata = dict(recording.metadata or {})
-    metadata["last_error"] = {
+    state = dict(recording.workflow_state or {})
+    state["last_error"] = {
         "stage": stage,
         "reason": reason,
         "detail": (str(detail)[:500] if detail else None),
         "at": timezone.now().isoformat(),
     }
-    recording.metadata = metadata
+    recording.workflow_state = state
 
 
 def _clear_last_error(recording: Recording) -> None:
@@ -526,12 +553,12 @@ def _clear_last_error(recording: Recording) -> None:
     successfully completed stage, not just at the end, so a partially
     recovered recording also tells the truth.
     """
-    metadata = dict(recording.metadata or {})
-    previous = metadata.pop("last_error", None)
+    state = dict(recording.workflow_state or {})
+    previous = state.pop("last_error", None)
     if previous is None:
         return
-    metadata["recovered_error"] = {**previous, "recovered_at": timezone.now().isoformat()}
-    recording.metadata = metadata
+    state["recovered_error"] = {**previous, "recovered_at": timezone.now().isoformat()}
+    recording.workflow_state = state
 
 
 __all__ = [

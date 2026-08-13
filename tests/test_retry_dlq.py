@@ -33,7 +33,7 @@ def test_dlq_after_max_retries_emits_failed(ready_recording, stub_transcribe, dr
 
     r = Recording.objects.get(pk=ready_recording.id)
     assert r.status == RecordingStatus.ERROR
-    assert r.metadata["last_error"]["stage"] == "transcribe"
+    assert r.workflow_state["last_error"]["stage"] == "transcribe"
 
     from stapel_core.django.outbox.models import OutboxEvent
 
@@ -57,7 +57,7 @@ def test_fatal_stage_error_goes_straight_to_dlq(make_recording, drain):
     r.refresh_from_db()
     assert r.status == RecordingStatus.ERROR
     assert r.retry_count == 0  # fatal — no retry consumed
-    assert r.metadata["last_error"]["reason"] == "bad_input"
+    assert r.workflow_state["last_error"]["reason"] == "bad_input"
 
 
 def test_redelivery_does_not_resurrect_dlqed_recording(make_recording, drain):

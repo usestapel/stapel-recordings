@@ -113,7 +113,25 @@ class Recording(models.Model):
     file_storage_key = models.CharField(max_length=512, null=True, blank=True)
     normalized_storage_key = models.CharField(max_length=512, null=True, blank=True)
     transcript_storage_key = models.CharField(max_length=512, null=True, blank=True)
+    #: CLIENT-WRITABLE. Whatever the host lets its users attach to a
+    #: recording — a note, a colour, a language they picked. Nothing in this
+    #: module ever makes a decision from it.
     metadata = models.JSONField(default=dict, blank=True)
+    #: SERVER-ONLY. The pipeline's own state: the start marker, the
+    #: completed-stage cursor, the awaiting-task handle, the carried stage
+    #: ``ctx``, the error markers.
+    #:
+    #: It is a separate column rather than a namespace inside ``metadata``
+    #: because a namespace is only as private as every write path that ever
+    #: touches the field, and there is always one more write path — a PATCH
+    #: that replaces the whole dict, an admin form, a bulk fixup. When the
+    #: workflow cursor lives in the same JSON the client can replace, a
+    #: client can mark stages complete, suppress the start marker, or inject
+    #: the ``ctx`` a stage will read. Two columns make that a type error
+    #: rather than a code review question: the serializer for one is not the
+    #: serializer for the other. See ``stapel_recordings.metadata`` for the
+    #: reserved-key guard that keeps host code from re-merging them.
+    workflow_state = models.JSONField(default=dict, blank=True)
 
     segments_count = models.IntegerField(default=0)
     speakers_count = models.IntegerField(default=0)

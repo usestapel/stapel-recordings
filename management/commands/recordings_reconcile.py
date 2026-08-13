@@ -2,7 +2,7 @@
 
 Scans for recordings parked in a transient pipeline state with no recent
 progress and re-emits ``recording.stage`` for the stage they were on (read
-from ``metadata['pipeline']['stage_index']``). Catches the failure modes
+from ``workflow_state['pipeline']['stage_index']``). Catches the failure modes
 per-stage retry can't: a broker gap between emit and consume, a worker
 crash mid-stage, or a stage parked for retry. Idempotency is the driver's
 job (status guards + stale-index drop), so a duplicate re-drive is cheap.
@@ -93,7 +93,7 @@ class Command(BaseCommand):
         # correctly inside a transaction — no outside-atomic warning noise).
         with transaction.atomic():
             for r in qs:
-                stage_index = (r.metadata or {}).get("pipeline", {}).get("stage_index")
+                stage_index = (r.workflow_state or {}).get("pipeline", {}).get("stage_index")
                 if stage_index is None:
                     stage_index = 0  # never started a stage — restart from the top
                 emit_stage(r.id, int(stage_index))
@@ -115,7 +115,7 @@ class Command(BaseCommand):
         for r in qs:
             # Conditional per-row UPDATE (no plain save over a stale read):
             # if finalize_upload won the race after our snapshot, the filter
-            # no longer matches and we don't clobber status/metadata of a
+            # no longer matches and we don't clobber status/workflow_state of a
             # recording whose pipeline has started.
             count += Recording.objects.filter(
                 pk=r.pk,
@@ -123,7 +123,7 @@ class Command(BaseCommand):
                 file_storage_key__isnull=True,
             ).update(
                 status=RecordingStatus.ERROR,
-                metadata={**(r.metadata or {}), "last_error": {
+                workflow_state={**(r.workflow_state or {}), "last_error": {
                     "stage": "upload", "reason": "upload_abandoned", "at": timezone.now().isoformat(),
                 }},
                 updated_at=timezone.now(),

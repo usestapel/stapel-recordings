@@ -35,6 +35,18 @@ default this library set.
   `media`), defaulting to the minimum, and `shared_recording_to_dto`
   renders exactly what the share grants. No HTTP endpoints ship with it:
   the payload and mount point stay the host's, the decision does not.
+- **`Recording.workflow_state` — a server-only field, and
+  `stapel_recordings.metadata` to keep it that way (REC-01).** The pipeline
+  kept its start marker, completed-stage cursor, awaiting-task handle and
+  carried stage `ctx` in `Recording.metadata` — the same dict the audited
+  product exposed to a client PATCH, so a member could mark stages
+  complete, suppress the start, or inject the context a stage reads. State
+  the server decides from now lives in its own column, and the driver reads
+  nothing else. `sanitize_user_metadata` / `UserMetadataField` /
+  `set_user_metadata` reject reserved keys **recursively** (library keys
+  plus the host's `RESERVED_METADATA_KEYS` — a billing waiver flag belongs
+  in that list), so the two halves cannot be re-merged by the next
+  endpoint.
 - **`RECORDING_POLICY` object-policy seam (REC-03).** Who may read, edit,
   delete, upload to or reprocess a recording is now one replaceable class
   (`stapel_recordings.policy`), default `OwnerOnlyPolicy`, instead of a
@@ -101,9 +113,25 @@ default this library set.
 - Custom `RecordingStorage` implementations are unaffected (`read_prefix`
   has a default), but they get no content gate until they implement it.
 
+### Changed — breaking for consumers (continued)
+
+- Pipeline state moved from `Recording.metadata` to
+  `Recording.workflow_state`. A consumer reading `metadata["pipeline"]`,
+  `metadata["last_error"]` or `metadata["recovered_error"]` — for a status
+  UI, a watchdog, a report — must read `workflow_state` instead. Migration
+  `0004` moves existing rows (and folds them back on reverse, so a rollback
+  to code that reads `metadata` still finds its cursor).
+- `reprocess_recording` records the finished run's artifact keys in
+  `workflow_state["previous_run"]` before requeueing, so a host that
+  regenerates derived data can still find (and keep) the previous
+  transcript for its retention window. The module still deletes nothing.
+
 ### Migrations
 
 - `0003_recordingshare` — the `RecordingShare` table.
+- `0004_recording_workflow_state` — the `workflow_state` column plus a data
+  move of `pipeline` / `last_error` / `recovered_error` out of `metadata`
+  (reversible).
 
 ## [0.13.1] — 2026-08-08
 

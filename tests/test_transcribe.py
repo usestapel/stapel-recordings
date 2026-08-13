@@ -103,7 +103,7 @@ def test_transcribe_failure_parks_for_retry(ready_recording, stub_transcribe, dr
     r = Recording.objects.get(pk=ready_recording.id)
     assert r.status == RecordingStatus.QUEUED
     assert r.retry_count == 1
-    assert r.metadata["last_error"]["stage"] == "transcribe"
+    assert r.workflow_state["last_error"]["stage"] == "transcribe"
 
 
 class _UrlOnly:

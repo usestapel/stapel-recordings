@@ -198,6 +198,14 @@ DEFAULTS = {
         # permission. Short: the URL leaves the trust boundary.
         "SHARE_MEDIA_URL_TTL_SECONDS": 5 * 60,
 
+        # Extra ``Recording.metadata`` keys the HOST reserves for server
+        # decisions (a billing waiver, an entitlement stamp). Rejected in
+        # client-supplied metadata at any depth by
+        # stapel_recordings.metadata.sanitize_user_metadata / the
+        # UserMetadataField. The library's own reserved keys are added to
+        # this list, never replaced by it.
+        "RESERVED_METADATA_KEYS": [],
+
         # ── Object policy seam (single strategy, replace) ─────────────
         # Dotted path to the class answering "may this user do this to this
         # recording". Default: owner-only for every verb. A host that wants

@@ -43,7 +43,7 @@ def test_reprocess_from_completed_reruns_the_whole_pipeline(make_recording, drai
         assert pipeline.reprocess_recording(str(r.id)) is True
         r.refresh_from_db()
         assert r.status == RecordingStatus.QUEUED
-        assert r.metadata["pipeline"].get("completed") in (None, [])
+        assert r.workflow_state["pipeline"].get("completed") in (None, [])
         drain()
 
     r.refresh_from_db()

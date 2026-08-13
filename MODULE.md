@@ -479,8 +479,16 @@ These were app-specific in the source origin and are intentionally
   and calls `finalize_upload`. Emits into the same pipeline.
 - **Credits / billing** — react to `recording.completed` /
   `recording.stage_completed` in the billing module.
-- **Share links** and **export formats** (SRT/VTT/DOCX/PDF) — app-layer
-  views over the stored transcript JSON.
+- **Export formats** (SRT/VTT/DOCX/PDF) — app-layer views over the stored
+  transcript JSON.
+- **Share links**: the *decision* is NOT app-layer any more (audit
+  SHARE-01, 2026-08-11). `stapel_recordings.shares` owns the token, the
+  passcode, the rotation, the lockout and the permission grant; a consumer
+  that hand-rolls those gets them wrong in the same four ways every time.
+  What stays app-layer is the HTTP surface: the route, the payload shape
+  and the throttle in front of it. Call `shares.access_share(link_token,
+  unlock_token=...)` from that view and render with
+  `dto.shared_recording_to_dto`.
 - A **real diarizer** (pyannote, etc.) — register a `diarize` stage handler.
 
 ## App-layer override vs upstream contribution — rule of thumb
