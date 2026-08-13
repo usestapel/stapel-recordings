@@ -29,6 +29,9 @@ class FakeStorage(RecordingStorage):
             return True, len(_STORE[key])
         return False, None
 
+    def read_prefix(self, key, length):
+        return _STORE[key][:length]
+
     def download_to_file(self, key, dst_path):
         with open(dst_path, "wb") as fh:
             fh.write(_STORE[key])

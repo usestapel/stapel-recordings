@@ -2,7 +2,12 @@
 from rest_framework import serializers
 from stapel_core.django.api.serializers import StapelDataclassSerializer
 
-from .dto import CreateRecordingResponse, RecordingDTO, UploadSessionDTO
+from .dto import (
+    CreateRecordingResponse,
+    RecordingDTO,
+    SharedRecordingDTO,
+    UploadSessionDTO,
+)
 
 
 class RecordingSerializer(StapelDataclassSerializer):
@@ -54,3 +59,9 @@ class CreateRecordingRequestSerializer(serializers.Serializer):
 
 class FinalizeUploadRequestSerializer(serializers.Serializer):
     file_size_bytes = serializers.IntegerField(required=False, min_value=0)
+
+
+class SharedRecordingSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = SharedRecordingDTO
+

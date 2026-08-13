@@ -163,6 +163,17 @@ DEFAULTS = {
         "MULTIPART_SESSION_TTL_SECONDS": 24 * 60 * 60,
         "MULTIPART_PART_SIZE": 10 * 1024 * 1024,
         "MAX_UPLOAD_BYTES": 2 * 1024 * 1024 * 1024,
+        # Hard ceiling on how many presigned part URLs one multipart session
+        # may mint. MAX_UPLOAD_BYTES already bounds this for sane part
+        # sizes; the cap is what keeps a tiny MULTIPART_PART_SIZE (or a
+        # future caller-chosen one) from turning one request into tens of
+        # thousands of signatures. 10000 is also the S3 protocol limit.
+        "MAX_MULTIPART_PARTS": 10000,
+        # Content gate applied to the STORED object at finalize time (see
+        # media_types.py): "reject_known_bad" (default — refuse executables,
+        # archives and renderable markup), "require_known_media" (accept
+        # only recognized media containers) or "off".
+        "UPLOAD_CONTENT_POLICY": "reject_known_bad",
         # Allowlist of upload file extensions (lower-case, no dot) for the
         # required ``filename`` on ``create_upload_session`` — the object
         # key is suffixed with the validated extension. Tuning,
@@ -171,6 +182,28 @@ DEFAULTS = {
             "mp3", "m4a", "wav", "ogg", "oga", "opus", "webm", "flac",
             "aac", "aiff", "amr", "wma", "mp4", "mov", "mkv", "3gp",
         ],
+
+        # ── Public share links (shares.py) ────────────────────────────
+        # Lifetime of an unlock token issued after a correct passcode. It
+        # is a signed token, so this is the only thing bounding how long a
+        # copied header keeps working — keep it short enough that a leaked
+        # one dies on its own, long enough to read a meeting transcript.
+        "SHARE_UNLOCK_TOKEN_TTL_SECONDS": 60 * 60,
+        # Failed passcode attempts before unlocking is locked out, and how
+        # long the lockout lasts. A passcode is human-chosen (four to six
+        # characters in practice); without a bound it is not a secret.
+        "SHARE_UNLOCK_MAX_ATTEMPTS": 5,
+        "SHARE_UNLOCK_LOCKOUT_SECONDS": 5 * 60,
+        # TTL of the media URL handed to a share that carries the "media"
+        # permission. Short: the URL leaves the trust boundary.
+        "SHARE_MEDIA_URL_TTL_SECONDS": 5 * 60,
+
+        # ── Object policy seam (single strategy, replace) ─────────────
+        # Dotted path to the class answering "may this user do this to this
+        # recording". Default: owner-only for every verb. A host that wants
+        # workspace members to read (or edit) subclasses it and points this
+        # here — the decision stops being spread across view bodies.
+        "RECORDING_POLICY": "stapel_recordings.policy.OwnerOnlyPolicy",
 
         # ── Source-type registry (merge-over-builtins extension point) ─
         # Recording source kinds (meet / dictaphone / upload / other by
@@ -220,7 +253,7 @@ DEFAULTS = {
 recordings_settings = AppSettings(
     "STAPEL_RECORDINGS",
     defaults=DEFAULTS,
-    import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER"),
+    import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER", "RECORDING_POLICY"),
 )
 
 

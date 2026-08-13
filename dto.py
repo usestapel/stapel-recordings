@@ -43,6 +43,41 @@ class CreateRecordingResponse:  # noqa: R004
     upload: UploadSessionDTO
 
 
+@dataclass
+class SharedSegmentDTO:
+    """One transcript segment as seen through a share link."""
+
+    sequence_num: int
+    start_time: float
+    end_time: float
+    speaker: Optional[str]
+    text: str
+
+
+@dataclass
+class SharedRecordingDTO:
+    """A recording as seen through a public share link.
+
+    Field presence follows the share's granted permissions, not the
+    caller's request: ``summary``, ``segments`` and ``media_url`` stay empty
+    unless the link grants them. The recording's internal identifiers
+    (workspace, storage keys, provider) are not part of this payload at
+    all — a public link is not a window into the tenant.
+    """
+
+    id: str
+    title: str
+    status: str
+    language: Optional[str]
+    duration_seconds: Optional[float]
+    created_at: str
+    permissions: list[str]
+    summary: Optional[str]
+    media_url: Optional[str]
+    segments: list[SharedSegmentDTO]
+
+
+
 def recording_to_dto(recording) -> RecordingDTO:
     from .resources import resource_key
 
@@ -62,6 +97,51 @@ def recording_to_dto(recording) -> RecordingDTO:
         transcript_storage_key=recording.transcript_storage_key,
         summary=recording.summary,
         created_at=recording.created_at.isoformat(),
+    )
+
+
+def shared_recording_to_dto(access) -> SharedRecordingDTO:
+    """Project a recording through a :class:`~stapel_recordings.shares.ShareAccess`.
+
+    The projection is the enforcement point: a field the share does not
+    grant is not fetched, not rendered and not reachable by asking again
+    with a different query parameter."""
+    from . import shares
+    from .conf import recordings_settings
+    from .storage import get_storage
+
+    recording = access.recording
+    segments: list[SharedSegmentDTO] = []
+    if access.has(shares.PERM_TRANSCRIPT):
+        segments = [
+            SharedSegmentDTO(
+                sequence_num=s.sequence_num,
+                start_time=s.start_time,
+                end_time=s.end_time,
+                speaker=(s.speaker.display_name or s.speaker.label) if s.speaker else None,
+                text=s.text,
+            )
+            for s in recording.segments.select_related("speaker").all()
+        ]
+
+    media_url = None
+    if access.has(shares.PERM_MEDIA) and recording.file_storage_key:
+        media_url = get_storage().presigned_get_url(
+            recording.file_storage_key,
+            expires_seconds=int(recordings_settings.SHARE_MEDIA_URL_TTL_SECONDS),
+        )
+
+    return SharedRecordingDTO(
+        id=str(recording.id),
+        title=recording.title,
+        status=recording.status,
+        language=recording.language,
+        duration_seconds=recording.duration_seconds,
+        created_at=recording.created_at.isoformat(),
+        permissions=list(access.permissions),
+        summary=recording.summary if access.has(shares.PERM_SUMMARY) else None,
+        media_url=media_url,
+        segments=segments,
     )
 
 

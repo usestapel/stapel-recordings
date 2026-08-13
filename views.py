@@ -36,8 +36,12 @@ from .errors import (
     ERR_403_WORKSPACE_FORBIDDEN,
     ERR_404_NOT_FOUND,
     ERR_409_INVALID_STATE,
+    ERR_413_TOO_LARGE,
+    ERR_415_UNSUPPORTED_MEDIA,
 )
+from .media_types import UnsupportedUploadContent
 from .models import Recording
+from .policy import get_policy
 from .resources import resolve_resource_key
 from .serializers import (
     CreateRecordingRequestSerializer,
@@ -67,10 +71,16 @@ class SerializerSeamMixin:
 
 
 def _owned_qs(request):
-    qs = Recording.objects.filter(deleted_at__isnull=True)
-    if request.user and request.user.is_authenticated:
-        return qs.filter(owner=request.user)
-    return qs
+    """Recordings this request may read, per the configured object policy.
+
+    The scope is asked for, not rebuilt: ``RECORDING_POLICY`` owns the rule
+    (default: owner-only), so widening read access for a host cannot widen
+    the mutating verbs by accident — those ask the same policy separately.
+    Anonymous requests get an empty queryset; the previous inline scope
+    handed back every non-deleted recording for a caller with no user, and
+    only the view-level permission class stood between that and a response.
+    """
+    return get_policy().visible_queryset(getattr(request, "user", None))
 
 
 @extend_schema(tags=["Recordings"])
@@ -199,14 +209,26 @@ class FinalizeUploadView(SerializerSeamMixin, APIView):
         recording = _owned_qs(request).filter(pk=recording_id).first()
         if recording is None:
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        if not get_policy().can_upload(request.user, recording):
+            return StapelErrorResponse(404, ERR_404_NOT_FOUND)
         session = recording.upload_sessions.order_by("-created_at").first()
         if session is None:
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)
         req = self.get_request_serializer_class()(data=request.data)
         req.is_valid(raise_exception=True)
-        recording = services.finalize_upload(
-            session=session, file_size_bytes=req.validated_data.get("file_size_bytes")
-        )
+        try:
+            recording = services.finalize_upload(
+                session=session, file_size_bytes=req.validated_data.get("file_size_bytes")
+            )
+        except services.UploadTooLarge:
+            return StapelErrorResponse(413, ERR_413_TOO_LARGE)
+        except UnsupportedUploadContent:
+            return StapelErrorResponse(415, ERR_415_UNSUPPORTED_MEDIA)
+        except (services.UploadNotStored, services.InvalidMultipartParts):
+            # Nothing (usable) was ever written under the session key, so
+            # there is no upload to finalize — the client has to upload
+            # again, not retry the finalize.
+            return StapelErrorResponse(409, ERR_409_INVALID_STATE)
         return StapelResponse(self.get_response_serializer_class()(recording_to_dto(recording)))
 
 
@@ -229,7 +251,10 @@ class ReprocessRecordingView(SerializerSeamMixin, APIView):
     @extend_schema(request=None, responses={200: RecordingSerializer})
     def post(self, request, recording_id):  # noqa: R007
         recording = _owned_qs(request).filter(pk=recording_id).first()
-        if recording is None:
+        if recording is None or not get_policy().can_reprocess(request.user, recording):
+            # Reprocess spends the whole pipeline again and rewrites derived
+            # artifacts, so it asks the policy for that verb specifically —
+            # being able to READ a recording is not authority to re-run it.
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)
         if not pipeline.reprocess_recording(str(recording.id)):
             # Recording exists and is owned (checked above), so the only reason

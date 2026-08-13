@@ -4,6 +4,107 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [Unreleased]
+
+Security hardening from the 2026-08-11 audit of a product built on this
+module (SHARE-01, REC-02, REC-03). Each finding was raised against product
+code; each is fixed here because the product could only have made it by
+hand-rolling something this library never published, or by inheriting a
+default this library set.
+
+### Added
+
+- **`stapel_recordings.shares` — public share links with passcode unlock
+  (SHARE-01).** The module published no sharing primitive at all, so every
+  consumer that needed one invented it, and the audited one accepted *any
+  nonempty* `X-Share-Token`: the unlock token it issued was random, never
+  stored, and never verified. Sharing a recording is an authorization
+  decision about a recording, so it now belongs to the module that owns
+  recordings. `RecordingShare` + `create_share` / `resolve_share` /
+  `unlock_share` / `access_share` / `require_permission` / `revoke_share` /
+  `set_share_passcode` give: a 32-byte link token returned once and stored
+  only as a SHA-256 digest; a passcode behind Django's password hasher; a
+  signed, purpose-salted, time-limited unlock token bound to the share id
+  and to a `token_version` that a passcode change or a revoke bumps
+  (rotation without tracking issued tokens); a persisted attempt counter
+  and lockout (`SHARE_UNLOCK_MAX_ATTEMPTS`, `SHARE_UNLOCK_LOCKOUT_SECONDS`);
+  an `F()` access counter; and one total entry point — `access_share`
+  enforces revocation, expiry, the recording's own soft-delete, and the
+  passcode, so a consumer cannot skip a check by calling a different
+  function. Permissions are a grant (`view` / `transcript` / `summary` /
+  `media`), defaulting to the minimum, and `shared_recording_to_dto`
+  renders exactly what the share grants. No HTTP endpoints ship with it:
+  the payload and mount point stay the host's, the decision does not.
+- **`RECORDING_POLICY` object-policy seam (REC-03).** Who may read, edit,
+  delete, upload to or reprocess a recording is now one replaceable class
+  (`stapel_recordings.policy`), default `OwnerOnlyPolicy`, instead of a
+  queryset rebuilt in each view body. That is what lets a host widen
+  *reading* (workspace members see the workspace) without widening the
+  destructive verbs with it — the way member-wide mutation authority gets
+  built by accident.
+- `RecordingStorage.read_prefix(key, length)` — a ranged read, implemented
+  for the Django and S3 backends. A finalize-time content check must never
+  pull a multi-gigabyte object into memory; a backend that cannot serve one
+  raises `NotImplementedError` and the content gate reports itself as not
+  applied rather than silently downloading everything.
+- `stapel_recordings.media_types` — content classification for stored
+  uploads, with the `UPLOAD_CONTENT_POLICY` setting
+  (`reject_known_bad` default / `require_known_media` / `off`).
+- Settings: `MAX_MULTIPART_PARTS`, `UPLOAD_CONTENT_POLICY`,
+  `SHARE_UNLOCK_TOKEN_TTL_SECONDS`, `SHARE_UNLOCK_MAX_ATTEMPTS`,
+  `SHARE_UNLOCK_LOCKOUT_SECONDS`, `SHARE_MEDIA_URL_TTL_SECONDS`,
+  `RECORDING_POLICY`.
+
+### Fixed
+
+- **Upload limits and object validation are now enforced, not advisory
+  (REC-02).** `max_size_bytes` was recorded and never used; the multipart
+  part count came from an arbitrary caller-declared size; and
+  `finalize_upload` completed the multipart *before* validating, accepted a
+  missing or zero-byte object by falling back to the caller's declared
+  size, never rejected a measured size above the maximum, and never looked
+  at the bytes. Now: a declared size is validated before any storage state
+  exists and becomes the session's enforced ceiling; the part count is
+  capped (`MAX_MULTIPART_PARTS`) and the part list is validated before the
+  multipart is completed; finalize requires a successful HEAD with
+  `0 < actual <= ceiling`, applies the content policy to the object's
+  leading bytes, and on any failure cleans up the object and session,
+  leaves the recording out of `queued` and does **not** emit
+  `recording.uploaded` — no downstream work is enqueued by an upload that
+  never satisfied its invariants.
+- One live upload session per recording: opening a new one aborts and
+  removes the previous unfinalized one, instead of leaving orphan multipart
+  uploads in the bucket for every client retry.
+- `create_upload_session` binds `content_type` into the presigned PUT where
+  the backend supports it.
+- The anonymous read scope. The inline queryset returned **every**
+  non-deleted recording when the request had no authenticated user; only
+  the view-level permission class stood between that and a response. The
+  default policy returns nothing.
+
+### Changed — breaking for consumers
+
+- `finalize_upload` now **raises** instead of finalizing on a broken
+  upload: `UploadNotStored` (nothing/zero bytes at the key),
+  `UploadTooLarge` (measured or declared size over the ceiling),
+  `InvalidMultipartParts` (malformed/oversized part list),
+  `media_types.UnsupportedUploadContent` (rejected bytes). A consumer that
+  relied on finalize always succeeding — in particular on the
+  caller-declared size being accepted when the object is missing — must
+  handle these. The bundled `FinalizeUploadView` maps them to 413 / 415 /
+  409.
+- `Recording.file_size_bytes` is always the size storage reports; a
+  client-declared `file_size_bytes` is only ever checked, never stored.
+- `start_multipart_upload` requires a positive `file_size_bytes` within
+  `MAX_UPLOAD_BYTES` (previously any integer was accepted, including zero
+  and negatives).
+- Custom `RecordingStorage` implementations are unaffected (`read_prefix`
+  has a default), but they get no content gate until they implement it.
+
+### Migrations
+
+- `0003_recordingshare` — the `RecordingShare` table.
+
 ## [0.13.1] — 2026-08-08
 
 ### Fixed

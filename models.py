@@ -245,6 +245,76 @@ class UploadSession(models.Model):
         indexes = [models.Index(fields=["recording"], name="rec_upload_rec_idx")]
 
 
+@access.ops  # link-sharing machinery (admin-suite AS-5): every row is minted
+# by ``shares.create_share`` and mutated only by that module's transitions
+# (unlock / revoke / rotate). There is no staff-authored share, and a
+# hand-edited one would be an access grant written outside the mechanism that
+# hashes and versions its secret — precisely what must not be possible.
+class RecordingShare(models.Model):
+    """A public link to a recording, optionally passcode-protected.
+
+    Why this lives in the library (audit SHARE-01): a share link is an
+    *authorization primitive*. It hands a bearer secret to an anonymous
+    party and answers "may this request read this recording, and how much
+    of it". Every consumer that has to invent one invents the same four
+    mistakes — the secret stored in the clear, the unlock token never
+    persisted or verified, no rotation on passcode change, no bound on
+    guessing. The module that owns recordings therefore owns their sharing
+    too.
+
+    Secrets are never stored in the clear:
+
+    - ``link_token_hash`` — SHA-256 of the high-entropy link token. The
+      token is shown once, at creation. A database read therefore does not
+      yield a working link, and the lookup is by digest, so no comparison
+      walks the secret byte by byte.
+    - ``passcode_hash`` — Django's configured password hasher (a slow KDF;
+      the passcode is human-chosen and low-entropy, unlike the link token).
+
+    ``token_version`` is the revocation lever: unlock tokens are signed and
+    carry the version they were minted under, so bumping it (passcode
+    change, revoke) invalidates every token already in the wild without
+    tracking them individually.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    recording = models.ForeignKey(
+        Recording, on_delete=models.CASCADE, related_name="shares"
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="recording_shares",
+    )
+    link_token_hash = models.CharField(max_length=64, unique=True)
+    passcode_hash = models.CharField(max_length=255, blank=True, default="")
+    #: Subset of ``shares.SHARE_PERMISSIONS`` this link grants.
+    permissions = models.JSONField(default=list, blank=True)
+    token_version = models.PositiveIntegerField(default=1)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    access_count = models.BigIntegerField(default=0)
+    last_accessed_at = models.DateTimeField(null=True, blank=True)
+    failed_unlock_count = models.IntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "recordings_share"
+        indexes = [
+            models.Index(fields=["recording"], name="rec_share_rec_idx"),
+            models.Index(fields=["link_token_hash"], name="rec_share_token_idx"),
+        ]
+
+    def __str__(self):
+        return f"share of {self.recording_id}"
+
+
 @access.ops  # processing-job ledger (admin-suite AS-5): status/type tracker in
 # the doc's own TaskRecord shape. No code path in this repo writes a Job row
 # today (the pipeline driver tracks progress on Recording.status/metadata

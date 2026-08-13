@@ -19,6 +19,7 @@ Contract (all keys are storage-relative strings):
     presigned_put_url(key, *, expires_seconds, content_type=None) -> str
     presigned_get_url(key, *, expires_seconds) -> str
     head_object(key) -> (exists: bool, size: int | None)
+    read_prefix(key, length) -> bytes                # optional, see below
     download_to_file(key, dst_path) -> None
     upload_from_file(key, src_path, content_type=None) -> None
     put_bytes(key, data, content_type=...) -> None
@@ -51,6 +52,20 @@ class RecordingStorage(ABC):
     # ── Objects ──────────────────────────────────────────────────────
     @abstractmethod
     def head_object(self, key: str) -> tuple[bool, Optional[int]]: ...
+
+    def read_prefix(self, key: str, length: int) -> bytes:
+        """Return at most *length* leading bytes of the object.
+
+        Not abstract, and deliberately not implemented in terms of
+        ``get_bytes``: a finalize-time content check must never pull a
+        multi-gigabyte object into memory. A backend that cannot serve a
+        ranged read says so by raising ``NotImplementedError`` (the default
+        here), and the upload content gate degrades to "unchecked" for that
+        backend rather than to "download everything".
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support ranged reads"
+        )
 
     @abstractmethod
     def download_to_file(self, key: str, dst_path: str) -> None: ...
@@ -123,6 +138,10 @@ class DjangoStorageBackend(RecordingStorage):
             return True, storage.size(key)
         except Exception:
             return True, None
+
+    def read_prefix(self, key, length):
+        with self._storage().open(key, "rb") as fh:
+            return fh.read(length)
 
     def download_to_file(self, key, dst_path):
         storage = self._storage()
@@ -260,6 +279,12 @@ class S3Backend(RecordingStorage):
         except Exception:
             return False, None
         return True, int(resp.get("ContentLength", 0))
+
+    def read_prefix(self, key, length):
+        resp = self._client(False).get_object(
+            Bucket=self._bucket(), Key=key, Range=f"bytes=0-{max(0, length - 1)}"
+        )
+        return resp["Body"].read(length)
 
     def download_to_file(self, key, dst_path):
         self._client(False).download_file(self._bucket(), key, dst_path)
