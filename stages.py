@@ -250,7 +250,15 @@ class TranscribeStage(Stage):
             raise StageFatal("no_storage_key")
 
         storage = get_storage()
-        audio_url = storage.presigned_get_url(storage_key, expires_seconds=3600)
+        # With a private bucket this presigned URL is the ONLY way the ASR
+        # provider reads the audio, so its TTL is configuration, not a
+        # literal: it has to outlive TRANSCRIBE_TIMEOUT_SECONDS (a provider
+        # that starts late must still be able to fetch). W007 warns if it
+        # does not.
+        audio_url = storage.presigned_get_url(
+            storage_key,
+            expires_seconds=int(recordings_settings.TRANSCRIBE_AUDIO_URL_TTL_SECONDS),
+        )
 
         payload = {
             "audio_url": audio_url,

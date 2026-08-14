@@ -1,6 +1,6 @@
 """The error marker must clear once the pipeline recovers.
 
-Before 2026-08-08, ``metadata["last_error"]`` was set on stage failure and
+Before 2026-08-08, ``workflow_state["last_error"]`` was set on stage failure and
 never cleared: not on a successful retry, not on requeue, not even once the
 recording reached ``completed``. A fully transcribed, summarized, embedded
 recording kept carrying the reason for a long-past failure — and that field
@@ -66,8 +66,8 @@ def test_marker_set_on_failure(ready_recording, flaky, drain):
     _run_pipeline(ready_recording.id, drain)
 
     r = Recording.objects.get(pk=ready_recording.id)
-    assert r.metadata["last_error"]["reason"] == "embedder rejected the batch"
-    assert "recovered_error" not in r.metadata
+    assert r.workflow_state["last_error"]["reason"] == "embedder rejected the batch"
+    assert "recovered_error" not in r.workflow_state
 
 
 def test_marker_cleared_when_stage_succeeds(ready_recording, flaky, drain):
@@ -75,7 +75,7 @@ def test_marker_cleared_when_stage_succeeds(ready_recording, flaky, drain):
     _run_pipeline(ready_recording.id, drain, 1)  # retry — stage passes
 
     r = Recording.objects.get(pk=ready_recording.id)
-    assert "last_error" not in r.metadata, (
+    assert "last_error" not in r.workflow_state, (
         "recording completed but the field still claims it's broken"
     )
     assert r.status == RecordingStatus.COMPLETED
@@ -86,7 +86,7 @@ def test_reason_moves_to_recovered_error(ready_recording, flaky, drain):
     _run_pipeline(ready_recording.id, drain, 1)
 
     r = Recording.objects.get(pk=ready_recording.id)
-    recovered = r.metadata["recovered_error"]
+    recovered = r.workflow_state["recovered_error"]
     assert recovered["reason"] == "embedder rejected the batch"
     assert recovered["stage"] == "flaky"
     assert recovered["recovered_at"], "needs a timestamp for WHEN it recovered"
@@ -98,8 +98,8 @@ def test_no_fields_added_on_clean_success(ready_recording, flaky, drain):
     _run_pipeline(ready_recording.id, drain)
 
     r = Recording.objects.get(pk=ready_recording.id)
-    assert "last_error" not in r.metadata
-    assert "recovered_error" not in r.metadata
+    assert "last_error" not in r.workflow_state
+    assert "recovered_error" not in r.workflow_state
 
 
 def test_field_persists_while_recording_broken(ready_recording, flaky, drain):
@@ -115,5 +115,5 @@ def test_field_persists_while_recording_broken(ready_recording, flaky, drain):
 
     r = Recording.objects.get(pk=ready_recording.id)
     assert r.status == RecordingStatus.ERROR
-    assert r.metadata["last_error"]["stage"] == "flaky"
-    assert "recovered_error" not in r.metadata
+    assert r.workflow_state["last_error"]["stage"] == "flaky"
+    assert "recovered_error" not in r.workflow_state

@@ -11,7 +11,16 @@ Two implementations ship:
 - :func:`ffmpeg_normalize` (default) — shells out to ffmpeg/ffprobe.
 - :func:`passthrough_normalize` — copies the file unchanged; for
   environments without ffmpeg or when the upload is already normalized.
-  Also the natural choice in tests.
+  Also the natural choice in tests. Note that selecting it disables ALL
+  transcoding — whatever was uploaded is what every later stage opens — so
+  a system check (W008) says so out loud at deploy time rather than letting
+  it pass silently.
+
+Which binaries this shells out to (``FFMPEG_BIN`` / ``FFPROBE_BIN``) and how
+long a call may run (``FFMPEG_TIMEOUT_SECONDS``) are settings read at call
+time, like everything else in this module. They used to be module-level
+``os.environ`` reads, which both froze them at import and let any process
+environment pick argv[0] of a subprocess run over user-supplied media.
 
 :func:`ffmpeg_normalize` accepts an optional ``max_duration_seconds`` — a
 duration cap for free-tier plans ("first N minutes of any recording"). The
@@ -23,16 +32,37 @@ of 47 minutes" label.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from typing import Optional
 
-FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")  # noqa: CFG001
-FFPROBE_BIN = os.environ.get("FFPROBE_BIN", "ffprobe")  # noqa: CFG001
+from .conf import recordings_settings
+
 TARGET_SAMPLE_RATE = 16000
 TARGET_CHANNELS = 1
-SUBPROCESS_TIMEOUT_S = int(os.environ.get("FFMPEG_TIMEOUT_S", "1800"))  # noqa: CFG001
+
+
+def _ffmpeg_bin() -> str:
+    """The ffmpeg executable, read at CALL time from settings.
+
+    Not a module-level ``os.environ.get``: that is argv[0] of a subprocess
+    this module runs on user-supplied media, so "which binary" is a trust
+    decision, and it used to be answerable by any environment variable that
+    happened to be named ``FFMPEG_BIN`` in the pod. It is also frozen at
+    import that way, which the module's own conf policy forbids —
+    everything else here is read lazily so a host can change it. Settings
+    only, and ``no_env`` (see conf.py)."""
+    return str(recordings_settings.FFMPEG_BIN)
+
+
+def _ffprobe_bin() -> str:
+    """The ffprobe executable — same reasoning as :func:`_ffmpeg_bin`."""
+    return str(recordings_settings.FFPROBE_BIN)
+
+
+def _subprocess_timeout() -> int:
+    """Seconds an ffmpeg/ffprobe call may run before it is killed."""
+    return int(recordings_settings.FFMPEG_TIMEOUT_SECONDS)
 
 
 class NormalizeFatal(Exception):
@@ -101,7 +131,7 @@ def ffmpeg_normalize(
 
 def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = None) -> None:
     cmd = [
-        FFMPEG_BIN, "-hide_banner", "-loglevel", "error", "-y",
+        _ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
         "-i", src, "-vn",
     ]
     if max_duration_seconds is not None:
@@ -113,12 +143,13 @@ def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = N
         "-ac", str(TARGET_CHANNELS), "-ar", str(TARGET_SAMPLE_RATE),
         "-c:a", "pcm_s16le", "-f", "wav", dst,
     ]
+    timeout = _subprocess_timeout()
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=SUBPROCESS_TIMEOUT_S)
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except FileNotFoundError as exc:
         raise NormalizeFatal("ffmpeg_missing", str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
-        raise NormalizeFatal("ffmpeg_timeout", f"exceeded {SUBPROCESS_TIMEOUT_S}s") from exc
+        raise NormalizeFatal("ffmpeg_timeout", f"exceeded {timeout}s") from exc
     if proc.returncode != 0:
         stderr = (proc.stderr or b"").decode(errors="replace")[:500]
         raise NormalizeFatal("ffmpeg_failed", f"rc={proc.returncode}: {stderr}")
@@ -126,7 +157,7 @@ def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = N
 
 def _probe_audio(path: str) -> tuple[bool, Optional[float]]:
     cmd = [
-        FFPROBE_BIN, "-v", "error", "-print_format", "json",
+        _ffprobe_bin(), "-v", "error", "-print_format", "json",
         "-show_format", "-show_streams", "-select_streams", "a", path,
     ]
     try:

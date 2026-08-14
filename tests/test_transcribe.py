@@ -50,7 +50,11 @@ def test_consumer_drains_and_calls_llm_transcribe(use_fakes, make_recording, stu
 
     assert len(stub_transcribe.calls) == 1
     payload = stub_transcribe.calls[0]
-    assert payload["audio_url"].startswith("memory://get/")
+    assert payload["audio_url"].startswith("https://fake.invalid/get/")
+    # The URL the provider fetches with is minted for a CONFIGURED lifetime
+    # (TRANSCRIBE_AUDIO_URL_TTL_SECONDS) — with a private bucket it is the
+    # only way in, so its deadline is an operator's decision, not a literal.
+    assert "expires_in=3600" in payload["audio_url"]
     assert payload["diarization"] is True
     r.refresh_from_db()
     assert r.status == RecordingStatus.COMPLETED
@@ -103,7 +107,7 @@ def test_transcribe_failure_parks_for_retry(ready_recording, stub_transcribe, dr
     r = Recording.objects.get(pk=ready_recording.id)
     assert r.status == RecordingStatus.QUEUED
     assert r.retry_count == 1
-    assert r.metadata["last_error"]["stage"] == "transcribe"
+    assert r.workflow_state["last_error"]["stage"] == "transcribe"
 
 
 class _UrlOnly:

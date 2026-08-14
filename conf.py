@@ -144,6 +144,15 @@ DEFAULTS = {
         # duration seconds. Default shells out to ffmpeg; a passthrough is
         # provided for environments without ffmpeg / for tests.
         "NORMALIZER": "stapel_recordings.normalize.ffmpeg_normalize",
+        # The executables ffmpeg_normalize shells out to, and the timeout on
+        # a single call. Settings, not `os.environ` read at import: these
+        # are argv[0] of a subprocess run over user-supplied media, so
+        # "which binary" is a trust decision and does not belong to whatever
+        # happens to be exported in the pod (hence `no_env` below too). A
+        # name is resolved on PATH; give an absolute path to pin it.
+        "FFMPEG_BIN": "ffmpeg",
+        "FFPROBE_BIN": "ffprobe",
+        "FFMPEG_TIMEOUT_SECONDS": 30 * 60,
 
         # ── S3/MinIO call timeouts ────────────────────────────────────
         # The bare botocore defaults (connect 60s, read 60s, five retries)
@@ -163,6 +172,17 @@ DEFAULTS = {
         "MULTIPART_SESSION_TTL_SECONDS": 24 * 60 * 60,
         "MULTIPART_PART_SIZE": 10 * 1024 * 1024,
         "MAX_UPLOAD_BYTES": 2 * 1024 * 1024 * 1024,
+        # Hard ceiling on how many presigned part URLs one multipart session
+        # may mint. MAX_UPLOAD_BYTES already bounds this for sane part
+        # sizes; the cap is what keeps a tiny MULTIPART_PART_SIZE (or a
+        # future caller-chosen one) from turning one request into tens of
+        # thousands of signatures. 10000 is also the S3 protocol limit.
+        "MAX_MULTIPART_PARTS": 10000,
+        # Content gate applied to the STORED object at finalize time (see
+        # media_types.py): "reject_known_bad" (default — refuse executables,
+        # archives and renderable markup), "require_known_media" (accept
+        # only recognized media containers) or "off".
+        "UPLOAD_CONTENT_POLICY": "reject_known_bad",
         # Allowlist of upload file extensions (lower-case, no dot) for the
         # required ``filename`` on ``create_upload_session`` — the object
         # key is suffixed with the validated extension. Tuning,
@@ -171,6 +191,88 @@ DEFAULTS = {
             "mp3", "m4a", "wav", "ogg", "oga", "opus", "webm", "flac",
             "aac", "aiff", "amr", "wma", "mp4", "mov", "mkv", "3gp",
         ],
+
+        # ── Public share links (shares.py) ────────────────────────────
+        # Lifetime of an unlock token issued after a correct passcode. It
+        # is a signed token, so this is the only thing bounding how long a
+        # copied header keeps working — keep it short enough that a leaked
+        # one dies on its own, long enough to read a meeting transcript.
+        "SHARE_UNLOCK_TOKEN_TTL_SECONDS": 60 * 60,
+        # Failed passcode attempts before unlocking is locked out, and how
+        # long the lockout lasts. A passcode is human-chosen (four to six
+        # characters in practice); without a bound it is not a secret.
+        "SHARE_UNLOCK_MAX_ATTEMPTS": 5,
+        "SHARE_UNLOCK_LOCKOUT_SECONDS": 5 * 60,
+        # TTL of the media URL handed to a share that carries the "media"
+        # permission. Short: the URL leaves the trust boundary.
+        "SHARE_MEDIA_URL_TTL_SECONDS": 5 * 60,
+
+        # ── Authorized media delivery (media.py, audit STORE-01) ──────
+        # TTL of the presigned GET issued to an authorized OWNER request.
+        # Short by construction: the URL is a bearer credential for the
+        # object — once minted, whoever holds it reads the bytes without
+        # passing the policy again. Long enough to start playback and to
+        # survive a seek, short enough that a copied URL dies on its own.
+        "MEDIA_URL_TTL_SECONDS": 5 * 60,
+        # Tri-state answer to "does the storage backend mint EXPIRING,
+        # credentialed GET URLs": None (default) = ask the backend's
+        # ``signs_get_urls``. Set True only when the configured Django
+        # storage backend really signs its ``url()`` (e.g. S3Boto3Storage
+        # with querystring_auth=True) — the default for DjangoStorageBackend
+        # is False because a plain ``storage.url()`` never expires, and
+        # handing one out IS the anonymous-bucket delivery this module
+        # refuses to depend on. False forces the refusal even for a signing
+        # backend (useful to prove a stand no longer serves media at all).
+        "STORAGE_SIGNS_GET_URLS": None,
+        # TTL of the presigned GET the transcribe stage hands to the ASR
+        # provider. Not client-facing — but with a private bucket it is the
+        # ONLY way the provider reads the audio, so it must outlive
+        # TRANSCRIBE_TIMEOUT_SECONDS: a provider that starts late (queued
+        # behind other work) must still be able to fetch. W007 warns if it
+        # does not.
+        "TRANSCRIBE_AUDIO_URL_TTL_SECONDS": 60 * 60,
+
+        # Extra ``Recording.metadata`` keys the HOST reserves for server
+        # decisions (a billing waiver, an entitlement stamp). Rejected in
+        # client-supplied metadata at any depth by
+        # stapel_recordings.metadata.sanitize_user_metadata / the
+        # UserMetadataField. The library's own reserved keys are added to
+        # this list, never replaced by it.
+        "RESERVED_METADATA_KEYS": [],
+
+        # ── Workspace membership gate on create ───────────────────────
+        # ``POST /recordings`` names the workspace the new recording lands
+        # in, and the caller supplies that id. True (default): the id is
+        # verified against the workspaces module — the same membership
+        # question the workspace LISTING already asks — BEFORE any row,
+        # upload session or object key exists. Without it, any account can
+        # mint a recording inside any organization's workspace (storage keys
+        # are namespaced by workspace id, and that workspace's members then
+        # see the injected row in their listing).
+        #
+        # Set False ONLY where recordings runs without stapel-workspaces
+        # (single-tenant stand, workspace ids minted by the host itself):
+        # membership cannot be answered there, and the check fails CLOSED,
+        # so it would refuse every create. Opening is the explicit act.
+        "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE": True,
+
+        # Who a member SEES in ``GET /recordings?workspace_id=<uuid>``.
+        # False (default): the listing is what RECORDING_POLICY makes
+        # visible, narrowed to that workspace — so the listing and the
+        # per-recording endpoints answer the same question, and a host that
+        # tightens the policy tightens both. True: every non-deleted
+        # recording in a workspace the caller is a verified member of,
+        # whoever owns it — the pre-0.14 behaviour, and a deliberate
+        # widening of the READ surface (the destructive verbs still ask the
+        # policy per object, which is the whole point of REC-03).
+        "WORKSPACE_LISTING_MEMBERS_SEE_ALL": False,
+
+        # ── Object policy seam (single strategy, replace) ─────────────
+        # Dotted path to the class answering "may this user do this to this
+        # recording". Default: owner-only for every verb. A host that wants
+        # workspace members to read (or edit) subclasses it and points this
+        # here — the decision stops being spread across view bodies.
+        "RECORDING_POLICY": "stapel_recordings.policy.OwnerOnlyPolicy",
 
         # ── Source-type registry (merge-over-builtins extension point) ─
         # Recording source kinds (meet / dictaphone / upload / other by
@@ -220,8 +322,83 @@ DEFAULTS = {
 recordings_settings = AppSettings(
     "STAPEL_RECORDINGS",
     defaults=DEFAULTS,
-    import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER"),
+    import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER", "RECORDING_POLICY"),
+    # Keys that must NOT fall back to an environment variable. AppSettings
+    # reads os.environ for every key not listed here, and these names are
+    # generic enough to collide in a shared pod or a compose file
+    # (STORAGE, NORMALIZER, RECORDING_POLICY…) while each of them decides
+    # something a stray value must never decide:
+    #
+    #   * the four dotted-path seams are IMPORTED and then called — one env
+    #     var swaps the authorization policy (RECORDING_POLICY), where the
+    #     bytes go (STORAGE), which stages run (PIPELINE_RESOLVER) or what
+    #     runs at the pipeline's subprocess entrance (NORMALIZER), with
+    #     FFMPEG_BIN / FFPROBE_BIN the literal argv[0] that entrance execs;
+    #   * UPLOAD_CONTENT_POLICY="off" disables the finalize-time content
+    #     gate, and STORAGE_SIGNS_GET_URLS vouches that a backend mints
+    #     EXPIRING URLs — set wrongly, media delivery hands out permanent
+    #     ones (both are also the kind of value copied between stands);
+    #   * the two membership/listing switches can only ever be flipped OPEN.
+    #
+    # They still resolve via STAPEL_RECORDINGS, a flat Django setting, or the
+    # default: these are deployment declarations, so they are stated in
+    # settings where they can be reviewed, not inherited from the process.
+    no_env=(
+        "STORAGE",
+        "NORMALIZER",
+        "FFMPEG_BIN",
+        "FFPROBE_BIN",
+        "PIPELINE_RESOLVER",
+        "RECORDING_POLICY",
+        "UPLOAD_CONTENT_POLICY",
+        "STORAGE_SIGNS_GET_URLS",
+        "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE",
+        "WORKSPACE_LISTING_MEMBERS_SEE_ALL",
+    ),
 )
+
+#: Spellings :func:`flag` accepts. Anything else is "not a boolean".
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def _coerce_bool(value, *, unrecognized: bool) -> bool:
+    """``bool()`` that does not read ``"false"`` as True."""
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _TRUTHY:
+            return True
+        if text in _FALSY:
+            return False
+        return unrecognized
+    return bool(value)
+
+
+def flag(key: str) -> bool:
+    """Read a boolean setting without the ``bool("false") is True`` trap.
+
+    ``AppSettings`` does no coercion, so a value that arrives as a STRING —
+    a flat Django setting written as ``"false"``, a value copied out of a
+    compose file — is truthy for every non-empty spelling. On a security
+    switch that reverses the answer silently. Unrecognized text falls back
+    to the library DEFAULT, which is the closed answer for every switch
+    here, so garbage can never open something.
+    """
+    return _coerce_bool(getattr(recordings_settings, key), unrecognized=bool(DEFAULTS[key]))
+
+
+def optional_flag(key: str) -> bool | None:
+    """Same, for a TRI-STATE key where ``None`` means "not stated".
+
+    ``STORAGE_SIGNS_GET_URLS`` is the case: None = ask the backend, True =
+    the host vouches that it signs. Unrecognized text answers False rather
+    than the default — for a key whose True is the permissive answer,
+    "I could not read this" must not read as a host vouching for anything.
+    """
+    value = getattr(recordings_settings, key)
+    if value is None or (isinstance(value, str) and value.strip().lower() in {"", "none", "null"}):
+        return None
+    return _coerce_bool(value, unrecognized=False)
 
 
 def vector_config() -> dict:
@@ -237,4 +414,11 @@ def vector_config() -> dict:
     return merged
 
 
-__all__ = ["recordings_settings", "vector_config", "DEFAULT_PIPELINE", "DEFAULT_VECTOR"]
+__all__ = [
+    "recordings_settings",
+    "flag",
+    "optional_flag",
+    "vector_config",
+    "DEFAULT_PIPELINE",
+    "DEFAULT_VECTOR",
+]

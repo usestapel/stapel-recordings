@@ -2,7 +2,7 @@
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 27 · extension points 7 · operations 5 · error codes 47.
+Contract: axes 1 · surface 27 · extension points 7 · operations 9 · error codes 54.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -108,16 +108,20 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - stapel-auth (optional) — every endpoint requires an authenticated user (IsAuthenticated); stapel-auth is the shelf's session issuer — any stapel-core-compatible JWT issuer satisfies the check
 - stapel-core (required) — comm bus (recording.stage pipeline driving, llm.transcribe / llm.summarize calls), JWT authentication, GDPR provider registry, AppSettings config layer
 
-## HTTP operations (5) — call by operationId, never by a typed path
+## HTTP operations (9) — call by operationId, never by a typed path
 Paths are relative to `/recordings/api/v1/`.
 ### Recordings
 - POST /recordings — recordings_api_v1_recordings_create
 - POST /recordings/{recording_id}/finalize — recordings_api_v1_recordings_finalize_create
 - GET /recordings — recordings_api_v1_recordings_list
+- GET /recordings/{recording_id}/media — recordings_api_v1_recordings_media_retrieve
 - POST /recordings/{recording_id}/reprocess — recordings_api_v1_recordings_reprocess_create
 - GET /recordings/{recording_id} — recordings_api_v1_recordings_retrieve
+- GET /shares/{link_token}/media — recordings_api_v1_shares_media_retrieve
+- GET /shares/{link_token} — recordings_api_v1_shares_retrieve
+- POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (47) — the StapelError envelope
+## Error codes (54) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -139,22 +143,26 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.400.validation_error [400] fix_input
 - error.400.verification_failed [400] verify
 - error.400.verification_invalid_factor [400] verify
+- error.401.share_passcode_required [401] reauthenticate
 - error.401.unauthorized [401] reauthenticate
 - error.402.payment_required [402] retry
 - error.403.forbidden [403] retry
 - error.403.network_blocked [403] contact_support
 - error.403.recording_workspace_forbidden [403] retry
+- error.403.share_permission_denied [403] retry
 - error.403.verification_enrollment_required [403] verify
 - error.403.verification_required [403] verify
 - error.404.ad_not_found [404] retry
 - error.404.not_found [404] retry
 - error.404.recording_not_found [404] retry
+- error.404.share_not_found [404] retry
 - error.404.verification_challenge_not_found [404] verify
 - error.405.method_not_allowed [405] retry
 - error.406.not_acceptable [406] retry
 - error.408.request_timeout [408] retry
 - error.409.conflict [409] fix_input
 - error.409.recording_invalid_state [409] fix_input
+- error.409.recording_media_not_stored [409] fix_input
 - error.410.gone [410] retry
 - error.413.payload_too_large [413] retry
 - error.413.recording_too_large [413] retry
@@ -164,5 +172,8 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.423.locked [423] wait_and_retry
 - error.423.verification_locked [423] wait_and_retry
 - error.429.rate_limit [429] wait_and_retry {retry_after_minutes}
+- error.429.share_unlock_throttled [429] wait_and_retry
 - error.429.too_many_requests [429] wait_and_retry
 - error.500.internal [500] contact_support
+- error.503.recording_media_unavailable [503] retry
+- error.503.recording_upload_unverifiable [503] retry

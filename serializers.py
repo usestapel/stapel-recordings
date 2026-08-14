@@ -2,7 +2,14 @@
 from rest_framework import serializers
 from stapel_core.django.api.serializers import StapelDataclassSerializer
 
-from .dto import CreateRecordingResponse, RecordingDTO, UploadSessionDTO
+from .dto import (
+    CreateRecordingResponse,
+    MediaURLDTO,
+    RecordingDTO,
+    SharedRecordingDTO,
+    ShareUnlockDTO,
+    UploadSessionDTO,
+)
 
 
 class RecordingSerializer(StapelDataclassSerializer):
@@ -54,3 +61,27 @@ class CreateRecordingRequestSerializer(serializers.Serializer):
 
 class FinalizeUploadRequestSerializer(serializers.Serializer):
     file_size_bytes = serializers.IntegerField(required=False, min_value=0)
+
+
+class SharedRecordingSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = SharedRecordingDTO
+
+
+class MediaURLSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = MediaURLDTO
+
+
+class ShareUnlockRequestSerializer(serializers.Serializer):
+    """Passcode presented to a share's unlock endpoint."""
+
+    # Not required: a share without a passcode still answers here (with a
+    # token), so a client can always unlock first and branch never.
+    passcode = serializers.CharField(max_length=128, required=False, allow_blank=True)
+
+
+class ShareUnlockResponseSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = ShareUnlockDTO
+

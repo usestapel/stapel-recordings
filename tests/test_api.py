@@ -8,12 +8,14 @@ from stapel_recordings.models import Recording, RecordingStatus
 pytestmark = pytest.mark.django_db
 
 
-def test_create_recording_opens_upload_session(use_fakes, api_client, user):
+def test_create_recording_opens_upload_session(use_fakes, api_client, user, stub_membership):
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
     api_client.force_authenticate(user=user)
     resp = api_client.post(
         "/recordings/api/v1/recordings",
         {
-            "workspace_id": str(uuid.uuid4()),
+            "workspace_id": str(ws),
             "title": "Standup",
             "diarization_enabled": True,
             "filename": "standup.mp3",
@@ -27,13 +29,15 @@ def test_create_recording_opens_upload_session(use_fakes, api_client, user):
     assert body["upload"]["presigned_url"].startswith("memory://put/")
 
 
-def test_detail_and_finalize(use_fakes, api_client, user):
+def test_detail_and_finalize(use_fakes, api_client, user, stub_membership):
     from stapel_recordings.storage import get_storage
 
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
     api_client.force_authenticate(user=user)
     create = api_client.post(
         "/recordings/api/v1/recordings",
-        {"workspace_id": str(uuid.uuid4()), "title": "Interview", "filename": "interview.mp3"},
+        {"workspace_id": str(ws), "title": "Interview", "filename": "interview.mp3"},
         format="json",
     ).json()
     rec_id = create["recording"]["id"]
@@ -66,6 +70,85 @@ def test_list_is_owner_scoped(use_fakes, api_client, user, make_recording):
     assert "mine" in titles
 
 
+# ── create is a membership question, not just an account question ─────────
+#
+# POST names the workspace the recording lands in, and the caller supplies
+# that id. Verifying it is what stops any account from minting rows (and
+# storage keys, which are namespaced by workspace id) inside another
+# organization's workspace, where its members would then see them listed.
+
+
+def test_create_into_a_foreign_workspace_is_refused(
+    use_fakes, api_client, user, stub_membership
+):
+    ws = uuid.uuid4()  # no grant → not a member
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/v1/recordings",
+        {"workspace_id": str(ws), "title": "injected", "filename": "x.mp3"},
+        format="json",
+    )
+    assert resp.status_code == 403, resp.content
+    assert resp.json()["localizable_error"] == "error.403.recording_workspace_forbidden"
+    # Refused BEFORE any state exists: no row, and therefore no upload
+    # session and no object key under that workspace's prefix.
+    assert not Recording.objects.filter(workspace_id=ws).exists()
+
+
+def test_create_in_a_workspace_you_belong_to_is_allowed(
+    use_fakes, api_client, user, stub_membership
+):
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/v1/recordings",
+        {"workspace_id": str(ws), "title": "mine", "filename": "x.mp3"},
+        format="json",
+    )
+    assert resp.status_code == 201, resp.content
+    assert Recording.objects.filter(workspace_id=ws).count() == 1
+
+
+def test_create_fails_closed_when_workspaces_is_unavailable(use_fakes, api_client, user):
+    """No ``workspaces.check_membership`` provider registered (workspaces not
+    deployed) → refuse, the same way the workspace listing does."""
+    ws = uuid.uuid4()
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/v1/recordings",
+        {"workspace_id": str(ws), "title": "x", "filename": "x.mp3"},
+        format="json",
+    )
+    assert resp.status_code == 403, resp.content
+    assert not Recording.objects.filter(workspace_id=ws).exists()
+
+
+def test_membership_gate_can_be_opted_out_of_explicitly(use_fakes, api_client, user):
+    """A stand without stapel-workspaces cannot answer membership, so it says
+    so — in settings, deliberately. The safe value is the default."""
+    from django.test import override_settings
+
+    from stapel_recordings import storage
+
+    ws = uuid.uuid4()
+    api_client.force_authenticate(user=user)
+    with override_settings(
+        STAPEL_RECORDINGS={
+            "STORAGE": "stapel_recordings.tests.fakes.FakeStorage",
+            "NORMALIZER": "stapel_recordings.normalize.passthrough_normalize",
+            "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE": False,
+        }
+    ):
+        storage.reset_storage_cache()
+        resp = api_client.post(
+            "/recordings/api/v1/recordings",
+            {"workspace_id": str(ws), "title": "x", "filename": "x.mp3"},
+            format="json",
+        )
+    assert resp.status_code == 201, resp.content
+
+
 # ── G4: workspace-scoped list + membership + opaque resource_key ──────────
 
 
@@ -83,27 +166,80 @@ def test_list_carries_opaque_resource_key(use_fakes, api_client, user, make_reco
     assert resolve_resource_key(rk + "x") is None
 
 
-def test_workspace_list_returns_all_members_recordings_for_a_member(
-    use_fakes, api_client, db, make_recording, stub_membership
-):
+def _workspace_with_two_owners(make_recording):
+    """A workspace holding one recording of each of two owners, plus one
+    recording of the first owner in a DIFFERENT workspace."""
     from django.contrib.auth import get_user_model
 
     User = get_user_model()
     ws = uuid.uuid4()
     owner_a = User.objects.create(username=f"a-{uuid.uuid4().hex[:8]}")
     owner_b = User.objects.create(username=f"b-{uuid.uuid4().hex[:8]}")
-    viewer = User.objects.create(username=f"v-{uuid.uuid4().hex[:8]}")
     make_recording(owner=owner_a, workspace_id=ws, title="a-rec")
     make_recording(owner=owner_b, workspace_id=ws, title="b-rec")
     make_recording(owner=owner_a, workspace_id=uuid.uuid4(), title="other-ws")
+    return ws, owner_a, owner_b
 
+
+def test_workspace_list_obeys_the_object_policy(
+    use_fakes, api_client, db, make_recording, stub_membership
+):
+    """Membership answers "may you ask about this workspace"; RECORDING_POLICY
+    answers "which of its recordings may you read". The listing asks both, so
+    it cannot offer rows that ``GET /recordings/<id>`` would refuse."""
+    ws, owner_a, _owner_b = _workspace_with_two_owners(make_recording)
+    stub_membership.grant(ws, owner_a.pk)
+    api_client.force_authenticate(user=owner_a)
+    resp = api_client.get(f"/recordings/api/v1/recordings?workspace_id={ws}")
+    assert resp.status_code == 200
+    # Default policy is owner-only: this workspace, this owner — not the
+    # other member's recording, and not the other workspace.
+    assert {r["title"] for r in resp.json()} == {"a-rec"}
+
+
+def test_workspace_list_does_not_leak_another_members_recording(
+    use_fakes, api_client, db, make_recording, stub_membership
+):
+    """A verified member with no recordings of their own sees an empty
+    listing rather than the workspace's contents."""
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    ws, _owner_a, _owner_b = _workspace_with_two_owners(make_recording)
+    viewer = User.objects.create(username=f"v-{uuid.uuid4().hex[:8]}")
     stub_membership.grant(ws, viewer.pk)
     api_client.force_authenticate(user=viewer)
     resp = api_client.get(f"/recordings/api/v1/recordings?workspace_id={ws}")
     assert resp.status_code == 200
-    titles = {r["title"] for r in resp.json()}
-    # Sees both members' recordings in the workspace, not the other workspace.
-    assert titles == {"a-rec", "b-rec"}
+    assert resp.json() == []
+
+
+def test_members_see_all_is_an_explicit_deployment_choice(
+    use_fakes, api_client, db, make_recording, stub_membership
+):
+    """The pre-0.14 wide listing is still available — as a stated decision."""
+    from django.contrib.auth import get_user_model
+    from django.test import override_settings
+
+    from stapel_recordings import storage
+
+    User = get_user_model()
+    ws, _owner_a, _owner_b = _workspace_with_two_owners(make_recording)
+    viewer = User.objects.create(username=f"v-{uuid.uuid4().hex[:8]}")
+    stub_membership.grant(ws, viewer.pk)
+    api_client.force_authenticate(user=viewer)
+    with override_settings(
+        STAPEL_RECORDINGS={
+            "STORAGE": "stapel_recordings.tests.fakes.FakeStorage",
+            "NORMALIZER": "stapel_recordings.normalize.passthrough_normalize",
+            "WORKSPACE_LISTING_MEMBERS_SEE_ALL": True,
+        }
+    ):
+        storage.reset_storage_cache()
+        resp = api_client.get(f"/recordings/api/v1/recordings?workspace_id={ws}")
+    assert resp.status_code == 200
+    # Both members' recordings in the workspace, not the other workspace.
+    assert {r["title"] for r in resp.json()} == {"a-rec", "b-rec"}
 
 
 def test_workspace_list_forbidden_for_non_member(
@@ -190,10 +326,9 @@ def test_resource_key_composes_with_workspace_scope(
 
     User = get_user_model()
     ws = uuid.uuid4()
-    owner = User.objects.create(username=f"o-{uuid.uuid4().hex[:8]}")
     viewer = User.objects.create(username=f"v-{uuid.uuid4().hex[:8]}")
-    target = make_recording(owner=owner, workspace_id=ws, title="target")
-    make_recording(owner=owner, workspace_id=ws, title="sibling")
+    target = make_recording(owner=viewer, workspace_id=ws, title="target")
+    make_recording(owner=viewer, workspace_id=ws, title="sibling")
 
     stub_membership.grant(ws, viewer.pk)
     api_client.force_authenticate(user=viewer)

@@ -118,7 +118,7 @@ def test_resolver_failure_parks_then_dlqs_bounded(make_recording, drain):
         r.refresh_from_db()
         assert r.status == RecordingStatus.QUEUED  # parked, not crash-looping
         assert r.retry_count == 1
-        assert r.metadata["last_error"]["stage"] == "<pipeline_resolver>"
+        assert r.workflow_state["last_error"]["stage"] == "<pipeline_resolver>"
 
         pipeline.run_stage(str(r.id), 0)  # reconcile re-drive, retries exhausted
 
@@ -160,7 +160,7 @@ def test_broken_overlay_stage_in_pipeline_dlqs_that_recording(make_recording, dr
 
     r.refresh_from_db()
     assert r.status == RecordingStatus.ERROR
-    assert r.metadata["last_error"]["reason"].startswith("unresolvable_stage")
+    assert r.workflow_state["last_error"]["reason"].startswith("unresolvable_stage")
 
 
 def test_pipeline_resolver_seam(make_recording, drain):

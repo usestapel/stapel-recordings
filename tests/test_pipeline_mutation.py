@@ -128,7 +128,7 @@ def test_pending_stage_removed_skips_with_warning(make_recording, abc_stages, ca
     r = make_recording(status=RecordingStatus.QUEUED)
     with _pl("st_a", "st_b", "st_c"):
         pipeline.run_stage(str(r.id), 0)
-        pipeline.run_stage(str(r.id), 1)  # b fails -> parked, metadata.stage == st_b
+        pipeline.run_stage(str(r.id), 1)  # b fails -> parked, workflow_state.stage == st_b
     r.refresh_from_db()
     assert r.retry_count == 1
 
@@ -151,7 +151,7 @@ def test_empty_pipeline_dlqs_instead_of_silent_completed(make_recording):
 
     r.refresh_from_db()
     assert r.status == RecordingStatus.ERROR
-    assert r.metadata["last_error"]["reason"] == "empty_pipeline"
+    assert r.workflow_state["last_error"]["reason"] == "empty_pipeline"
     assert _outbox(events.ACTION_FAILED).count() == 1
     assert not _outbox(events.ACTION_COMPLETED).exists()
 
@@ -197,7 +197,7 @@ def test_duplicate_of_completed_stage_is_total_noop(ready_recording, stub_transc
 def test_completion_cursor_is_persisted_in_success_txn(ready_recording, stub_transcribe, stub_summarize):
     pipeline.run_stage(str(ready_recording.id), 0)
     r = Recording.objects.get(pk=ready_recording.id)
-    pl = r.metadata["pipeline"]
+    pl = r.workflow_state["pipeline"]
     assert pl["completed"] == ["convert"]
     assert pl["completed_index"] == 0
 
@@ -212,4 +212,4 @@ def test_duplicate_start_pipeline_emits_single_stage0(make_recording):
 
     assert _outbox(events.ACTION_STAGE).count() == 1
     r.refresh_from_db()
-    assert r.metadata["pipeline"]["started_at"]
+    assert r.workflow_state["pipeline"]["started_at"]

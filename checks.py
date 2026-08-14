@@ -67,6 +67,40 @@ def check_pipeline_stages(app_configs, **kwargs):
 
 
 @checks.register(checks.Tags.compatibility)
+def check_normalizer_is_not_passthrough(app_configs, **kwargs):
+    """W: ``passthrough_normalize`` means NOTHING is transcoded.
+
+    The NORMALIZER seam is only checked for being *callable*, so pointing it
+    at the bundled passthrough — the "no ffmpeg / for tests" copy-the-file
+    normalizer — turns off every conversion in the pipeline and passes
+    ``manage.py check`` in silence. Whatever the client uploaded is then
+    what the ASR provider and every later stage opens, unconverted and
+    untruncated (``max_duration_seconds``, the plan cap applied at the
+    pipeline entrance, is an ffmpeg_normalize argument and does nothing
+    here). That is a legitimate configuration for a stand whose uploads are
+    already canonical — it is just never something to discover from a
+    provider bill or a garbled transcript.
+    """
+    from .conf import recordings_settings
+    from .normalize import passthrough_normalize
+
+    try:
+        normalizer = recordings_settings.NORMALIZER
+    except Exception:
+        return []  # W004 (check_pipeline_stages) already reports this
+    if normalizer is not passthrough_normalize:
+        return []
+    return [checks.Warning(
+        "STAPEL_RECORDINGS['NORMALIZER'] is passthrough_normalize — no audio "
+        "is converted to the canonical STT input, and the duration cap does "
+        "not apply. Uploads reach the ASR provider exactly as the client "
+        "sent them. Use stapel_recordings.normalize.ffmpeg_normalize unless "
+        "this stand deliberately runs without ffmpeg.",
+        id="stapel_recordings.W008",
+    )]
+
+
+@checks.register(checks.Tags.compatibility)
 def check_vector_layer(app_configs, **kwargs):
     """W: VECTOR["ENABLED"] without the opt-in vector app installed makes
     the embed stage a silent no-op — flag the half-configured state."""
@@ -131,6 +165,30 @@ def check_reconcile_threshold(app_configs, **kwargs):
             "duration — or reconcile will re-drive stages that are still running. "
             "Account for slow custom stages too.",
             id="stapel_recordings.W005",
+        )]
+    return []
+
+
+@checks.register(checks.Tags.compatibility)
+def check_transcribe_audio_url_ttl(app_configs, **kwargs):
+    """W: the audio URL handed to the ASR provider must outlive the stage.
+
+    With a private bucket (audit STORE-01) that presigned URL is the only
+    way the provider reads the audio. A provider that starts late — queued
+    behind other work, retried — fetches with a URL that has already
+    expired, and the failure surfaces as an unexplained transcription error
+    rather than as a configuration mistake."""
+    from .conf import recordings_settings
+
+    ttl = int(recordings_settings.TRANSCRIBE_AUDIO_URL_TTL_SECONDS)
+    timeout = int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS)
+    if ttl <= timeout:
+        return [checks.Warning(
+            f"STAPEL_RECORDINGS['TRANSCRIBE_AUDIO_URL_TTL_SECONDS'] ({ttl}) should "
+            f"exceed TRANSCRIBE_TIMEOUT_SECONDS ({timeout}) — the audio URL handed "
+            "to the ASR provider must still be valid when a late-starting provider "
+            "fetches it, or transcription fails on an expired signature.",
+            id="stapel_recordings.W007",
         )]
     return []
 

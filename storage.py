@@ -19,6 +19,7 @@ Contract (all keys are storage-relative strings):
     presigned_put_url(key, *, expires_seconds, content_type=None) -> str
     presigned_get_url(key, *, expires_seconds) -> str
     head_object(key) -> (exists: bool, size: int | None)
+    read_prefix(key, length) -> bytes                # optional, see below
     download_to_file(key, dst_path) -> None
     upload_from_file(key, src_path, content_type=None) -> None
     put_bytes(key, data, content_type=...) -> None
@@ -41,6 +42,15 @@ class RecordingStorage(ABC):
     """Interface every storage backend implements. Methods raise on hard
     failure so pipeline stages can classify transient vs fatal I/O."""
 
+    #: Does :meth:`presigned_get_url` return a **credentialed, expiring**
+    #: URL? Declared per backend and defaulted to ``False`` because the
+    #: honest answer for a backend that cannot sign is "no", and the caller
+    #: that asks (``media.issue_media_url``) refuses to hand out a URL it
+    #: cannot bound in time (audit STORE-01). A backend whose "presigned"
+    #: URL is really a permanent public one is not a delivery mechanism —
+    #: it is an anonymous bucket with extra steps.
+    signs_get_urls: bool = False
+
     # ── URLs ─────────────────────────────────────────────────────────
     @abstractmethod
     def presigned_put_url(self, key: str, *, expires_seconds: int = 900, content_type: Optional[str] = None) -> str: ...
@@ -51,6 +61,25 @@ class RecordingStorage(ABC):
     # ── Objects ──────────────────────────────────────────────────────
     @abstractmethod
     def head_object(self, key: str) -> tuple[bool, Optional[int]]: ...
+
+    def read_prefix(self, key: str, length: int) -> bytes:
+        """Return at most *length* leading bytes of the object.
+
+        Not abstract, and deliberately not implemented in terms of
+        ``get_bytes``: a finalize-time content check must never pull a
+        multi-gigabyte object into memory. A backend that cannot serve a
+        ranged read says so by raising ``NotImplementedError`` (the default
+        here) rather than downloading everything.
+
+        Note what that costs a backend which leaves this default in place:
+        with ``UPLOAD_CONTENT_POLICY`` on (it is by default), finalize
+        **refuses** the upload rather than accepting bytes the gate never
+        saw. Implement this method, or state the trade-off with
+        ``UPLOAD_CONTENT_POLICY = "off"``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support ranged reads"
+        )
 
     @abstractmethod
     def download_to_file(self, key: str, dst_path: str) -> None: ...
@@ -95,6 +124,15 @@ class DjangoStorageBackend(RecordingStorage):
     shim so the client-facing flow is uniform in dev.
     """
 
+    #: ``storage.url()`` is whatever the underlying Django backend serves —
+    #: for the filesystem backend a permanent ``MEDIA_URL`` path, for an
+    #: unsigned S3 backend a permanent object URL. Neither expires, so this
+    #: backend declares "no" and authorized delivery refuses rather than
+    #: leaking a forever-URL. A host whose backend really does sign (e.g.
+    #: ``S3Boto3Storage`` with ``querystring_auth=True``) says so with
+    #: ``STAPEL_RECORDINGS["STORAGE_SIGNS_GET_URLS"] = True``.
+    signs_get_urls = False
+
     def _storage(self):
         from django.core.files.storage import default_storage
 
@@ -123,6 +161,10 @@ class DjangoStorageBackend(RecordingStorage):
             return True, storage.size(key)
         except Exception:
             return True, None
+
+    def read_prefix(self, key, length):
+        with self._storage().open(key, "rb") as fh:
+            return fh.read(length)
 
     def download_to_file(self, key, dst_path):
         storage = self._storage()
@@ -186,6 +228,11 @@ class S3Backend(RecordingStorage):
         S3_ENDPOINT_URL, S3_PUBLIC_URL, S3_ACCESS_KEY, S3_SECRET_KEY,
         S3_REGION, S3_BUCKET.
     """
+
+    #: SigV4 query-string signatures with an explicit ``X-Amz-Expires`` —
+    #: the URL carries its own deadline, so the bucket itself can (and
+    #: should) stay private.
+    signs_get_urls = True
 
     MULTIPART_PART_SIZE = 10 * 1024 * 1024
 
@@ -260,6 +307,12 @@ class S3Backend(RecordingStorage):
         except Exception:
             return False, None
         return True, int(resp.get("ContentLength", 0))
+
+    def read_prefix(self, key, length):
+        resp = self._client(False).get_object(
+            Bucket=self._bucket(), Key=key, Range=f"bytes=0-{max(0, length - 1)}"
+        )
+        return resp["Body"].read(length)
 
     def download_to_file(self, key, dst_path):
         self._client(False).download_file(self._bucket(), key, dst_path)

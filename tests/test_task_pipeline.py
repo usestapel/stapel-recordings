@@ -126,15 +126,15 @@ class TestDriverRemembersAwaiting:
     ):
         self._drive(ready_recording)
         r = Recording.objects.get(pk=ready_recording.id)
-        assert "transcribe" not in (r.metadata["pipeline"].get("completed") or [])
-        assert r.metadata["pipeline"]["awaiting"]["kind"] == "llm.transcribe"
+        assert "transcribe" not in (r.workflow_state["pipeline"].get("completed") or [])
+        assert r.workflow_state["pipeline"]["awaiting"]["kind"] == "llm.transcribe"
 
 
 class TestResume:
     def _await_task(self, recording):
         pipeline.run_stage(str(recording.id), 0)
         pipeline.run_stage(str(recording.id), 1)
-        return Recording.objects.get(pk=recording.id).metadata["pipeline"]["awaiting"]["task_id"]
+        return Recording.objects.get(pk=recording.id).workflow_state["pipeline"]["awaiting"]["task_id"]
 
     def test_result_completes_stage(
         self, ready_recording, use_fakes, deferred_tasks
@@ -145,8 +145,8 @@ class TestResume:
         r = Recording.objects.get(pk=ready_recording.id)
         assert r.segments_count == 1
         assert r.provider_used == "stub-asr"
-        assert "transcribe" in r.metadata["pipeline"]["completed"]
-        assert "awaiting" not in r.metadata["pipeline"]
+        assert "transcribe" in r.workflow_state["pipeline"]["completed"]
+        assert "awaiting" not in r.workflow_state["pipeline"]
 
     def test_foreign_result_is_ignored(
         self, ready_recording, use_fakes, deferred_tasks
@@ -161,7 +161,7 @@ class TestResume:
 
         r = Recording.objects.get(pk=ready_recording.id)
         assert r.segments_count == 0
-        assert "transcribe" not in (r.metadata["pipeline"].get("completed") or [])
+        assert "transcribe" not in (r.workflow_state["pipeline"].get("completed") or [])
 
     def test_duplicate_delivery_is_harmless(
         self, ready_recording, use_fakes, deferred_tasks
@@ -183,7 +183,7 @@ class TestTaskFailure:
         pipeline.run_stage(str(ready_recording.id), 1)
         task_id = Recording.objects.get(
             pk=ready_recording.id
-        ).metadata["pipeline"]["awaiting"]["task_id"]
+        ).workflow_state["pipeline"]["awaiting"]["task_id"]
 
         pipeline.fail_stage(str(ready_recording.id), task_id, "provider unavailable")
 
@@ -191,5 +191,5 @@ class TestTaskFailure:
         assert r.status == RecordingStatus.ERROR
         # The reason is named, not hidden: this used to be a bare
         # TimeoutError with no word on what actually failed.
-        assert r.metadata["last_error"]["reason"] == "task_failed"
-        assert "provider unavailable" in str(r.metadata["last_error"]["detail"])
+        assert r.workflow_state["last_error"]["reason"] == "task_failed"
+        assert "provider unavailable" in str(r.workflow_state["last_error"]["detail"])

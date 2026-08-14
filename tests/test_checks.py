@@ -6,6 +6,7 @@ from stapel_recordings.checks import (
     check_pipeline_stages,
     check_reconcile_threshold,
     check_storage_backend,
+    check_transcribe_audio_url_ttl,
 )
 
 pytestmark = pytest.mark.django_db
@@ -15,6 +16,7 @@ def test_defaults_are_clean():
     assert check_storage_backend(None) == []
     assert check_pipeline_stages(None) == []
     assert check_reconcile_threshold(None) == []
+    assert check_transcribe_audio_url_ttl(None) == []
 
 
 def test_stuck_threshold_at_or_below_stage_timeout_is_warning():
@@ -23,6 +25,15 @@ def test_stuck_threshold_at_or_below_stage_timeout_is_warning():
     with override_settings(STAPEL_RECORDINGS={"STUCK_THRESHOLD_SECONDS": 600}):
         warnings = check_reconcile_threshold(None)
     assert any(w.id == "stapel_recordings.W005" for w in warnings)
+
+
+def test_audio_url_ttl_below_the_stage_timeout_is_warning():
+    """With a private bucket the presigned audio URL is the provider's only
+    way in — if it dies before the stage can, transcription fails on an
+    expired signature and nothing says why."""
+    with override_settings(STAPEL_RECORDINGS={"TRANSCRIBE_AUDIO_URL_TTL_SECONDS": 60}):
+        warnings = check_transcribe_audio_url_ttl(None)
+    assert any(w.id == "stapel_recordings.W007" for w in warnings)
 
 
 def test_bad_storage_is_error():
@@ -54,6 +65,30 @@ def test_missing_taskstore_is_error():
     with override_settings(INSTALLED_APPS=["stapel_recordings"]):
         errors = check_taskstore_installed(None)
     assert any(e.id == "stapel_recordings.E004" for e in errors)
+
+
+def test_passthrough_normalizer_is_a_warning():
+    """Selecting the passthrough normalizer disables ALL transcoding, and the
+    seam check only ever asked whether NORMALIZER was callable — so turning
+    conversion off passed `manage.py check` in silence."""
+    from stapel_recordings.checks import check_normalizer_is_not_passthrough
+
+    with override_settings(
+        STAPEL_RECORDINGS={"NORMALIZER": "stapel_recordings.normalize.passthrough_normalize"}
+    ):
+        warnings = check_normalizer_is_not_passthrough(None)
+    assert any(w.id == "stapel_recordings.W008" for w in warnings)
+    # The seam check still says nothing — passthrough is callable.
+    with override_settings(
+        STAPEL_RECORDINGS={"NORMALIZER": "stapel_recordings.normalize.passthrough_normalize"}
+    ):
+        assert check_pipeline_stages(None) == []
+
+
+def test_default_normalizer_is_not_warned_about():
+    from stapel_recordings.checks import check_normalizer_is_not_passthrough
+
+    assert check_normalizer_is_not_passthrough(None) == []
 
 
 def test_check_ids_are_unique():

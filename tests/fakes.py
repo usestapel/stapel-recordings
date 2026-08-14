@@ -18,16 +18,25 @@ def reset_fake_storage() -> None:
 class FakeStorage(RecordingStorage):
     """Deterministic in-memory backend — no ffmpeg, no network."""
 
+    # Stands in for a signing backend: its GET URLs carry the TTL they were
+    # minted with, so a test can read back what the caller asked for.
+    signs_get_urls = True
+
     def presigned_put_url(self, key, *, expires_seconds=900, content_type=None):
         return f"memory://put/{key}"
 
     def presigned_get_url(self, key, *, expires_seconds=3600):
-        return f"memory://get/{key}"
+        # An http(s) URL, not a memory:// one: consumers hand this to a
+        # player or to a redirect, and both refuse an unknown scheme.
+        return f"https://fake.invalid/get/{key}?expires_in={int(expires_seconds)}"
 
     def head_object(self, key):
         if key in _STORE:
             return True, len(_STORE[key])
         return False, None
+
+    def read_prefix(self, key, length):
+        return _STORE[key][:length]
 
     def download_to_file(self, key, dst_path):
         with open(dst_path, "wb") as fh:
@@ -61,6 +70,30 @@ class FakeStorage(RecordingStorage):
     def abort_multipart_upload(self, key, upload_id):
         _MULTIPART.pop(upload_id, None)
         _STORE.pop(key, None)
+
+
+class NoRangedReadStorage(FakeStorage):
+    """A backend that cannot serve a ranged read — which is what a host's
+    own backend is by default, since it inherits ``read_prefix`` from
+    ``RecordingStorage`` and that raises ``NotImplementedError``.
+
+    Deliberately delegates to the base implementation instead of raising
+    itself: the path being pinned is the one a backend gets by writing no
+    code at all."""
+
+    def read_prefix(self, key, length):
+        return RecordingStorage.read_prefix(self, key, length)
+
+
+class UnsignedFakeStorage(FakeStorage):
+    """A backend that can only produce a PERMANENT URL — what
+    DjangoStorageBackend does with ``storage.url()``. Media delivery must
+    refuse it rather than hand the URL out (audit STORE-01)."""
+
+    signs_get_urls = False
+
+    def presigned_get_url(self, key, *, expires_seconds=3600):
+        return f"https://public.example/bucket/{key}"
 
 
 # ─── Custom stages used by pipeline extension-point tests ──────────────

@@ -259,7 +259,7 @@ def test_full_pipeline_completes_with_embed_noop(ready_recording, stub_transcrib
     drain()
     r = Recording.objects.get(pk=ready_recording.id)
     assert r.status == RecordingStatus.COMPLETED
-    assert "embed" in r.metadata["pipeline"]["completed"]
+    assert "embed" in r.workflow_state["pipeline"]["completed"]
     assert stub_embed.calls == []
 
 

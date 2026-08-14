@@ -200,12 +200,23 @@ def test_schema_ref_closure_is_self_contained():
     assert not dangling, f"dangling $ref(s), not defined in this module's own schema: {dangling}"
 
 
+#: The public share surface (audit SHARE-01 / STORE-01): anonymous BY
+#: DESIGN — the link token is the credential, verified by
+#: ``shares.access_share``. Everything else is account-gated.
+PUBLIC_PREFIX = CANONICAL_PREFIX + "shares/"
+
+
 def test_protected_endpoints_carry_jwt_security():
     """The profiles-finding gap: a module with no co-mounted sibling loses
     `security: [{"JWTCookieAuth": []}]` unless _codegen.py explicitly calls
-    stapel_core's `_register_jwt_auth_extension()` before emission. All three
-    recordings views are `permission_classes = [IsAuthenticated]`, so every
-    operation here is expected to carry the JWT cookie security requirement.
+    stapel_core's `_register_jwt_auth_extension()` before emission.
+
+    Every account-gated operation must carry the JWT cookie requirement —
+    and the three ``/shares/`` operations must NOT, because they are
+    deliberately anonymous. Both halves are asserted: a share route that
+    quietly grew an auth requirement (or an owner route that quietly lost
+    one) is a contract change either way, and the emitted schema is where
+    a frontend reads it.
     """
     schema = json.loads((DOCS / "schema.json").read_text())
     security_schemes = schema.get("components", {}).get("securitySchemes", {})
@@ -213,15 +224,27 @@ def test_protected_endpoints_carry_jwt_security():
         "JWTCookieAuth security scheme missing — _register_jwt_auth_extension() "
         "regression (see _codegen.py._configure)"
     )
+    public_seen = 0
     for path, path_obj in schema["paths"].items():
         for method, op in path_obj.items():
             if method not in ("get", "post", "put", "patch", "delete"):
                 continue
             security = op.get("security")
+            if path.startswith(PUBLIC_PREFIX):
+                public_seen += 1
+                assert not any("JWTCookieAuth" in s for s in (security or [])), (
+                    f"{method.upper()} {path} is a public share endpoint but "
+                    "emits a JWT requirement — the link token is the credential"
+                )
+                continue
             assert security and any("JWTCookieAuth" in s for s in security), (
                 f"{method.upper()} {path} is missing the JWTCookieAuth security "
                 "requirement — protected endpoint emitted without security"
             )
+    assert public_seen == 3, (
+        f"expected exactly 3 public share operations, found {public_seen} — "
+        "the anonymous surface changed size"
+    )
 
 
 # --- capabilities.json content sanity (capability-config.md §2) ---------------

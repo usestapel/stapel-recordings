@@ -4,6 +4,268 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
+## [Unreleased]
+
+Security hardening from the 2026-08-11 audit of a product built on this
+module (SHARE-01, REC-01, REC-02, REC-03, STORE-01). Each finding was raised
+against product code; each is fixed here because the product could only have
+made it by hand-rolling something this library never published, or by
+inheriting a default this library set.
+
+### Added
+
+- **`stapel_recordings.shares` — public share links with passcode unlock
+  (SHARE-01).** The module published no sharing primitive at all, so every
+  consumer that needed one invented it, and the audited one accepted *any
+  nonempty* `X-Share-Token`: the unlock token it issued was random, never
+  stored, and never verified. Sharing a recording is an authorization
+  decision about a recording, so it now belongs to the module that owns
+  recordings. `RecordingShare` + `create_share` / `resolve_share` /
+  `unlock_share` / `access_share` / `require_permission` / `revoke_share` /
+  `set_share_passcode` give: a 32-byte link token returned once and stored
+  only as a SHA-256 digest; a passcode behind Django's password hasher; a
+  signed, purpose-salted, time-limited unlock token bound to the share id
+  and to a `token_version` that a passcode change or a revoke bumps
+  (rotation without tracking issued tokens); a persisted attempt counter
+  and lockout (`SHARE_UNLOCK_MAX_ATTEMPTS`, `SHARE_UNLOCK_LOCKOUT_SECONDS`);
+  an `F()` access counter; and one total entry point — `access_share`
+  enforces revocation, expiry, the recording's own soft-delete, and the
+  passcode, so a consumer cannot skip a check by calling a different
+  function. Permissions are a grant (`view` / `transcript` / `summary` /
+  `media`), defaulting to the minimum, and `shared_recording_to_dto`
+  renders exactly what the share grants. No HTTP endpoints ship with it:
+  the payload and mount point stay the host's, the decision does not.
+- **`Recording.workflow_state` — a server-only field, and
+  `stapel_recordings.metadata` to keep it that way (REC-01).** The pipeline
+  kept its start marker, completed-stage cursor, awaiting-task handle and
+  carried stage `ctx` in `Recording.metadata` — the same dict the audited
+  product exposed to a client PATCH, so a member could mark stages
+  complete, suppress the start, or inject the context a stage reads. State
+  the server decides from now lives in its own column, and the driver reads
+  nothing else. `sanitize_user_metadata` / `UserMetadataField` /
+  `set_user_metadata` reject reserved keys **recursively** (library keys
+  plus the host's `RESERVED_METADATA_KEYS` — a billing waiver flag belongs
+  in that list), so the two halves cannot be re-merged by the next
+  endpoint.
+- **`RECORDING_POLICY` object-policy seam (REC-03).** Who may read, edit,
+  delete, upload to or reprocess a recording is now one replaceable class
+  (`stapel_recordings.policy`), default `OwnerOnlyPolicy`, instead of a
+  queryset rebuilt in each view body. That is what lets a host widen
+  *reading* (workspace members see the workspace) without widening the
+  destructive verbs with it — the way member-wide mutation authority gets
+  built by accident.
+- `RecordingStorage.read_prefix(key, length)` — a ranged read, implemented
+  for the Django and S3 backends. A finalize-time content check must never
+  pull a multi-gigabyte object into memory; a backend that cannot serve one
+  raises `NotImplementedError` and the content gate reports itself as not
+  applied rather than silently downloading everything.
+- **`stapel_recordings.media` + media endpoints — authorized delivery
+  (STORE-01).** The audited deployment served recordings by making the
+  bucket anonymously downloadable and proxying it publicly, so every
+  authorization decision in this module was advisory: whoever held (or
+  guessed) an object key read the audio. The module published no delivery
+  path at all — no endpoint returned a media URL, and the one presigned GET
+  it did mint (`shared_recording_to_dto`) had no route to reach it. Now
+  bytes are reached only through `GET /recordings/<id>/media` (object
+  policy `can_read`) and `GET /shares/<token>/media` (a share granting
+  `media`); both authorize first and then mint a short-lived presigned GET
+  (`MEDIA_URL_TTL_SECONDS` / `SHARE_MEDIA_URL_TTL_SECONDS`, 300s each),
+  with `?redirect=1` for a player element. A URL is a bearer credential
+  once minted, so a backend that cannot bound it in time is refused:
+  `RecordingStorage.signs_get_urls` declares whether `presigned_get_url`
+  really signs, and a backend that says no answers 503 rather than handing
+  out a permanent URL — which means the **default** `DjangoStorageBackend`
+  serves no media until the host uses `S3Backend` or vouches for its
+  storage with `STORAGE_SIGNS_GET_URLS = True`. With this in place the
+  bucket can be (and must be) private.
+- **The public share HTTP surface** — `GET /shares/<token>`,
+  `POST /shares/<token>/unlock`, `GET /shares/<token>/media`. Previously
+  left to the host on the grounds that only the *decision* was the
+  library's; the audit showed the split does not survive contact — a
+  correct primitive behind a hand-rolled route is still a hand-rolled
+  authorization check, and without a route the presigned share path could
+  not exist end to end. Anonymous by design (the link token is the
+  credential, verified by `shares.access_share` on every call); unlock
+  tokens travel in the `X-Share-Unlock-Token` header, never a query string.
+- `stapel_recordings.media_types` — content classification for stored
+  uploads, with the `UPLOAD_CONTENT_POLICY` setting
+  (`reject_known_bad` default / `require_known_media` / `off`).
+- Settings: `MAX_MULTIPART_PARTS`, `UPLOAD_CONTENT_POLICY`,
+  `SHARE_UNLOCK_TOKEN_TTL_SECONDS`, `SHARE_UNLOCK_MAX_ATTEMPTS`,
+  `SHARE_UNLOCK_LOCKOUT_SECONDS`, `SHARE_MEDIA_URL_TTL_SECONDS`,
+  `RECORDING_POLICY`, `MEDIA_URL_TTL_SECONDS`, `STORAGE_SIGNS_GET_URLS`,
+  `TRANSCRIBE_AUDIO_URL_TTL_SECONDS`.
+- System check `W007`: the presigned audio URL handed to the ASR provider
+  must outlive `TRANSCRIBE_TIMEOUT_SECONDS`. With a private bucket that URL
+  is the provider's only way in, and a late-starting provider fetching an
+  expired signature fails in a way that reads as a transcription error.
+
+### Fixed
+
+- **Upload limits and object validation are now enforced, not advisory
+  (REC-02).** `max_size_bytes` was recorded and never used; the multipart
+  part count came from an arbitrary caller-declared size; and
+  `finalize_upload` completed the multipart *before* validating, accepted a
+  missing or zero-byte object by falling back to the caller's declared
+  size, never rejected a measured size above the maximum, and never looked
+  at the bytes. Now: a declared size is validated before any storage state
+  exists and becomes the session's enforced ceiling; the part count is
+  capped (`MAX_MULTIPART_PARTS`) and the part list is validated before the
+  multipart is completed; finalize requires a successful HEAD with
+  `0 < actual <= ceiling`, applies the content policy to the object's
+  leading bytes, and on any failure cleans up the object and session,
+  leaves the recording out of `queued` and does **not** emit
+  `recording.uploaded` — no downstream work is enqueued by an upload that
+  never satisfied its invariants.
+- One live upload session per recording: opening a new one aborts and
+  removes the previous unfinalized one, instead of leaving orphan multipart
+  uploads in the bucket for every client retry.
+- `create_upload_session` binds `content_type` into the presigned PUT where
+  the backend supports it.
+- The transcribe stage's audio URL lifetime is configuration
+  (`TRANSCRIBE_AUDIO_URL_TTL_SECONDS`) instead of a hardcoded hour.
+- The anonymous read scope. The inline queryset returned **every**
+  non-deleted recording when the request had no authenticated user; only
+  the view-level permission class stood between that and a response. The
+  default policy returns nothing.
+
+### Changed — breaking for consumers
+
+- **UPGRADE NOTE — settings that decide trust are no longer read from the
+  environment (`no_env`).** `AppSettings` falls back to
+  `os.environ.get(KEY)` for every key not listed, and `STAPEL_RECORDINGS`
+  listed none — so a stray environment variable with a very generic name
+  could swap the **authorization policy** (`RECORDING_POLICY`), where the
+  bytes go (`STORAGE`), which stages run (`PIPELINE_RESOLVER`), what runs at
+  the pipeline's subprocess entrance (`NORMALIZER`), the finalize-time
+  content gate (`UPLOAD_CONTENT_POLICY`) or the claim that the backend mints
+  expiring URLs (`STORAGE_SIGNS_GET_URLS`), plus the two switches added
+  above. All ten are now `no_env`: they still resolve from
+  `settings.STAPEL_RECORDINGS`, a flat Django setting, or the default — but
+  never from the process environment. **A deployment that configured any of
+  them by environment variable must move it into settings**; it will
+  otherwise silently fall back to the default. Not `no_env` (and unchanged):
+  TTLs, size and retry limits, thresholds, `STORAGE_PREFIX` — tuning, whose
+  names are specific and whose wrong values degrade rather than swap a trust
+  decision.
+- **UPGRADE NOTE — `FFMPEG_BIN` / `FFPROBE_BIN` / `FFMPEG_TIMEOUT_S` moved
+  from the process environment into settings.** They were module-level
+  `os.environ.get` reads in `normalize.py`, which froze them at import (so a
+  host could not change them at runtime at all) *and* let any same-named
+  environment variable pick argv[0] of a subprocess this module runs over
+  user-supplied media. They are now `FFMPEG_BIN`, `FFPROBE_BIN` and
+  `FFMPEG_TIMEOUT_SECONDS` (note the rename) in `STAPEL_RECORDINGS`, read at
+  call time; the two binaries are `no_env`. **A deployment that pointed
+  ffmpeg somewhere with an environment variable must set it in settings** —
+  otherwise `ffmpeg`/`ffprobe` are resolved on `PATH` as before.
+- New check **W008**: `NORMALIZER` pointing at `passthrough_normalize`
+  disables all transcoding (and the duration cap with it), and the seam
+  check only ever verified the callable was callable — so turning
+  conversion off passed `manage.py check` in silence. It now warns. Stands
+  that deliberately run without ffmpeg silence `stapel_recordings.W008`.
+- **Booleans are coerced, so `"false"` no longer means True.** `AppSettings`
+  hands values through uncoerced, and `bool("false")` is True — on
+  `STORAGE_SIGNS_GET_URLS` that turned a host writing the string `"false"`
+  into a host *vouching* that its storage signs, which is exactly the
+  permanent-URL delivery STORE-01 is about. Boolean settings are now read
+  through `conf.flag` / `conf.optional_flag`, which accept
+  `1/0 true/false yes/no on/off` in any case and fall back to the **closed**
+  answer for anything else.
+- **UPGRADE NOTE — `POST /recordings` now requires membership of the
+  workspace it writes into.** The endpoint carried `IsNotAnonymousUser` and
+  nothing else: it passed the caller-supplied `workspace_id` straight into
+  `Recording.objects.create(...)` and opened an upload session against it,
+  so any account could mint a recording row — and, since storage keys are
+  namespaced by workspace id, an object — inside **any** organization's
+  workspace, where that workspace's members then saw it in their listing.
+  Creation names a workspace, so it is a membership question, and it is now
+  asked with the same fail-closed seam the workspace listing already used
+  (`services.check_workspace_membership` → `workspaces.check_membership`).
+  Non-members get 403 `error.403.recording_workspace_forbidden` and nothing
+  is created — the check runs before the row, the session and the key exist.
+  **The check fails closed**, so a deployment where the workspaces module
+  cannot answer (not deployed, comm route not configured) refuses *every*
+  create. Wire up `workspaces.check_membership`, or — for a stand that has
+  no workspaces module and mints workspace ids itself — say so explicitly:
+  `STAPEL_RECORDINGS = {"REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE": False}`.
+  The safe value is the default; opening it is the explicit act, and it is
+  not readable from the environment (see `no_env` below).
+- **UPGRADE NOTE — `GET /recordings?workspace_id=…` now obeys
+  `RECORDING_POLICY`.** The workspace branch of the listing built
+  `Recording.objects.filter(workspace_id=…)` inline while every other read
+  path went through `get_policy().visible_queryset`. Two consequences: the
+  listing offered rows that `GET /recordings/<id>` refuses with 404 for the
+  same caller, and a host that tightened `RECORDING_POLICY` did not tighten
+  this path — the one place the seam exists to control. Membership still
+  answers *may you ask about this workspace*; the policy now answers *which
+  of its recordings may you read*, which with the default `OwnerOnlyPolicy`
+  means **a member now sees only their own recordings in the workspace**.
+  Deployments that intend every member to see every recording in a
+  workspace say so: `STAPEL_RECORDINGS =
+  {"WORKSPACE_LISTING_MEMBERS_SEE_ALL": True}` (also `no_env`), or ship a
+  `RECORDING_POLICY` whose `visible_queryset` expresses the real rule —
+  which is the better answer, because it keeps the listing and the
+  per-object checks the same decision.
+- **Media is no longer served by the storage backend's plain URL.** With the
+  default `DjangoStorageBackend`, `shared_recording_to_dto` now returns
+  `media_url: null` and the media endpoints answer 503 — previously the
+  share payload carried whatever `storage.url()` produced, which for the
+  common deployment was a permanent, unauthenticated URL. Hosts on S3/MinIO
+  switch `STORAGE` to `stapel_recordings.storage.S3Backend`; hosts whose
+  Django storage backend signs its `url()` set
+  `STORAGE_SIGNS_GET_URLS = True`. **Deployments must make the recordings
+  bucket private and remove any public proxy in front of it** — that is the
+  configuration this delivery path exists to replace, and leaving it in
+  place leaves STORE-01 open regardless of the code.
+- `finalize_upload` now **raises** instead of finalizing on a broken
+  upload: `UploadNotStored` (nothing/zero bytes at the key),
+  `UploadTooLarge` (measured or declared size over the ceiling),
+  `InvalidMultipartParts` (malformed/oversized part list),
+  `media_types.UnsupportedUploadContent` (rejected bytes). A consumer that
+  relied on finalize always succeeding — in particular on the
+  caller-declared size being accepted when the object is missing — must
+  handle these. The bundled `FinalizeUploadView` maps them to 413 / 415 /
+  409.
+- `Recording.file_size_bytes` is always the size storage reports; a
+  client-declared `file_size_bytes` is only ever checked, never stored.
+- `start_multipart_upload` requires a positive `file_size_bytes` within
+  `MAX_UPLOAD_BYTES` (previously any integer was accepted, including zero
+  and negatives).
+- **UPGRADE NOTE — a content gate that cannot run now refuses the upload.**
+  `read_prefix` has a default on `RecordingStorage`, and that default raises
+  `NotImplementedError` — so a host's own backend used to switch
+  `UPLOAD_CONTENT_POLICY` off by *inheriting*, writing no code at all:
+  finalize logged a warning, fell through, and an `.exe` or HTML polyglot
+  landed under an `audio.mp3` key with the recording queued and 200 on the
+  wire. Finalize now raises the new `services.UploadContentUncheckable`,
+  cleans up object and session like any other rejected upload, and the
+  bundled `FinalizeUploadView` answers **503**
+  `error.503.recording_upload_unverifiable` — a deployment fault, not a 415
+  blaming the file. Custom backends: implement `read_prefix` (both bundled
+  backends do), or state the trade-off with `UPLOAD_CONTENT_POLICY = "off"`,
+  which is the opt-out that already existed for exactly this case. The safe
+  value stays the default.
+
+### Changed — breaking for consumers (continued)
+
+- Pipeline state moved from `Recording.metadata` to
+  `Recording.workflow_state`. A consumer reading `metadata["pipeline"]`,
+  `metadata["last_error"]` or `metadata["recovered_error"]` — for a status
+  UI, a watchdog, a report — must read `workflow_state` instead. Migration
+  `0004` moves existing rows (and folds them back on reverse, so a rollback
+  to code that reads `metadata` still finds its cursor).
+- `reprocess_recording` records the finished run's artifact keys in
+  `workflow_state["previous_run"]` before requeueing, so a host that
+  regenerates derived data can still find (and keep) the previous
+  transcript for its retention window. The module still deletes nothing.
+
+### Migrations
+
+- `0003_recordingshare` — the `RecordingShare` table.
+- `0004_recording_workflow_state` — the `workflow_state` column plus a data
+  move of `pipeline` / `last_error` / `recovered_error` out of `metadata`
+  (reversible).
+
 ## [0.13.1] — 2026-08-08
 
 ### Fixed

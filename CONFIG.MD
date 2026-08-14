@@ -8,9 +8,9 @@ whether it is required, and its default.
 Most keys are read through `recordings_settings`
 (`stapel_recordings.conf.AppSettings`, namespace `STAPEL_RECORDINGS`).
 Resolution order per key: `settings.STAPEL_RECORDINGS` dict → a flat Django
-setting of the same name → environment variable → the default below. The three
-`FFMPEG_*`/`FFPROBE_*` keys are read directly from the process environment in
-`normalize.py` (the ffmpeg shell-out layer), not through the settings dict.
+setting of the same name → environment variable → the default below — except
+for the keys marked `no_env`, which skip the environment step entirely (see
+*Authorization switches* below, and the `no_env` tuple in `conf.py`).
 
 ## stapel-recordings
 
@@ -47,10 +47,27 @@ setting of the same name → environment variable → the default below. The thr
 | STUCK_THRESHOLD_SECONDS | env | reconcile watchdog: age at which a running stage is re-emitted (must exceed the longest stage). | no | 2100 |
 | ABANDONED_UPLOAD_THRESHOLD_SECONDS | env | age at which an incomplete upload session is abandoned. | no | 3600 |
 
-### ffmpeg shell-out (source: env — read in normalize.py)
+### ffmpeg shell-out (source: settings)
 
 | Key | Source | Purpose | Required | Default |
 |-----|--------|---------|----------|---------|
-| FFMPEG_BIN | env | ffmpeg binary path/name. | no | ffmpeg |
-| FFPROBE_BIN | env | ffprobe binary path/name. | no | ffprobe |
-| FFMPEG_TIMEOUT_S | env | subprocess timeout (seconds) for an ffmpeg/ffprobe call. | no | 1800 |
+| FFMPEG_BIN | settings | ffmpeg binary path/name. **Not read from the environment** (`no_env`). | no | ffmpeg |
+| FFPROBE_BIN | settings | ffprobe binary path/name. **Not read from the environment** (`no_env`). | no | ffprobe |
+| FFMPEG_TIMEOUT_SECONDS | env | subprocess timeout (seconds) for an ffmpeg/ffprobe call. | no | 1800 |
+
+### Authorization switches (source: settings — never the environment)
+
+Every key in this section is `no_env`: it resolves from
+`settings.STAPEL_RECORDINGS`, a flat Django setting, or its default, and a
+same-named environment variable is ignored. Each one decides which code runs
+or what is handed out, and each has a generic enough name to collide in a
+shared pod. Booleans are read through `conf.flag` / `conf.optional_flag`, so
+the string `"false"` means false.
+
+| Key | Source | Purpose | Required | Default |
+|-----|--------|---------|----------|---------|
+| RECORDING_POLICY | settings | dotted path to the class answering may-this-user-read/edit/delete/upload/reprocess. | no | stapel_recordings.policy.OwnerOnlyPolicy |
+| REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE | settings | verify membership of the workspace `POST /recordings` writes into. False only where no workspaces module can answer. | no | true |
+| WORKSPACE_LISTING_MEMBERS_SEE_ALL | settings | `?workspace_id=` returns every member's recordings instead of what RECORDING_POLICY makes visible. | no | false |
+| UPLOAD_CONTENT_POLICY | settings | finalize-time gate on the stored object's leading bytes: reject_known_bad / require_known_media / off. `off` also waives the refusal when the backend cannot serve a ranged read. | no | reject_known_bad |
+| STORAGE_SIGNS_GET_URLS | settings | tri-state override of `RecordingStorage.signs_get_urls`; True vouches that the backend mints EXPIRING GET URLs. | no | null (ask the backend) |
