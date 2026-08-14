@@ -50,7 +50,11 @@ def test_consumer_drains_and_calls_llm_transcribe(use_fakes, make_recording, stu
 
     assert len(stub_transcribe.calls) == 1
     payload = stub_transcribe.calls[0]
-    assert payload["audio_url"].startswith("memory://get/")
+    assert payload["audio_url"].startswith("https://fake.invalid/get/")
+    # The URL the provider fetches with is minted for a CONFIGURED lifetime
+    # (TRANSCRIBE_AUDIO_URL_TTL_SECONDS) — with a private bucket it is the
+    # only way in, so its deadline is an operator's decision, not a literal.
+    assert "expires_in=3600" in payload["audio_url"]
     assert payload["diarization"] is True
     r.refresh_from_db()
     assert r.status == RecordingStatus.COMPLETED

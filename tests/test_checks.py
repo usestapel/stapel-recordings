@@ -6,6 +6,7 @@ from stapel_recordings.checks import (
     check_pipeline_stages,
     check_reconcile_threshold,
     check_storage_backend,
+    check_transcribe_audio_url_ttl,
 )
 
 pytestmark = pytest.mark.django_db
@@ -15,6 +16,7 @@ def test_defaults_are_clean():
     assert check_storage_backend(None) == []
     assert check_pipeline_stages(None) == []
     assert check_reconcile_threshold(None) == []
+    assert check_transcribe_audio_url_ttl(None) == []
 
 
 def test_stuck_threshold_at_or_below_stage_timeout_is_warning():
@@ -23,6 +25,15 @@ def test_stuck_threshold_at_or_below_stage_timeout_is_warning():
     with override_settings(STAPEL_RECORDINGS={"STUCK_THRESHOLD_SECONDS": 600}):
         warnings = check_reconcile_threshold(None)
     assert any(w.id == "stapel_recordings.W005" for w in warnings)
+
+
+def test_audio_url_ttl_below_the_stage_timeout_is_warning():
+    """With a private bucket the presigned audio URL is the provider's only
+    way in — if it dies before the stage can, transcription fails on an
+    expired signature and nothing says why."""
+    with override_settings(STAPEL_RECORDINGS={"TRANSCRIBE_AUDIO_URL_TTL_SECONDS": 60}):
+        warnings = check_transcribe_audio_url_ttl(None)
+    assert any(w.id == "stapel_recordings.W007" for w in warnings)
 
 
 def test_bad_storage_is_error():

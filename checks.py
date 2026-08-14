@@ -136,6 +136,30 @@ def check_reconcile_threshold(app_configs, **kwargs):
 
 
 @checks.register(checks.Tags.compatibility)
+def check_transcribe_audio_url_ttl(app_configs, **kwargs):
+    """W: the audio URL handed to the ASR provider must outlive the stage.
+
+    With a private bucket (audit STORE-01) that presigned URL is the only
+    way the provider reads the audio. A provider that starts late — queued
+    behind other work, retried — fetches with a URL that has already
+    expired, and the failure surfaces as an unexplained transcription error
+    rather than as a configuration mistake."""
+    from .conf import recordings_settings
+
+    ttl = int(recordings_settings.TRANSCRIBE_AUDIO_URL_TTL_SECONDS)
+    timeout = int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS)
+    if ttl <= timeout:
+        return [checks.Warning(
+            f"STAPEL_RECORDINGS['TRANSCRIBE_AUDIO_URL_TTL_SECONDS'] ({ttl}) should "
+            f"exceed TRANSCRIBE_TIMEOUT_SECONDS ({timeout}) — the audio URL handed "
+            "to the ASR provider must still be valid when a late-starting provider "
+            "fetches it, or transcription fails on an expired signature.",
+            id="stapel_recordings.W007",
+        )]
+    return []
+
+
+@checks.register(checks.Tags.compatibility)
 def check_taskstore_installed(app_configs, **kwargs):
     """E: long-running work is dispatched as tasks, so the task store must be installed.
 

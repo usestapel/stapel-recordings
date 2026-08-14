@@ -61,4 +61,4 @@ def test_backend_swap_via_setting():
         assert isinstance(backend, FakeStorage)
         backend.put_bytes("k", b"x")
         assert backend.get_bytes("k") == b"x"
-        assert backend.presigned_get_url("k").startswith("memory://get/")
+        assert backend.presigned_get_url("k").startswith("https://fake.invalid/get/")

@@ -42,6 +42,15 @@ class RecordingStorage(ABC):
     """Interface every storage backend implements. Methods raise on hard
     failure so pipeline stages can classify transient vs fatal I/O."""
 
+    #: Does :meth:`presigned_get_url` return a **credentialed, expiring**
+    #: URL? Declared per backend and defaulted to ``False`` because the
+    #: honest answer for a backend that cannot sign is "no", and the caller
+    #: that asks (``media.issue_media_url``) refuses to hand out a URL it
+    #: cannot bound in time (audit STORE-01). A backend whose "presigned"
+    #: URL is really a permanent public one is not a delivery mechanism —
+    #: it is an anonymous bucket with extra steps.
+    signs_get_urls: bool = False
+
     # ── URLs ─────────────────────────────────────────────────────────
     @abstractmethod
     def presigned_put_url(self, key: str, *, expires_seconds: int = 900, content_type: Optional[str] = None) -> str: ...
@@ -109,6 +118,15 @@ class DjangoStorageBackend(RecordingStorage):
     (public/served URL); native multipart is emulated with a single-part
     shim so the client-facing flow is uniform in dev.
     """
+
+    #: ``storage.url()`` is whatever the underlying Django backend serves —
+    #: for the filesystem backend a permanent ``MEDIA_URL`` path, for an
+    #: unsigned S3 backend a permanent object URL. Neither expires, so this
+    #: backend declares "no" and authorized delivery refuses rather than
+    #: leaking a forever-URL. A host whose backend really does sign (e.g.
+    #: ``S3Boto3Storage`` with ``querystring_auth=True``) says so with
+    #: ``STAPEL_RECORDINGS["STORAGE_SIGNS_GET_URLS"] = True``.
+    signs_get_urls = False
 
     def _storage(self):
         from django.core.files.storage import default_storage
@@ -205,6 +223,11 @@ class S3Backend(RecordingStorage):
         S3_ENDPOINT_URL, S3_PUBLIC_URL, S3_ACCESS_KEY, S3_SECRET_KEY,
         S3_REGION, S3_BUCKET.
     """
+
+    #: SigV4 query-string signatures with an explicit ``X-Amz-Expires`` —
+    #: the URL carries its own deadline, so the bucket itself can (and
+    #: should) stay private.
+    signs_get_urls = True
 
     MULTIPART_PART_SIZE = 10 * 1024 * 1024
 

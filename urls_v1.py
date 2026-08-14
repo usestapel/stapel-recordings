@@ -13,7 +13,11 @@ from .views import (
     FinalizeUploadView,
     RecordingDetailView,
     RecordingListCreateView,
+    RecordingMediaView,
     ReprocessRecordingView,
+    SharedRecordingMediaView,
+    SharedRecordingView,
+    ShareUnlockView,
 )
 
 urlpatterns = [
@@ -21,6 +25,16 @@ urlpatterns = [
     path("recordings/<uuid:recording_id>", RecordingDetailView.as_view(), name="recordings-detail"),
     path("recordings/<uuid:recording_id>/finalize", FinalizeUploadView.as_view(), name="recordings-finalize"),
     path("recordings/<uuid:recording_id>/reprocess", ReprocessRecordingView.as_view(), name="recordings-reprocess"),
+    # Authorized media delivery (audit STORE-01): the ONLY sanctioned way a
+    # client reaches the bytes. Everything else — a key pasted into a public
+    # bucket URL, a proxy in front of the store — is delivery without an
+    # authorization decision.
+    path("recordings/<uuid:recording_id>/media", RecordingMediaView.as_view(), name="recordings-media"),
+    # Public share surface. The link token is a path segment because it IS
+    # the credential the route resolves; unlock tokens travel in a header.
+    path("shares/<str:link_token>", SharedRecordingView.as_view(), name="recordings-share-detail"),
+    path("shares/<str:link_token>/unlock", ShareUnlockView.as_view(), name="recordings-share-unlock"),
+    path("shares/<str:link_token>/media", SharedRecordingMediaView.as_view(), name="recordings-share-media"),
 ]
 
 

@@ -170,6 +170,30 @@ served URL; synthetic multipart shim) and `S3Backend` (boto3 presigned +
 native multipart; `pip install stapel-recordings[s3]`). Implement the ABC to
 target any store. `get_storage()` resolves + caches it.
 
+### Media delivery — `media.py` (audit STORE-01)
+
+**The bucket is private; the endpoint is the door.** Bytes are reached only
+through `GET .../recordings/<id>/media` (object policy `can_read`) or
+`GET .../shares/<token>/media` (a share that grants `media`) — each
+authorizes first, then mints a **short-lived presigned GET** via
+`media.issue_media_url`. `?redirect=1` answers 302 for an `<audio src>`;
+the default JSON body carries the expiry so a client can refresh in time.
+TTLs are settings and short by default: `MEDIA_URL_TTL_SECONDS` (300),
+`SHARE_MEDIA_URL_TTL_SECONDS` (300).
+
+A URL, once minted, is a bearer credential — nothing checks the policy
+again — so a backend that cannot bound it in time is **refused**:
+`RecordingStorage.signs_get_urls` declares whether `presigned_get_url`
+really signs, and a backend that says no yields 503, never a permanent URL.
+`DjangoStorageBackend` says no (its `storage.url()` never expires), so the
+default configuration serves no media at all. Deliberate: a host on
+S3/MinIO uses `S3Backend`; a host whose django-storages backend genuinely
+signs sets `STORAGE_SIGNS_GET_URLS = True`.
+
+The transcribe stage's audio URL for the ASR provider is presigned too
+(`TRANSCRIBE_AUDIO_URL_TTL_SECONDS`, must exceed
+`TRANSCRIBE_TIMEOUT_SECONDS` — W007 warns).
+
 ### Audio normalization seam — `NORMALIZER` (`normalize.py`)
 
 `(src_path, dst_path) -> float | None`. Default `ffmpeg_normalize` (needs
@@ -481,14 +505,18 @@ These were app-specific in the source origin and are intentionally
   `recording.stage_completed` in the billing module.
 - **Export formats** (SRT/VTT/DOCX/PDF) — app-layer views over the stored
   transcript JSON.
-- **Share links**: the *decision* is NOT app-layer any more (audit
-  SHARE-01, 2026-08-11). `stapel_recordings.shares` owns the token, the
-  passcode, the rotation, the lockout and the permission grant; a consumer
-  that hand-rolls those gets them wrong in the same four ways every time.
-  What stays app-layer is the HTTP surface: the route, the payload shape
-  and the throttle in front of it. Call `shares.access_share(link_token,
-  unlock_token=...)` from that view and render with
-  `dto.shared_recording_to_dto`.
+- **Share links**: NOT app-layer any more, decision *or* route (audit
+  SHARE-01 / STORE-01, 2026-08-11). `stapel_recordings.shares` owns the
+  token, the passcode, the rotation, the lockout and the permission grant;
+  a consumer that hand-rolls those gets them wrong in the same four ways
+  every time. The three routes ship with it — `GET /shares/<token>`,
+  `POST /shares/<token>/unlock`, `GET /shares/<token>/media` — because a
+  correct primitive behind a hand-rolled route is still a hand-rolled
+  authorization check, and because the media route is what lets a shared
+  recording play from a **private** bucket. What stays app-layer is the
+  rate limit in front of them and any richer payload (subclass the view's
+  serializer seam). A host that wants a different mount remounts the
+  views.
 - A **real diarizer** (pyannote, etc.) — register a `diarize` stage handler.
 
 ## App-layer override vs upstream contribution — rule of thumb

@@ -273,7 +273,7 @@
       "intent": "Drop the memoized backend so the next get_storage() re-resolves the STORAGE setting — the supported way to make a runtime settings change (an override_settings block, a fixture) take effect. Overwhelmingly a test-harness concern: production code that finds itself calling this is configuring storage in the wrong place."
     }
   ],
-  "operations_total": 5,
+  "operations_total": 9,
   "requires": [
     {
       "module": "stapel-core",

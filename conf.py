@@ -198,6 +198,31 @@ DEFAULTS = {
         # permission. Short: the URL leaves the trust boundary.
         "SHARE_MEDIA_URL_TTL_SECONDS": 5 * 60,
 
+        # ── Authorized media delivery (media.py, audit STORE-01) ──────
+        # TTL of the presigned GET issued to an authorized OWNER request.
+        # Short by construction: the URL is a bearer credential for the
+        # object — once minted, whoever holds it reads the bytes without
+        # passing the policy again. Long enough to start playback and to
+        # survive a seek, short enough that a copied URL dies on its own.
+        "MEDIA_URL_TTL_SECONDS": 5 * 60,
+        # Tri-state answer to "does the storage backend mint EXPIRING,
+        # credentialed GET URLs": None (default) = ask the backend's
+        # ``signs_get_urls``. Set True only when the configured Django
+        # storage backend really signs its ``url()`` (e.g. S3Boto3Storage
+        # with querystring_auth=True) — the default for DjangoStorageBackend
+        # is False because a plain ``storage.url()`` never expires, and
+        # handing one out IS the anonymous-bucket delivery this module
+        # refuses to depend on. False forces the refusal even for a signing
+        # backend (useful to prove a stand no longer serves media at all).
+        "STORAGE_SIGNS_GET_URLS": None,
+        # TTL of the presigned GET the transcribe stage hands to the ASR
+        # provider. Not client-facing — but with a private bucket it is the
+        # ONLY way the provider reads the audio, so it must outlive
+        # TRANSCRIBE_TIMEOUT_SECONDS: a provider that starts late (queued
+        # behind other work) must still be able to fetch. W007 warns if it
+        # does not.
+        "TRANSCRIBE_AUDIO_URL_TTL_SECONDS": 60 * 60,
+
         # Extra ``Recording.metadata`` keys the HOST reserves for server
         # decisions (a billing waiver, an entitlement stamp). Rejected in
         # client-supplied metadata at any depth by

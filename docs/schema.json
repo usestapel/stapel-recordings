@@ -189,6 +189,51 @@
         }
       }
     },
+    "/recordings/api/v1/recordings/{recording_id}/media": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_media_retrieve",
+        "description": "Issue a short-lived, authorized URL to a recording's media object.\n\nThis endpoint is how bytes are reached — it exists so that the bucket\ndoes not have to be readable by anyone holding an object key (audit\nSTORE-01). The object policy answers ``can_read`` for *this* recording\nfirst; only then is a presigned GET minted, with\n``MEDIA_URL_TTL_SECONDS`` on it.\n\n``?redirect=1`` answers ``302`` to the URL (drop-in for an ``<audio\nsrc>``); the default JSON body carries the expiry so a client can\nrefresh before playback dies. ``503`` means the deployment's storage\nbackend cannot sign — no permanent URL is substituted.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "redirect",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Answer 302 to the media URL instead of a JSON body."
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaURLDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
     "/recordings/api/v1/recordings/{recording_id}/reprocess": {
       "post": {
         "operationId": "recordings_api_v1_recordings_reprocess_create",
@@ -218,6 +263,135 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/shares/{link_token}": {
+      "get": {
+        "operationId": "recordings_api_v1_shares_retrieve",
+        "description": "Read a recording through a public share link.\n\nAnonymous by design: the link token in the path IS the credential, and\n``shares.access_share`` is what verifies it — revocation, expiry, the\nrecording's own lifecycle, and (for a passcode-protected share) a\n*verified* unlock token from the ``X-Share-Unlock-Token`` header. The\nprojection then renders only what the share grants.\n\n**Permissions:** `AllowAny`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "link_token",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedRecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/shares/{link_token}/media": {
+      "get": {
+        "operationId": "recordings_api_v1_shares_media_retrieve",
+        "description": "Media URL for a share link that carries the ``media`` permission.\n\nThe public half of STORE-01: a shared recording plays without the bucket\nbeing anonymously readable. The share is verified on every call, the\n``media`` grant is required explicitly (a share that only grants ``view``\ngets 403), and the URL is minted with ``SHARE_MEDIA_URL_TTL_SECONDS`` —\nshorter than the owner's, because this one leaves the trust boundary.\n\n**Permissions:** `AllowAny`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "link_token",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "redirect",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Answer 302 to the media URL instead of a JSON body."
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaURLDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/shares/{link_token}/unlock": {
+      "post": {
+        "operationId": "recordings_api_v1_shares_unlock_create",
+        "description": "Exchange a share's passcode for a time-limited unlock token.\n\nThe token is signed and bound to the share, its generation and a TTL —\npresenting *any* nonempty value here is what SHARE-01 was. Guessing is\nbounded by the persisted lockout in ``shares.unlock_share``.\n\n**Permissions:** `AllowAny`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "link_token",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareUnlockRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareUnlockRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareUnlockRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareUnlockDTO"
                 }
               }
             },
@@ -289,6 +463,26 @@
             "minimum": 0
           }
         }
+      },
+      "MediaURLDTO": {
+        "type": "object",
+        "description": "A short-lived, authorized URL to a recording's media object.\n\nThe expiry travels *with* the URL because the client has to plan around\nit: the URL stops working, and a player that cached it has to come back\nhere rather than retry a dead link forever.",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expires_at",
+          "expires_in",
+          "url"
+        ]
       },
       "RecordingDTO": {
         "type": "object",
@@ -362,6 +556,122 @@
           "transcript_storage_key",
           "word_count",
           "workspace_id"
+        ]
+      },
+      "ShareUnlockDTO": {
+        "type": "object",
+        "description": "The token a client presents after passing a share's passcode.",
+        "properties": {
+          "unlock_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expires_in",
+          "unlock_token"
+        ]
+      },
+      "ShareUnlockRequest": {
+        "type": "object",
+        "description": "Passcode presented to a share's unlock endpoint.",
+        "properties": {
+          "passcode": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      },
+      "SharedRecordingDTO": {
+        "type": "object",
+        "description": "A recording as seen through a public share link.\n\nField presence follows the share's granted permissions, not the\ncaller's request: ``summary``, ``segments`` and ``media_url`` stay empty\nunless the link grants them. The recording's internal identifiers\n(workspace, storage keys, provider) are not part of this payload at\nall — a public link is not a window into the tenant.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "nullable": true
+          },
+          "duration_seconds": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string",
+            "nullable": true
+          },
+          "media_url": {
+            "type": "string",
+            "nullable": true
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SharedSegmentDTO"
+            }
+          }
+        },
+        "required": [
+          "created_at",
+          "duration_seconds",
+          "id",
+          "language",
+          "media_url",
+          "permissions",
+          "segments",
+          "status",
+          "summary",
+          "title"
+        ]
+      },
+      "SharedSegmentDTO": {
+        "type": "object",
+        "description": "One transcript segment as seen through a share link.",
+        "properties": {
+          "sequence_num": {
+            "type": "integer"
+          },
+          "start_time": {
+            "type": "number",
+            "format": "double"
+          },
+          "end_time": {
+            "type": "number",
+            "format": "double"
+          },
+          "speaker": {
+            "type": "string",
+            "nullable": true
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "end_time",
+          "sequence_num",
+          "speaker",
+          "start_time",
+          "text"
         ]
       },
       "UploadSessionDTO": {

@@ -7,10 +7,10 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 ## [Unreleased]
 
 Security hardening from the 2026-08-11 audit of a product built on this
-module (SHARE-01, REC-02, REC-03). Each finding was raised against product
-code; each is fixed here because the product could only have made it by
-hand-rolling something this library never published, or by inheriting a
-default this library set.
+module (SHARE-01, REC-01, REC-02, REC-03, STORE-01). Each finding was raised
+against product code; each is fixed here because the product could only have
+made it by hand-rolling something this library never published, or by
+inheriting a default this library set.
 
 ### Added
 
@@ -59,13 +59,46 @@ default this library set.
   pull a multi-gigabyte object into memory; a backend that cannot serve one
   raises `NotImplementedError` and the content gate reports itself as not
   applied rather than silently downloading everything.
+- **`stapel_recordings.media` + media endpoints — authorized delivery
+  (STORE-01).** The audited deployment served recordings by making the
+  bucket anonymously downloadable and proxying it publicly, so every
+  authorization decision in this module was advisory: whoever held (or
+  guessed) an object key read the audio. The module published no delivery
+  path at all — no endpoint returned a media URL, and the one presigned GET
+  it did mint (`shared_recording_to_dto`) had no route to reach it. Now
+  bytes are reached only through `GET /recordings/<id>/media` (object
+  policy `can_read`) and `GET /shares/<token>/media` (a share granting
+  `media`); both authorize first and then mint a short-lived presigned GET
+  (`MEDIA_URL_TTL_SECONDS` / `SHARE_MEDIA_URL_TTL_SECONDS`, 300s each),
+  with `?redirect=1` for a player element. A URL is a bearer credential
+  once minted, so a backend that cannot bound it in time is refused:
+  `RecordingStorage.signs_get_urls` declares whether `presigned_get_url`
+  really signs, and a backend that says no answers 503 rather than handing
+  out a permanent URL — which means the **default** `DjangoStorageBackend`
+  serves no media until the host uses `S3Backend` or vouches for its
+  storage with `STORAGE_SIGNS_GET_URLS = True`. With this in place the
+  bucket can be (and must be) private.
+- **The public share HTTP surface** — `GET /shares/<token>`,
+  `POST /shares/<token>/unlock`, `GET /shares/<token>/media`. Previously
+  left to the host on the grounds that only the *decision* was the
+  library's; the audit showed the split does not survive contact — a
+  correct primitive behind a hand-rolled route is still a hand-rolled
+  authorization check, and without a route the presigned share path could
+  not exist end to end. Anonymous by design (the link token is the
+  credential, verified by `shares.access_share` on every call); unlock
+  tokens travel in the `X-Share-Unlock-Token` header, never a query string.
 - `stapel_recordings.media_types` — content classification for stored
   uploads, with the `UPLOAD_CONTENT_POLICY` setting
   (`reject_known_bad` default / `require_known_media` / `off`).
 - Settings: `MAX_MULTIPART_PARTS`, `UPLOAD_CONTENT_POLICY`,
   `SHARE_UNLOCK_TOKEN_TTL_SECONDS`, `SHARE_UNLOCK_MAX_ATTEMPTS`,
   `SHARE_UNLOCK_LOCKOUT_SECONDS`, `SHARE_MEDIA_URL_TTL_SECONDS`,
-  `RECORDING_POLICY`.
+  `RECORDING_POLICY`, `MEDIA_URL_TTL_SECONDS`, `STORAGE_SIGNS_GET_URLS`,
+  `TRANSCRIBE_AUDIO_URL_TTL_SECONDS`.
+- System check `W007`: the presigned audio URL handed to the ASR provider
+  must outlive `TRANSCRIBE_TIMEOUT_SECONDS`. With a private bucket that URL
+  is the provider's only way in, and a late-starting provider fetching an
+  expired signature fails in a way that reads as a transcription error.
 
 ### Fixed
 
@@ -89,6 +122,8 @@ default this library set.
   uploads in the bucket for every client retry.
 - `create_upload_session` binds `content_type` into the presigned PUT where
   the backend supports it.
+- The transcribe stage's audio URL lifetime is configuration
+  (`TRANSCRIBE_AUDIO_URL_TTL_SECONDS`) instead of a hardcoded hour.
 - The anonymous read scope. The inline queryset returned **every**
   non-deleted recording when the request had no authenticated user; only
   the view-level permission class stood between that and a response. The
@@ -96,6 +131,17 @@ default this library set.
 
 ### Changed — breaking for consumers
 
+- **Media is no longer served by the storage backend's plain URL.** With the
+  default `DjangoStorageBackend`, `shared_recording_to_dto` now returns
+  `media_url: null` and the media endpoints answer 503 — previously the
+  share payload carried whatever `storage.url()` produced, which for the
+  common deployment was a permanent, unauthenticated URL. Hosts on S3/MinIO
+  switch `STORAGE` to `stapel_recordings.storage.S3Backend`; hosts whose
+  Django storage backend signs its `url()` set
+  `STORAGE_SIGNS_GET_URLS = True`. **Deployments must make the recordings
+  bucket private and remove any public proxy in front of it** — that is the
+  configuration this delivery path exists to replace, and leaving it in
+  place leaves STORE-01 open regardless of the code.
 - `finalize_upload` now **raises** instead of finalizing on a broken
   upload: `UploadNotStored` (nothing/zero bytes at the key),
   `UploadTooLarge` (measured or declared size over the ceiling),

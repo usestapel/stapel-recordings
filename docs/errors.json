@@ -299,6 +299,13 @@
     "en": "Recording is not in a valid state for this action"
   },
   {
+    "code": "error.409.recording_media_not_stored",
+    "status": 409,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "This recording has no media file"
+  },
+  {
     "code": "error.410.gone",
     "status": 410,
     "params": [],
@@ -383,5 +390,12 @@
     "params": [],
     "remediation": "contact_support",
     "en": "Something went wrong"
+  },
+  {
+    "code": "error.503.recording_media_unavailable",
+    "status": 503,
+    "params": [],
+    "remediation": "retry",
+    "en": "Media delivery is not available"
   }
 ]

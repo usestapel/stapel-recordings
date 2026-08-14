@@ -44,6 +44,27 @@ class CreateRecordingResponse:  # noqa: R004
 
 
 @dataclass
+class MediaURLDTO:
+    """A short-lived, authorized URL to a recording's media object.
+
+    The expiry travels *with* the URL because the client has to plan around
+    it: the URL stops working, and a player that cached it has to come back
+    here rather than retry a dead link forever."""
+
+    url: str
+    expires_at: str
+    expires_in: int
+
+
+@dataclass
+class ShareUnlockDTO:
+    """The token a client presents after passing a share's passcode."""
+
+    unlock_token: str
+    expires_in: int
+
+
+@dataclass
 class SharedSegmentDTO:
     """One transcript segment as seen through a share link."""
 
@@ -106,9 +127,8 @@ def shared_recording_to_dto(access) -> SharedRecordingDTO:
     The projection is the enforcement point: a field the share does not
     grant is not fetched, not rendered and not reachable by asking again
     with a different query parameter."""
-    from . import shares
+    from . import media, shares
     from .conf import recordings_settings
-    from .storage import get_storage
 
     recording = access.recording
     segments: list[SharedSegmentDTO] = []
@@ -125,11 +145,18 @@ def shared_recording_to_dto(access) -> SharedRecordingDTO:
         ]
 
     media_url = None
-    if access.has(shares.PERM_MEDIA) and recording.file_storage_key:
-        media_url = get_storage().presigned_get_url(
-            recording.file_storage_key,
-            expires_seconds=int(recordings_settings.SHARE_MEDIA_URL_TTL_SECONDS),
-        )
+    if access.has(shares.PERM_MEDIA):
+        try:
+            media_url = media.issue_media_url(
+                recording,
+                ttl_seconds=int(recordings_settings.SHARE_MEDIA_URL_TTL_SECONDS),
+            ).url
+        except media.MediaUnavailable:
+            # No object, or a backend that can only produce a permanent URL.
+            # The payload says "no media" rather than smuggling out a URL
+            # that never expires — a share is the one caller where a leaked
+            # forever-URL has no owner to notice it (audit STORE-01).
+            media_url = None
 
     return SharedRecordingDTO(
         id=str(recording.id),
@@ -142,6 +169,14 @@ def shared_recording_to_dto(access) -> SharedRecordingDTO:
         summary=recording.summary if access.has(shares.PERM_SUMMARY) else None,
         media_url=media_url,
         segments=segments,
+    )
+
+
+def media_grant_to_dto(grant) -> MediaURLDTO:
+    return MediaURLDTO(
+        url=grant.url,
+        expires_at=grant.expires_at.isoformat(),
+        expires_in=int(grant.ttl_seconds),
     )
 
 
