@@ -25,6 +25,11 @@ and enqueues transcription/diarization/summarization. Metering that on an
 account stops meaning anything when a session costs one unauthenticated POST
 to mint — so it is gated on a real account, not on being logged in.
 
+Having an account is not the whole answer for that verb, though. The payload
+names the workspace the recording lands in, so creation is a *membership*
+question, and it is asked here with the same fail-closed seam the workspace
+listing uses (``REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE``, on by default).
+
 The three ``/shares/...`` routes are the deliberate exception, and they are
 not a hole in that stance: they are anonymous *by design* because the caller
 authenticates with the link token itself. Every one of them goes through
@@ -47,7 +52,7 @@ from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse
 from stapel_core.django.api.permissions import IsNotAnonymousUser
 
 from . import media, pipeline, services, shares
-from .conf import recordings_settings
+from .conf import flag, recordings_settings
 from .dto import (
     CreateRecordingResponse,
     ShareUnlockDTO,
@@ -167,6 +172,10 @@ def _share_error(exc: shares.ShareError):
 class RecordingListCreateView(SerializerSeamMixin, APIView):
     """Create a recording and open its upload session, or list recordings.
 
+    ``POST`` creates the recording inside the workspace its payload names,
+    which requires membership of that workspace (verified against the
+    workspaces module; non-members get 403 and nothing is created).
+
     ``GET`` lists your own recordings by default; pass ``?workspace_id=<uuid>``
     to list every recording in a workspace you are a member of (membership is
     verified against the workspaces module; non-members get 403).
@@ -238,8 +247,20 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
         req = self.get_request_serializer_class()(data=request.data)
         req.is_valid(raise_exception=True)
         data = req.validated_data
+        workspace_id = data["workspace_id"]
+        # "Create a recording IN THIS WORKSPACE" is a membership question,
+        # and the caller supplies the workspace id — so it is asked here,
+        # against the same fail-closed seam the listing uses, BEFORE any row,
+        # upload session or object key exists. Being logged in is not an
+        # answer to it: without this check any account could mint a recording
+        # inside any organization's workspace, where its members would then
+        # see it listed.
+        if flag("REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE") and not services.check_workspace_membership(
+            user_id=getattr(request.user, "pk", None), workspace_id=workspace_id
+        ):
+            return StapelErrorResponse(403, ERR_403_WORKSPACE_FORBIDDEN)
         recording = Recording.objects.create(
-            workspace_id=data["workspace_id"],
+            workspace_id=workspace_id,
             owner=request.user if request.user.is_authenticated else None,
             title=data["title"],
             source_type=data.get("source_type") or "upload",

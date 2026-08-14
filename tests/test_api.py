@@ -8,12 +8,14 @@ from stapel_recordings.models import Recording, RecordingStatus
 pytestmark = pytest.mark.django_db
 
 
-def test_create_recording_opens_upload_session(use_fakes, api_client, user):
+def test_create_recording_opens_upload_session(use_fakes, api_client, user, stub_membership):
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
     api_client.force_authenticate(user=user)
     resp = api_client.post(
         "/recordings/api/v1/recordings",
         {
-            "workspace_id": str(uuid.uuid4()),
+            "workspace_id": str(ws),
             "title": "Standup",
             "diarization_enabled": True,
             "filename": "standup.mp3",
@@ -27,13 +29,15 @@ def test_create_recording_opens_upload_session(use_fakes, api_client, user):
     assert body["upload"]["presigned_url"].startswith("memory://put/")
 
 
-def test_detail_and_finalize(use_fakes, api_client, user):
+def test_detail_and_finalize(use_fakes, api_client, user, stub_membership):
     from stapel_recordings.storage import get_storage
 
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
     api_client.force_authenticate(user=user)
     create = api_client.post(
         "/recordings/api/v1/recordings",
-        {"workspace_id": str(uuid.uuid4()), "title": "Interview", "filename": "interview.mp3"},
+        {"workspace_id": str(ws), "title": "Interview", "filename": "interview.mp3"},
         format="json",
     ).json()
     rec_id = create["recording"]["id"]
@@ -64,6 +68,85 @@ def test_list_is_owner_scoped(use_fakes, api_client, user, make_recording):
     assert resp.status_code == 200
     titles = [r["title"] for r in resp.json()]
     assert "mine" in titles
+
+
+# ── create is a membership question, not just an account question ─────────
+#
+# POST names the workspace the recording lands in, and the caller supplies
+# that id. Verifying it is what stops any account from minting rows (and
+# storage keys, which are namespaced by workspace id) inside another
+# organization's workspace, where its members would then see them listed.
+
+
+def test_create_into_a_foreign_workspace_is_refused(
+    use_fakes, api_client, user, stub_membership
+):
+    ws = uuid.uuid4()  # no grant → not a member
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/v1/recordings",
+        {"workspace_id": str(ws), "title": "injected", "filename": "x.mp3"},
+        format="json",
+    )
+    assert resp.status_code == 403, resp.content
+    assert resp.json()["localizable_error"] == "error.403.recording_workspace_forbidden"
+    # Refused BEFORE any state exists: no row, and therefore no upload
+    # session and no object key under that workspace's prefix.
+    assert not Recording.objects.filter(workspace_id=ws).exists()
+
+
+def test_create_in_a_workspace_you_belong_to_is_allowed(
+    use_fakes, api_client, user, stub_membership
+):
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/v1/recordings",
+        {"workspace_id": str(ws), "title": "mine", "filename": "x.mp3"},
+        format="json",
+    )
+    assert resp.status_code == 201, resp.content
+    assert Recording.objects.filter(workspace_id=ws).count() == 1
+
+
+def test_create_fails_closed_when_workspaces_is_unavailable(use_fakes, api_client, user):
+    """No ``workspaces.check_membership`` provider registered (workspaces not
+    deployed) → refuse, the same way the workspace listing does."""
+    ws = uuid.uuid4()
+    api_client.force_authenticate(user=user)
+    resp = api_client.post(
+        "/recordings/api/v1/recordings",
+        {"workspace_id": str(ws), "title": "x", "filename": "x.mp3"},
+        format="json",
+    )
+    assert resp.status_code == 403, resp.content
+    assert not Recording.objects.filter(workspace_id=ws).exists()
+
+
+def test_membership_gate_can_be_opted_out_of_explicitly(use_fakes, api_client, user):
+    """A stand without stapel-workspaces cannot answer membership, so it says
+    so — in settings, deliberately. The safe value is the default."""
+    from django.test import override_settings
+
+    from stapel_recordings import storage
+
+    ws = uuid.uuid4()
+    api_client.force_authenticate(user=user)
+    with override_settings(
+        STAPEL_RECORDINGS={
+            "STORAGE": "stapel_recordings.tests.fakes.FakeStorage",
+            "NORMALIZER": "stapel_recordings.normalize.passthrough_normalize",
+            "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE": False,
+        }
+    ):
+        storage.reset_storage_cache()
+        resp = api_client.post(
+            "/recordings/api/v1/recordings",
+            {"workspace_id": str(ws), "title": "x", "filename": "x.mp3"},
+            format="json",
+        )
+    assert resp.status_code == 201, resp.content
 
 
 # ── G4: workspace-scoped list + membership + opaque resource_key ──────────

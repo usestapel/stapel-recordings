@@ -59,7 +59,9 @@ def test_create_rejects_unregistered_source_type(use_fakes, api_client, user):
     assert resp.status_code == 400
 
 
-def test_create_accepts_overlaid_source_type(use_fakes, api_client, user):
+def test_create_accepts_overlaid_source_type(use_fakes, api_client, user, stub_membership):
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
     api_client.force_authenticate(user=user)
     with override_settings(
         STAPEL_RECORDINGS={
@@ -74,7 +76,7 @@ def test_create_accepts_overlaid_source_type(use_fakes, api_client, user):
         resp = api_client.post(
             "/recordings/api/v1/recordings",
             {
-                "workspace_id": str(uuid.uuid4()),
+                "workspace_id": str(ws),
                 "title": "x",
                 "source_type": "zoom",
                 "filename": "take.mp3",

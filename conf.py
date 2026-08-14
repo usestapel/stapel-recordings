@@ -231,6 +231,22 @@ DEFAULTS = {
         # this list, never replaced by it.
         "RESERVED_METADATA_KEYS": [],
 
+        # ── Workspace membership gate on create ───────────────────────
+        # ``POST /recordings`` names the workspace the new recording lands
+        # in, and the caller supplies that id. True (default): the id is
+        # verified against the workspaces module — the same membership
+        # question the workspace LISTING already asks — BEFORE any row,
+        # upload session or object key exists. Without it, any account can
+        # mint a recording inside any organization's workspace (storage keys
+        # are namespaced by workspace id, and that workspace's members then
+        # see the injected row in their listing).
+        #
+        # Set False ONLY where recordings runs without stapel-workspaces
+        # (single-tenant stand, workspace ids minted by the host itself):
+        # membership cannot be answered there, and the check fails CLOSED,
+        # so it would refuse every create. Opening is the explicit act.
+        "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE": True,
+
         # ── Object policy seam (single strategy, replace) ─────────────
         # Dotted path to the class answering "may this user do this to this
         # recording". Default: owner-only for every verb. A host that wants
@@ -287,7 +303,43 @@ recordings_settings = AppSettings(
     "STAPEL_RECORDINGS",
     defaults=DEFAULTS,
     import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER", "RECORDING_POLICY"),
+    # A switch that can only ever be flipped OPEN must not be reachable from
+    # the environment: the name is generic enough to collide in a shared pod
+    # or a compose file, and the value would arrive as a string (see
+    # :func:`flag`). It still resolves via STAPEL_RECORDINGS, a flat Django
+    # setting, or the default — "this stand has no workspaces module" is a
+    # deployment declaration, so it is stated in settings.
+    no_env=("REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE",),
 )
+
+#: Spellings :func:`flag` accepts. Anything else is "not a boolean".
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def _coerce_bool(value, *, unrecognized: bool) -> bool:
+    """``bool()`` that does not read ``"false"`` as True."""
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _TRUTHY:
+            return True
+        if text in _FALSY:
+            return False
+        return unrecognized
+    return bool(value)
+
+
+def flag(key: str) -> bool:
+    """Read a boolean setting without the ``bool("false") is True`` trap.
+
+    ``AppSettings`` does no coercion, so a value that arrives as a STRING —
+    a flat Django setting written as ``"false"``, a value copied out of a
+    compose file — is truthy for every non-empty spelling. On a security
+    switch that reverses the answer silently. Unrecognized text falls back
+    to the library DEFAULT, which is the closed answer for every switch
+    here, so garbage can never open something.
+    """
+    return _coerce_bool(getattr(recordings_settings, key), unrecognized=bool(DEFAULTS[key]))
 
 
 def vector_config() -> dict:
@@ -303,4 +355,4 @@ def vector_config() -> dict:
     return merged
 
 
-__all__ = ["recordings_settings", "vector_config", "DEFAULT_PIPELINE", "DEFAULT_VECTOR"]
+__all__ = ["recordings_settings", "flag", "vector_config", "DEFAULT_PIPELINE", "DEFAULT_VECTOR"]

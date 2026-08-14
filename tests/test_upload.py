@@ -93,13 +93,17 @@ def test_create_recording_api_requires_filename(use_fakes, api_client, user):
     assert resp.status_code == 400
 
 
-def test_create_recording_api_accepts_good_filename(use_fakes, api_client, user):
+def test_create_recording_api_accepts_good_filename(
+    use_fakes, api_client, user, stub_membership
+):
     import uuid
 
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
     api_client.force_authenticate(user=user)
     resp = api_client.post(
         "/recordings/api/v1/recordings",
-        {"workspace_id": str(uuid.uuid4()), "title": "x", "filename": "meeting.m4a"},
+        {"workspace_id": str(ws), "title": "x", "filename": "meeting.m4a"},
         format="json",
     )
     assert resp.status_code == 201, resp.content

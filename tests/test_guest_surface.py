@@ -85,13 +85,15 @@ def test_guest_cannot_reprocess(guest_client, make_recording):
     assert resp.status_code == 403, resp.content
 
 
-def test_a_registered_user_is_unaffected(use_fakes, api_client, user):
+def test_a_registered_user_is_unaffected(use_fakes, api_client, user, stub_membership):
     """The gate is about *anonymous*, not about *authenticated*."""
+    ws = uuid.uuid4()
+    stub_membership.grant(ws, user.pk)
     api_client.force_authenticate(user=user)
     resp = api_client.post(
         "/recordings/api/v1/recordings",
         {
-            "workspace_id": str(uuid.uuid4()),
+            "workspace_id": str(ws),
             "title": "Standup",
             "filename": "standup.mp3",
         },

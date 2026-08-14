@@ -131,6 +131,25 @@ inheriting a default this library set.
 
 ### Changed — breaking for consumers
 
+- **UPGRADE NOTE — `POST /recordings` now requires membership of the
+  workspace it writes into.** The endpoint carried `IsNotAnonymousUser` and
+  nothing else: it passed the caller-supplied `workspace_id` straight into
+  `Recording.objects.create(...)` and opened an upload session against it,
+  so any account could mint a recording row — and, since storage keys are
+  namespaced by workspace id, an object — inside **any** organization's
+  workspace, where that workspace's members then saw it in their listing.
+  Creation names a workspace, so it is a membership question, and it is now
+  asked with the same fail-closed seam the workspace listing already used
+  (`services.check_workspace_membership` → `workspaces.check_membership`).
+  Non-members get 403 `error.403.recording_workspace_forbidden` and nothing
+  is created — the check runs before the row, the session and the key exist.
+  **The check fails closed**, so a deployment where the workspaces module
+  cannot answer (not deployed, comm route not configured) refuses *every*
+  create. Wire up `workspaces.check_membership`, or — for a stand that has
+  no workspaces module and mints workspace ids itself — say so explicitly:
+  `STAPEL_RECORDINGS = {"REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE": False}`.
+  The safe value is the default; opening it is the explicit act, and it is
+  not readable from the environment (see `no_env` below).
 - **Media is no longer served by the storage backend's plain URL.** With the
   default `DjangoStorageBackend`, `shared_recording_to_dto` now returns
   `media_url: null` and the media endpoints answer 503 — previously the
