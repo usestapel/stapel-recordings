@@ -6,6 +6,8 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-14
+
 Security hardening from the 2026-08-11 audit of a product built on this
 module (SHARE-01, REC-01, REC-02, REC-03, STORE-01). Each finding was raised
 against product code; each is fixed here because the product could only have
