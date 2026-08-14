@@ -22,6 +22,10 @@ ERR_429_SHARE_THROTTLED = "error.429.share_unlock_throttled"
 # expiring URL, and this module will not substitute a permanent one).
 ERR_409_MEDIA_NOT_STORED = "error.409.recording_media_not_stored"
 ERR_503_MEDIA_UNAVAILABLE = "error.503.recording_media_unavailable"
+# The upload's bytes could not be CHECKED (the storage backend cannot serve a
+# ranged read), so they are not accepted. The deployment's fault, not the
+# caller's — hence 5xx, and hence not 415, which would blame the file.
+ERR_503_UPLOAD_UNVERIFIABLE = "error.503.recording_upload_unverifiable"
 
 STAPEL_RECORDINGS_ERRORS = {
     ERR_404_NOT_FOUND: "Recording not found",
@@ -36,6 +40,7 @@ STAPEL_RECORDINGS_ERRORS = {
     ERR_429_SHARE_THROTTLED: "Too many attempts — try again later",
     ERR_409_MEDIA_NOT_STORED: "This recording has no media file",
     ERR_503_MEDIA_UNAVAILABLE: "Media delivery is not available",
+    ERR_503_UPLOAD_UNVERIFIABLE: "Upload could not be verified",
 }
 
 register_service_errors(STAPEL_RECORDINGS_ERRORS)
@@ -54,4 +59,5 @@ __all__ = [
     "ERR_429_SHARE_THROTTLED",
     "ERR_409_MEDIA_NOT_STORED",
     "ERR_503_MEDIA_UNAVAILABLE",
+    "ERR_503_UPLOAD_UNVERIFIABLE",
 ]

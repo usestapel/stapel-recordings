@@ -397,5 +397,12 @@
     "params": [],
     "remediation": "retry",
     "en": "Media delivery is not available"
+  },
+  {
+    "code": "error.503.recording_upload_unverifiable",
+    "status": 503,
+    "params": [],
+    "remediation": "retry",
+    "en": "Upload could not be verified"
   }
 ]

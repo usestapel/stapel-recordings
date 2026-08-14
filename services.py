@@ -23,7 +23,12 @@ fact. This module is written around that split:
   leading bytes must pass the content policy. A failure aborts and cleans
   up, leaves the recording out of ``queued``, and **does not enqueue the
   pipeline** — no downstream work is started by an upload that never
-  satisfied its invariants.
+  satisfied its invariants;
+- and a check that cannot RUN counts as a failure, not as a pass: if the
+  storage backend cannot serve the ranged read the content policy needs,
+  finalize refuses (:class:`UploadContentUncheckable`) instead of accepting
+  bytes nothing has looked at. Accepting them is a decision, and it is
+  spelled ``UPLOAD_CONTENT_POLICY = "off"``.
 """
 from __future__ import annotations
 
@@ -65,6 +70,24 @@ class UploadNotStored(ValueError):
 
 class InvalidMultipartParts(ValueError):
     """The caller-supplied multipart part list is malformed or oversized."""
+
+
+class UploadContentUncheckable(RuntimeError):
+    """``UPLOAD_CONTENT_POLICY`` is on, but the storage backend cannot serve
+    the ranged read the gate needs.
+
+    A deployment fault, not a caller fault: the upload may well be fine, but
+    nothing here can tell. A gate that cannot run refuses — the alternative
+    is that the policy silently does not apply."""
+
+    def __init__(self, key: str, backend: str, policy: str):
+        super().__init__(
+            f"{backend} cannot serve a ranged read, so UPLOAD_CONTENT_POLICY "
+            f"{policy!r} could not be applied to {key!r}"
+        )
+        self.key = key
+        self.backend = backend
+        self.policy = policy
 
 
 class UnsupportedUploadExtension(ValueError):
@@ -289,8 +312,10 @@ def _verify_stored_object(session: UploadSession) -> int:
     """Measure the stored object and enforce every invariant on it.
 
     Returns the measured size. Raises :class:`UploadNotStored`,
-    :class:`UploadTooLarge` or
-    :class:`~stapel_recordings.media_types.UnsupportedUploadContent`.
+    :class:`UploadTooLarge`,
+    :class:`~stapel_recordings.media_types.UnsupportedUploadContent`, or
+    :class:`UploadContentUncheckable` when the content policy is on and the
+    backend cannot serve the ranged read it needs.
 
     The caller-declared size is deliberately NOT a fallback here: a HEAD
     that finds nothing, or finds a zero-byte object, means the presigned
@@ -309,17 +334,27 @@ def _verify_stored_object(session: UploadSession) -> int:
     if policy != media_types.POLICY_OFF:
         try:
             prefix = storage.read_prefix(session.storage_key, media_types.PREFIX_BYTES)
-        except NotImplementedError:
-            # A backend without ranged reads cannot be gated on content
-            # without downloading the whole object. Say so once per finalize
-            # rather than pretending the check ran.
-            logger.warning(
+        except NotImplementedError as exc:
+            # A gate that cannot run must refuse, not wave the object
+            # through. Falling through here (the old behaviour) meant
+            # UPLOAD_CONTENT_POLICY silently did not apply on any backend
+            # without ranged reads — including a host's OWN backend, which
+            # inherits that NotImplementedError from RecordingStorage by
+            # doing nothing, so the gate switched itself off by omission and
+            # an executable or HTML polyglot landed under an audio.mp3 key.
+            # Turning the gate off is a decision, so it has to be stated:
+            # UPLOAD_CONTENT_POLICY = "off".
+            logger.error(
                 "upload: storage backend %s cannot read a prefix — content "
-                "policy %r not applied to %s",
+                "policy %r could not be applied to %s; refusing the upload "
+                "(implement RecordingStorage.read_prefix, or set "
+                "UPLOAD_CONTENT_POLICY='off' to accept unchecked bytes)",
                 type(storage).__name__, policy, session.storage_key,
             )
-        else:
-            media_types.check_prefix(prefix, policy=policy)
+            raise UploadContentUncheckable(
+                session.storage_key, type(storage).__name__, policy
+            ) from exc
+        media_types.check_prefix(prefix, policy=policy)
     return actual_size
 
 
@@ -352,17 +387,23 @@ def finalize_upload(
     size is what storage reports.
 
     Raises :class:`UploadNotStored`, :class:`UploadTooLarge`,
-    :class:`InvalidMultipartParts` or
-    :class:`~stapel_recordings.media_types.UnsupportedUploadContent` when the
-    upload is not acceptable. In every one of those cases the object and the
-    session are cleaned up, the recording stays out of ``queued`` and no
-    ``recording.uploaded`` event is emitted.
+    :class:`InvalidMultipartParts`,
+    :class:`~stapel_recordings.media_types.UnsupportedUploadContent` or
+    :class:`UploadContentUncheckable` when the upload is not acceptable — or,
+    for the last one, cannot be shown to be. In every one of those cases the
+    object and the session are cleaned up, the recording stays out of
+    ``queued`` and no ``recording.uploaded`` event is emitted.
     """
     try:
         return _finalize_upload_locked(
             session=session, file_size_bytes=file_size_bytes, parts=parts
         )
-    except (UploadNotStored, UploadTooLarge, media_types.UnsupportedUploadContent):
+    except (
+        UploadNotStored,
+        UploadTooLarge,
+        UploadContentUncheckable,
+        media_types.UnsupportedUploadContent,
+    ):
         # Cleanup runs OUTSIDE the finalize transaction on purpose: that
         # transaction has just been unwound by this exception, so a delete
         # issued inside it would roll back with it and leave the rejected
@@ -412,6 +453,7 @@ __all__ = [
     "UnsupportedUploadExtension",
     "UploadTooLarge",
     "UploadNotStored",
+    "UploadContentUncheckable",
     "InvalidMultipartParts",
     "check_workspace_membership",
     "WORKSPACES_CHECK_MEMBERSHIP",

@@ -30,7 +30,7 @@ pip install stapel-recordings
 | Config axes | 1 |
 | Usage surface | 27 |
 | Extension points | 7 |
-| Error codes | 53 |
+| Error codes | 54 |
 | Fleet dependencies | [`stapel-agent`](https://github.com/usestapel/stapel-agent) (optional) · [`stapel-auth`](https://github.com/usestapel/stapel-auth) (optional) · [`stapel-core`](https://github.com/usestapel/stapel-core) |
 
 ## Documentation

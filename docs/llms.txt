@@ -2,7 +2,7 @@
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 27 · extension points 7 · operations 9 · error codes 53.
+Contract: axes 1 · surface 27 · extension points 7 · operations 9 · error codes 54.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -121,7 +121,7 @@ Paths are relative to `/recordings/api/v1/`.
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (53) — the StapelError envelope
+## Error codes (54) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -176,3 +176,4 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.429.too_many_requests [429] wait_and_retry
 - error.500.internal [500] contact_support
 - error.503.recording_media_unavailable [503] retry
+- error.503.recording_upload_unverifiable [503] retry

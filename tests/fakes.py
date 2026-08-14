@@ -72,6 +72,19 @@ class FakeStorage(RecordingStorage):
         _STORE.pop(key, None)
 
 
+class NoRangedReadStorage(FakeStorage):
+    """A backend that cannot serve a ranged read — which is what a host's
+    own backend is by default, since it inherits ``read_prefix`` from
+    ``RecordingStorage`` and that raises ``NotImplementedError``.
+
+    Deliberately delegates to the base implementation instead of raising
+    itself: the path being pinned is the one a backend gets by writing no
+    code at all."""
+
+    def read_prefix(self, key, length):
+        return RecordingStorage.read_prefix(self, key, length)
+
+
 class UnsignedFakeStorage(FakeStorage):
     """A backend that can only produce a PERMANENT URL — what
     DjangoStorageBackend does with ``storage.url()``. Media delivery must

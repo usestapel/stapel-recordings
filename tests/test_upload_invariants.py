@@ -224,6 +224,61 @@ def test_strict_policy_accepts_a_real_container(use_fakes, make_recording):
     assert r.status == RecordingStatus.QUEUED
 
 
+# ── a gate that cannot run refuses ───────────────────────────────────────
+#
+# ``RecordingStorage.read_prefix`` raises NotImplementedError by default, so
+# a host's own backend fails the content gate open by INHERITING — writing no
+# code switches the policy off. Finalize must refuse instead.
+
+_NO_RANGED_READ = {
+    "STORAGE": "stapel_recordings.tests.fakes.NoRangedReadStorage",
+    "NORMALIZER": "stapel_recordings.normalize.passthrough_normalize",
+}
+
+
+def _with_no_ranged_reads(**extra):
+    return override_settings(STAPEL_RECORDINGS={**_NO_RANGED_READ, **extra})
+
+
+def test_finalize_refuses_when_the_content_gate_cannot_run(use_fakes, make_recording):
+    from stapel_recordings import storage
+
+    r = make_recording(status=RecordingStatus.UPLOADING)
+    session = services.create_upload_session(recording=r, filename="take.mp3")
+    # A Windows executable parked under an audio.mp3 key — exactly what the
+    # policy exists to stop, and what a backend without ranged reads used to
+    # wave through with a log line.
+    get_storage().put_bytes(session.storage_key, b"MZ\x90\x00" + b"\x00" * 64)
+    with _with_no_ranged_reads():
+        storage.reset_storage_cache()
+        with pytest.raises(services.UploadContentUncheckable):
+            services.finalize_upload(session=session)
+    r.refresh_from_db()
+    assert r.status != RecordingStatus.QUEUED
+    assert r.file_storage_key in (None, "")
+    assert _outbox_uploaded_count() == 0
+    storage.reset_storage_cache()
+    exists, _size = get_storage().head_object(session.storage_key)
+    assert exists is False  # unverifiable object is cleaned up like a rejected one
+
+
+def test_content_policy_off_accepts_a_backend_without_ranged_reads(
+    use_fakes, make_recording
+):
+    """The opt-out is the policy switch that already exists, and it is a
+    stated decision rather than a property of the backend."""
+    from stapel_recordings import storage
+
+    r = make_recording(status=RecordingStatus.UPLOADING)
+    session = services.create_upload_session(recording=r, filename="take.mp3")
+    get_storage().put_bytes(session.storage_key, b"raw pcm-ish bytes")
+    with _with_no_ranged_reads(UPLOAD_CONTENT_POLICY=media_types.POLICY_OFF):
+        storage.reset_storage_cache()
+        services.finalize_upload(session=session)
+    r.refresh_from_db()
+    assert r.status == RecordingStatus.QUEUED
+
+
 def test_classifier_prefers_dangerous_over_media():
     # A zip whose central directory is appended to an mp3 header is still a
     # zip to anything that reads it from the end.
@@ -241,6 +296,26 @@ def test_finalize_api_answers_415_for_rejected_content(use_fakes, api_client, us
     api_client.force_authenticate(user=user)
     resp = api_client.post(f"/recordings/api/v1/recordings/{r.id}/finalize", {}, format="json")
     assert resp.status_code == 415, resp.content
+
+
+def test_finalize_api_answers_503_when_the_content_gate_cannot_run(
+    use_fakes, api_client, user, make_recording
+):
+    """A deployment fault reads as one: 503, not a 415 that blames the file."""
+    from stapel_recordings import storage
+
+    r = make_recording(status=RecordingStatus.UPLOADING, owner=user)
+    session = services.create_upload_session(recording=r, filename="take.mp3")
+    get_storage().put_bytes(session.storage_key, b"MZ\x90\x00" + b"\x00" * 64)
+    api_client.force_authenticate(user=user)
+    with _with_no_ranged_reads():
+        storage.reset_storage_cache()
+        resp = api_client.post(
+            f"/recordings/api/v1/recordings/{r.id}/finalize", {}, format="json"
+        )
+    assert resp.status_code == 503, resp.content
+    assert resp.json()["localizable_error"] == "error.503.recording_upload_unverifiable"
+    assert Recording.objects.get(pk=r.id).status != RecordingStatus.QUEUED
 
 
 def test_finalize_api_answers_409_when_nothing_was_stored(use_fakes, api_client, user, make_recording):

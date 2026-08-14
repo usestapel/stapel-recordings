@@ -191,8 +191,20 @@ inheriting a default this library set.
 - `start_multipart_upload` requires a positive `file_size_bytes` within
   `MAX_UPLOAD_BYTES` (previously any integer was accepted, including zero
   and negatives).
-- Custom `RecordingStorage` implementations are unaffected (`read_prefix`
-  has a default), but they get no content gate until they implement it.
+- **UPGRADE NOTE — a content gate that cannot run now refuses the upload.**
+  `read_prefix` has a default on `RecordingStorage`, and that default raises
+  `NotImplementedError` — so a host's own backend used to switch
+  `UPLOAD_CONTENT_POLICY` off by *inheriting*, writing no code at all:
+  finalize logged a warning, fell through, and an `.exe` or HTML polyglot
+  landed under an `audio.mp3` key with the recording queued and 200 on the
+  wire. Finalize now raises the new `services.UploadContentUncheckable`,
+  cleans up object and session like any other rejected upload, and the
+  bundled `FinalizeUploadView` answers **503**
+  `error.503.recording_upload_unverifiable` — a deployment fault, not a 415
+  blaming the file. Custom backends: implement `read_prefix` (both bundled
+  backends do), or state the trade-off with `UPLOAD_CONTENT_POLICY = "off"`,
+  which is the opt-out that already existed for exactly this case. The safe
+  value stays the default.
 
 ### Changed — breaking for consumers (continued)
 

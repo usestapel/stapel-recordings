@@ -69,8 +69,13 @@ class RecordingStorage(ABC):
         ``get_bytes``: a finalize-time content check must never pull a
         multi-gigabyte object into memory. A backend that cannot serve a
         ranged read says so by raising ``NotImplementedError`` (the default
-        here), and the upload content gate degrades to "unchecked" for that
-        backend rather than to "download everything".
+        here) rather than downloading everything.
+
+        Note what that costs a backend which leaves this default in place:
+        with ``UPLOAD_CONTENT_POLICY`` on (it is by default), finalize
+        **refuses** the upload rather than accepting bytes the gate never
+        saw. Implement this method, or state the trade-off with
+        ``UPLOAD_CONTENT_POLICY = "off"``.
         """
         raise NotImplementedError(
             f"{type(self).__name__} does not support ranged reads"

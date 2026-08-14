@@ -69,6 +69,7 @@ from .errors import (
     ERR_413_TOO_LARGE,
     ERR_415_UNSUPPORTED_MEDIA,
     ERR_503_MEDIA_UNAVAILABLE,
+    ERR_503_UPLOAD_UNVERIFIABLE,
 )
 from .media_types import UnsupportedUploadContent
 from .models import Recording
@@ -340,6 +341,12 @@ class FinalizeUploadView(SerializerSeamMixin, APIView):
             return StapelErrorResponse(413, ERR_413_TOO_LARGE)
         except UnsupportedUploadContent:
             return StapelErrorResponse(415, ERR_415_UNSUPPORTED_MEDIA)
+        except services.UploadContentUncheckable:
+            # The bytes may be fine — nothing here can tell, because the
+            # backend cannot serve a ranged read. That is the deployment's
+            # fault, so it is a 5xx the operator can read, and the upload is
+            # not accepted on the strength of a check that did not run.
+            return StapelErrorResponse(503, ERR_503_UPLOAD_UNVERIFIABLE)
         except (services.UploadNotStored, services.InvalidMultipartParts):
             # Nothing (usable) was ever written under the session key, so
             # there is no upload to finalize — the client has to upload
