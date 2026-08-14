@@ -150,6 +150,22 @@ inheriting a default this library set.
   `STAPEL_RECORDINGS = {"REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE": False}`.
   The safe value is the default; opening it is the explicit act, and it is
   not readable from the environment (see `no_env` below).
+- **UPGRADE NOTE — `GET /recordings?workspace_id=…` now obeys
+  `RECORDING_POLICY`.** The workspace branch of the listing built
+  `Recording.objects.filter(workspace_id=…)` inline while every other read
+  path went through `get_policy().visible_queryset`. Two consequences: the
+  listing offered rows that `GET /recordings/<id>` refuses with 404 for the
+  same caller, and a host that tightened `RECORDING_POLICY` did not tighten
+  this path — the one place the seam exists to control. Membership still
+  answers *may you ask about this workspace*; the policy now answers *which
+  of its recordings may you read*, which with the default `OwnerOnlyPolicy`
+  means **a member now sees only their own recordings in the workspace**.
+  Deployments that intend every member to see every recording in a
+  workspace say so: `STAPEL_RECORDINGS =
+  {"WORKSPACE_LISTING_MEMBERS_SEE_ALL": True}` (also `no_env`), or ship a
+  `RECORDING_POLICY` whose `visible_queryset` expresses the real rule —
+  which is the better answer, because it keeps the listing and the
+  per-object checks the same decision.
 - **Media is no longer served by the storage backend's plain URL.** With the
   default `DjangoStorageBackend`, `shared_recording_to_dto` now returns
   `media_url: null` and the media endpoints answer 503 — previously the

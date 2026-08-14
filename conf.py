@@ -247,6 +247,17 @@ DEFAULTS = {
         # so it would refuse every create. Opening is the explicit act.
         "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE": True,
 
+        # Who a member SEES in ``GET /recordings?workspace_id=<uuid>``.
+        # False (default): the listing is what RECORDING_POLICY makes
+        # visible, narrowed to that workspace — so the listing and the
+        # per-recording endpoints answer the same question, and a host that
+        # tightens the policy tightens both. True: every non-deleted
+        # recording in a workspace the caller is a verified member of,
+        # whoever owns it — the pre-0.14 behaviour, and a deliberate
+        # widening of the READ surface (the destructive verbs still ask the
+        # policy per object, which is the whole point of REC-03).
+        "WORKSPACE_LISTING_MEMBERS_SEE_ALL": False,
+
         # ── Object policy seam (single strategy, replace) ─────────────
         # Dotted path to the class answering "may this user do this to this
         # recording". Default: owner-only for every verb. A host that wants
@@ -309,7 +320,10 @@ recordings_settings = AppSettings(
     # :func:`flag`). It still resolves via STAPEL_RECORDINGS, a flat Django
     # setting, or the default — "this stand has no workspaces module" is a
     # deployment declaration, so it is stated in settings.
-    no_env=("REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE",),
+    no_env=(
+        "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE",
+        "WORKSPACE_LISTING_MEMBERS_SEE_ALL",
+    ),
 )
 
 #: Spellings :func:`flag` accepts. Anything else is "not a boolean".

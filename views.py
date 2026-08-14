@@ -176,9 +176,14 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
     which requires membership of that workspace (verified against the
     workspaces module; non-members get 403 and nothing is created).
 
-    ``GET`` lists your own recordings by default; pass ``?workspace_id=<uuid>``
-    to list every recording in a workspace you are a member of (membership is
-    verified against the workspaces module; non-members get 403).
+    ``GET`` lists what ``RECORDING_POLICY`` makes visible to you (default:
+    your own recordings); pass ``?workspace_id=<uuid>`` to narrow that to one
+    workspace you are a member of (membership is verified against the
+    workspaces module; non-members get 403). The workspace listing goes
+    through the same object policy as the per-recording endpoints, so it
+    never lists a recording those would refuse; a deployment that wants
+    every member to see every recording in the workspace says so with
+    ``WORKSPACE_LISTING_MEMBERS_SEE_ALL``.
 
     Pass ``?resource_key=<opaque-token>`` to narrow the listing to the single
     recording that token references. The key is the opaque, signed handle
@@ -205,8 +210,9 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
                 type=str,
                 location=OpenApiParameter.QUERY,
                 required=False,
-                description="List all recordings in this workspace (requires "
-                "membership) instead of only your own.",
+                description="Narrow the listing to this workspace (requires "
+                "membership). What it returns inside the workspace is still "
+                "what RECORDING_POLICY makes visible.",
             ),
             OpenApiParameter(
                 name="resource_key",
@@ -227,9 +233,18 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
                 user_id=getattr(request.user, "pk", None), workspace_id=workspace_id
             ):
                 return StapelErrorResponse(403, ERR_403_WORKSPACE_FORBIDDEN)
-            qs = Recording.objects.filter(
-                deleted_at__isnull=True, workspace_id=workspace_id
-            )
+            # Membership answers "may you ask about this workspace", not
+            # "which of its recordings may you read" — that second question
+            # belongs to RECORDING_POLICY, the same object policy the detail
+            # endpoint asks. Building the queryset inline here is what let
+            # the two drift: this listing used to hand back rows that
+            # ``GET /recordings/<id>`` refuses with 404 for the same caller,
+            # and a host that tightened RECORDING_POLICY did not tighten it.
+            in_workspace = Recording.objects.filter(workspace_id=workspace_id)
+            if flag("WORKSPACE_LISTING_MEMBERS_SEE_ALL"):
+                qs = in_workspace.filter(deleted_at__isnull=True)
+            else:
+                qs = get_policy().visible_queryset(request.user, in_workspace)
         else:
             qs = _owned_qs(request)
 
