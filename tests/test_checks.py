@@ -67,6 +67,30 @@ def test_missing_taskstore_is_error():
     assert any(e.id == "stapel_recordings.E004" for e in errors)
 
 
+def test_passthrough_normalizer_is_a_warning():
+    """Selecting the passthrough normalizer disables ALL transcoding, and the
+    seam check only ever asked whether NORMALIZER was callable — so turning
+    conversion off passed `manage.py check` in silence."""
+    from stapel_recordings.checks import check_normalizer_is_not_passthrough
+
+    with override_settings(
+        STAPEL_RECORDINGS={"NORMALIZER": "stapel_recordings.normalize.passthrough_normalize"}
+    ):
+        warnings = check_normalizer_is_not_passthrough(None)
+    assert any(w.id == "stapel_recordings.W008" for w in warnings)
+    # The seam check still says nothing — passthrough is callable.
+    with override_settings(
+        STAPEL_RECORDINGS={"NORMALIZER": "stapel_recordings.normalize.passthrough_normalize"}
+    ):
+        assert check_pipeline_stages(None) == []
+
+
+def test_default_normalizer_is_not_warned_about():
+    from stapel_recordings.checks import check_normalizer_is_not_passthrough
+
+    assert check_normalizer_is_not_passthrough(None) == []
+
+
 def test_check_ids_are_unique():
     """Two checks sharing one id is a silent trap, not cosmetics.
 

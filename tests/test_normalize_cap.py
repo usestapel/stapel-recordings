@@ -89,6 +89,55 @@ def test_unknown_duration_with_cap(monkeypatch, run):
     assert normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600) == 600.0
 
 
+# ── which binary gets executed is settings, not the environment ──────────
+#
+# FFMPEG_BIN / FFPROBE_BIN are argv[0] of a subprocess run over user-supplied
+# media. They used to be module-level ``os.environ.get`` reads: frozen at
+# import (so a host could not change them at all) and answerable by whatever
+# happened to be exported in the pod (so anything could).
+
+
+def test_ffmpeg_binary_comes_from_settings_at_call_time(run):
+    from django.test import override_settings
+
+    from stapel_recordings.conf import recordings_settings
+
+    with override_settings(STAPEL_RECORDINGS={"FFMPEG_BIN": "/opt/media/bin/ffmpeg"}):
+        recordings_settings.reload()
+        normalize.ffmpeg_normalize("in.mp4", "out.wav")
+    recordings_settings.reload()
+    assert run["cmd"][0] == "/opt/media/bin/ffmpeg"
+
+
+def test_ffprobe_binary_comes_from_settings_at_call_time(monkeypatch):
+    from django.test import override_settings
+
+    from stapel_recordings.conf import recordings_settings
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return _Done()
+
+    monkeypatch.setattr(normalize.subprocess, "run", fake_run)
+    with override_settings(STAPEL_RECORDINGS={"FFPROBE_BIN": "/opt/media/bin/ffprobe"}):
+        recordings_settings.reload()
+        normalize.probe_duration("in.mp4")
+    recordings_settings.reload()
+    assert captured["cmd"][0] == "/opt/media/bin/ffprobe"
+
+
+def test_a_stray_environment_variable_does_not_choose_the_binary(monkeypatch, run):
+    from stapel_recordings.conf import recordings_settings
+
+    monkeypatch.setenv("FFMPEG_BIN", "/tmp/not-really-ffmpeg")
+    recordings_settings.reload()
+    normalize.ffmpeg_normalize("in.mp4", "out.wav")
+    recordings_settings.reload()
+    assert run["cmd"][0] == "ffmpeg"
+
+
 def test_probe_duration_does_not_transcode(monkeypatch):
     """The public probe exists for an honest "first 10 of 47 minutes" label."""
     calls = []

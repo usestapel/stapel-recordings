@@ -148,6 +148,21 @@ inheriting a default this library set.
   TTLs, size and retry limits, thresholds, `STORAGE_PREFIX` — tuning, whose
   names are specific and whose wrong values degrade rather than swap a trust
   decision.
+- **UPGRADE NOTE — `FFMPEG_BIN` / `FFPROBE_BIN` / `FFMPEG_TIMEOUT_S` moved
+  from the process environment into settings.** They were module-level
+  `os.environ.get` reads in `normalize.py`, which froze them at import (so a
+  host could not change them at runtime at all) *and* let any same-named
+  environment variable pick argv[0] of a subprocess this module runs over
+  user-supplied media. They are now `FFMPEG_BIN`, `FFPROBE_BIN` and
+  `FFMPEG_TIMEOUT_SECONDS` (note the rename) in `STAPEL_RECORDINGS`, read at
+  call time; the two binaries are `no_env`. **A deployment that pointed
+  ffmpeg somewhere with an environment variable must set it in settings** —
+  otherwise `ffmpeg`/`ffprobe` are resolved on `PATH` as before.
+- New check **W008**: `NORMALIZER` pointing at `passthrough_normalize`
+  disables all transcoding (and the duration cap with it), and the seam
+  check only ever verified the callable was callable — so turning
+  conversion off passed `manage.py check` in silence. It now warns. Stands
+  that deliberately run without ffmpeg silence `stapel_recordings.W008`.
 - **Booleans are coerced, so `"false"` no longer means True.** `AppSettings`
   hands values through uncoerced, and `bool("false")` is True — on
   `STORAGE_SIGNS_GET_URLS` that turned a host writing the string `"false"`

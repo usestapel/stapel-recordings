@@ -144,6 +144,15 @@ DEFAULTS = {
         # duration seconds. Default shells out to ffmpeg; a passthrough is
         # provided for environments without ffmpeg / for tests.
         "NORMALIZER": "stapel_recordings.normalize.ffmpeg_normalize",
+        # The executables ffmpeg_normalize shells out to, and the timeout on
+        # a single call. Settings, not `os.environ` read at import: these
+        # are argv[0] of a subprocess run over user-supplied media, so
+        # "which binary" is a trust decision and does not belong to whatever
+        # happens to be exported in the pod (hence `no_env` below too). A
+        # name is resolved on PATH; give an absolute path to pin it.
+        "FFMPEG_BIN": "ffmpeg",
+        "FFPROBE_BIN": "ffprobe",
+        "FFMPEG_TIMEOUT_SECONDS": 30 * 60,
 
         # ── S3/MinIO call timeouts ────────────────────────────────────
         # The bare botocore defaults (connect 60s, read 60s, five retries)
@@ -323,7 +332,8 @@ recordings_settings = AppSettings(
     #   * the four dotted-path seams are IMPORTED and then called — one env
     #     var swaps the authorization policy (RECORDING_POLICY), where the
     #     bytes go (STORAGE), which stages run (PIPELINE_RESOLVER) or what
-    #     runs at the pipeline's subprocess entrance (NORMALIZER);
+    #     runs at the pipeline's subprocess entrance (NORMALIZER), with
+    #     FFMPEG_BIN / FFPROBE_BIN the literal argv[0] that entrance execs;
     #   * UPLOAD_CONTENT_POLICY="off" disables the finalize-time content
     #     gate, and STORAGE_SIGNS_GET_URLS vouches that a backend mints
     #     EXPIRING URLs — set wrongly, media delivery hands out permanent
@@ -336,6 +346,8 @@ recordings_settings = AppSettings(
     no_env=(
         "STORAGE",
         "NORMALIZER",
+        "FFMPEG_BIN",
+        "FFPROBE_BIN",
         "PIPELINE_RESOLVER",
         "RECORDING_POLICY",
         "UPLOAD_CONTENT_POLICY",
