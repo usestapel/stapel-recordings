@@ -40,7 +40,7 @@ from datetime import datetime, timedelta
 
 from django.utils import timezone
 
-from .conf import recordings_settings
+from .conf import optional_flag, recordings_settings
 from .storage import get_storage
 
 
@@ -74,10 +74,16 @@ def storage_signs_get_urls(storage=None) -> bool:
     Tri-state: ``STORAGE_SIGNS_GET_URLS`` overrides the backend's own
     declaration when set, so a host can vouch for a Django storage backend
     that really does sign without subclassing anything. ``None`` (default)
-    means "ask the backend", and a backend that says nothing means no."""
-    override = getattr(recordings_settings, "STORAGE_SIGNS_GET_URLS", None)
+    means "ask the backend", and a backend that says nothing means no.
+
+    Read through :func:`~stapel_recordings.conf.optional_flag`, not
+    ``bool()``: the setting arrives uncoerced, and ``bool("false")`` is True
+    — which would turn a host writing the string ``"false"`` into a host
+    VOUCHING that its backend signs, and hand out the permanent URL this
+    whole module exists to stop handing out."""
+    override = optional_flag("STORAGE_SIGNS_GET_URLS")
     if override is not None:
-        return bool(override)
+        return override
     return bool(getattr(storage if storage is not None else get_storage(), "signs_get_urls", False))
 
 

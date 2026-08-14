@@ -314,13 +314,32 @@ recordings_settings = AppSettings(
     "STAPEL_RECORDINGS",
     defaults=DEFAULTS,
     import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER", "RECORDING_POLICY"),
-    # A switch that can only ever be flipped OPEN must not be reachable from
-    # the environment: the name is generic enough to collide in a shared pod
-    # or a compose file, and the value would arrive as a string (see
-    # :func:`flag`). It still resolves via STAPEL_RECORDINGS, a flat Django
-    # setting, or the default — "this stand has no workspaces module" is a
-    # deployment declaration, so it is stated in settings.
+    # Keys that must NOT fall back to an environment variable. AppSettings
+    # reads os.environ for every key not listed here, and these names are
+    # generic enough to collide in a shared pod or a compose file
+    # (STORAGE, NORMALIZER, RECORDING_POLICY…) while each of them decides
+    # something a stray value must never decide:
+    #
+    #   * the four dotted-path seams are IMPORTED and then called — one env
+    #     var swaps the authorization policy (RECORDING_POLICY), where the
+    #     bytes go (STORAGE), which stages run (PIPELINE_RESOLVER) or what
+    #     runs at the pipeline's subprocess entrance (NORMALIZER);
+    #   * UPLOAD_CONTENT_POLICY="off" disables the finalize-time content
+    #     gate, and STORAGE_SIGNS_GET_URLS vouches that a backend mints
+    #     EXPIRING URLs — set wrongly, media delivery hands out permanent
+    #     ones (both are also the kind of value copied between stands);
+    #   * the two membership/listing switches can only ever be flipped OPEN.
+    #
+    # They still resolve via STAPEL_RECORDINGS, a flat Django setting, or the
+    # default: these are deployment declarations, so they are stated in
+    # settings where they can be reviewed, not inherited from the process.
     no_env=(
+        "STORAGE",
+        "NORMALIZER",
+        "PIPELINE_RESOLVER",
+        "RECORDING_POLICY",
+        "UPLOAD_CONTENT_POLICY",
+        "STORAGE_SIGNS_GET_URLS",
         "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE",
         "WORKSPACE_LISTING_MEMBERS_SEE_ALL",
     ),
@@ -356,6 +375,20 @@ def flag(key: str) -> bool:
     return _coerce_bool(getattr(recordings_settings, key), unrecognized=bool(DEFAULTS[key]))
 
 
+def optional_flag(key: str) -> bool | None:
+    """Same, for a TRI-STATE key where ``None`` means "not stated".
+
+    ``STORAGE_SIGNS_GET_URLS`` is the case: None = ask the backend, True =
+    the host vouches that it signs. Unrecognized text answers False rather
+    than the default — for a key whose True is the permissive answer,
+    "I could not read this" must not read as a host vouching for anything.
+    """
+    value = getattr(recordings_settings, key)
+    if value is None or (isinstance(value, str) and value.strip().lower() in {"", "none", "null"}):
+        return None
+    return _coerce_bool(value, unrecognized=False)
+
+
 def vector_config() -> dict:
     """Effective VECTOR block: the host's ``STAPEL_RECORDINGS["VECTOR"]``
     merged over :data:`DEFAULT_VECTOR` (AppSettings replaces dict values
@@ -369,4 +402,11 @@ def vector_config() -> dict:
     return merged
 
 
-__all__ = ["recordings_settings", "flag", "vector_config", "DEFAULT_PIPELINE", "DEFAULT_VECTOR"]
+__all__ = [
+    "recordings_settings",
+    "flag",
+    "optional_flag",
+    "vector_config",
+    "DEFAULT_PIPELINE",
+    "DEFAULT_VECTOR",
+]

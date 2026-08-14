@@ -131,6 +131,31 @@ inheriting a default this library set.
 
 ### Changed — breaking for consumers
 
+- **UPGRADE NOTE — settings that decide trust are no longer read from the
+  environment (`no_env`).** `AppSettings` falls back to
+  `os.environ.get(KEY)` for every key not listed, and `STAPEL_RECORDINGS`
+  listed none — so a stray environment variable with a very generic name
+  could swap the **authorization policy** (`RECORDING_POLICY`), where the
+  bytes go (`STORAGE`), which stages run (`PIPELINE_RESOLVER`), what runs at
+  the pipeline's subprocess entrance (`NORMALIZER`), the finalize-time
+  content gate (`UPLOAD_CONTENT_POLICY`) or the claim that the backend mints
+  expiring URLs (`STORAGE_SIGNS_GET_URLS`), plus the two switches added
+  above. All ten are now `no_env`: they still resolve from
+  `settings.STAPEL_RECORDINGS`, a flat Django setting, or the default — but
+  never from the process environment. **A deployment that configured any of
+  them by environment variable must move it into settings**; it will
+  otherwise silently fall back to the default. Not `no_env` (and unchanged):
+  TTLs, size and retry limits, thresholds, `STORAGE_PREFIX` — tuning, whose
+  names are specific and whose wrong values degrade rather than swap a trust
+  decision.
+- **Booleans are coerced, so `"false"` no longer means True.** `AppSettings`
+  hands values through uncoerced, and `bool("false")` is True — on
+  `STORAGE_SIGNS_GET_URLS` that turned a host writing the string `"false"`
+  into a host *vouching* that its storage signs, which is exactly the
+  permanent-URL delivery STORE-01 is about. Boolean settings are now read
+  through `conf.flag` / `conf.optional_flag`, which accept
+  `1/0 true/false yes/no on/off` in any case and fall back to the **closed**
+  answer for anything else.
 - **UPGRADE NOTE — `POST /recordings` now requires membership of the
   workspace it writes into.** The endpoint carried `IsNotAnonymousUser` and
   nothing else: it passed the caller-supplied `workspace_id` straight into
