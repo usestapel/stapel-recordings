@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.14.0"
+version = "0.14.1"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -66,7 +66,12 @@ packages = [
 ]
 
 [tool.setuptools.package-data]
-stapel_recordings = ["py.typed", "migrations/*.py", "vector/migrations/*.py", "schemas/**/*.json", "docs/capabilities.json", "docs/flows.json", "docs/errors.json", "docs/llms.txt", "CONFIG.MD"]
+# The error catalogs ship IN THE WHEEL, or the keys this module owns resolve
+# to English everywhere they are read. `translations/.state.json` is listed
+# separately: a leading dot is not matched by `translations/*.json`, and the
+# provenance sidecar is what makes a downstream regeneration a no-op instead
+# of a re-translation.
+stapel_recordings = ["py.typed", "migrations/*.py", "vector/migrations/*.py", "schemas/**/*.json", "docs/capabilities.json", "docs/flows.json", "docs/errors.json", "docs/llms.txt", "CONFIG.MD", "translations/*.json", "translations/.state.json"]
 
 [tool.ruff]
 target-version = "py311"

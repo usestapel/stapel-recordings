@@ -1,0 +1,54 @@
+{
+  "error.400.recording_invalid_state": {
+    "hash": "6e2b71d694da1f82",
+    "text": "La grabación no está en un estado válido para esta acción"
+  },
+  "error.401.share_passcode_required": {
+    "hash": "6ce9ea3f1b954079",
+    "text": "Este enlace de acceso requiere un código"
+  },
+  "error.403.recording_workspace_forbidden": {
+    "hash": "45127bdec965abde",
+    "text": "No eres miembro de este espacio de trabajo"
+  },
+  "error.403.share_permission_denied": {
+    "hash": "1a7db4aaa42fbe9a",
+    "text": "Este enlace de acceso no concede ese permiso"
+  },
+  "error.404.recording_not_found": {
+    "hash": "3bb070b6857843c2",
+    "text": "Grabación no encontrada"
+  },
+  "error.404.share_not_found": {
+    "hash": "7393671ee2a04caa",
+    "text": "Enlace de acceso no encontrado"
+  },
+  "error.409.recording_invalid_state": {
+    "hash": "6e2b71d694da1f82",
+    "text": "La grabación no está en un estado válido para esta acción"
+  },
+  "error.409.recording_media_not_stored": {
+    "hash": "4887caad331deaad",
+    "text": "Esta grabación no tiene archivo multimedia"
+  },
+  "error.413.recording_too_large": {
+    "hash": "eca0b4b6e8a0895b",
+    "text": "La subida supera el tamaño máximo permitido"
+  },
+  "error.415.recording_unsupported_media": {
+    "hash": "461ca9b8c08ec263",
+    "text": "El tipo de archivo subido no es compatible"
+  },
+  "error.429.share_unlock_throttled": {
+    "hash": "046ff0ff96c96da1",
+    "text": "Demasiados intentos: inténtalo de nuevo más tarde"
+  },
+  "error.503.recording_media_unavailable": {
+    "hash": "23da65a35dd970b0",
+    "text": "La entrega de archivos multimedia no está disponible"
+  },
+  "error.503.recording_upload_unverifiable": {
+    "hash": "9666c3e8fb36349e",
+    "text": "No se ha podido verificar la subida"
+  }
+}

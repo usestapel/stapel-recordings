@@ -24,7 +24,7 @@ pip install stapel-recordings
 
 | Fact | Value |
 |---|---|
-| Version | `0.14.0` |
+| Version | `0.14.1` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 9 |
 | Config axes | 1 |

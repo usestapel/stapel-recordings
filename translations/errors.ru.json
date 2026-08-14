@@ -1,0 +1,15 @@
+{
+  "error.400.recording_invalid_state": "Запись находится в состоянии, в котором это действие невозможно",
+  "error.401.share_passcode_required": "Для этой ссылки требуется код доступа",
+  "error.403.recording_workspace_forbidden": "Вы не являетесь участником этого рабочего пространства",
+  "error.403.share_permission_denied": "Эта ссылка не даёт такого права",
+  "error.404.recording_not_found": "Запись не найдена",
+  "error.404.share_not_found": "Ссылка для доступа не найдена",
+  "error.409.recording_invalid_state": "Запись находится в состоянии, в котором это действие невозможно",
+  "error.409.recording_media_not_stored": "У этой записи нет медиафайла",
+  "error.413.recording_too_large": "Загрузка превышает максимально допустимый размер",
+  "error.415.recording_unsupported_media": "Тип загружаемого файла не поддерживается",
+  "error.429.share_unlock_throttled": "Слишком много попыток — повторите позже",
+  "error.503.recording_media_unavailable": "Выдача медиа недоступна",
+  "error.503.recording_upload_unverifiable": "Не удалось проверить загрузку"
+}
