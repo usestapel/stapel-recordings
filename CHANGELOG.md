@@ -6,6 +6,16 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-08-15
+
+### Changed — `stapel-core` floor raised to 0.26.0
+
+`docs/errors.json` carries an `owner` per entry, and only stapel-core 0.26.0
+emits it. The floor lagged behind, so a consumer resolving an older core
+regenerated an artifact without `owner` and the drift gate went red — the
+field was declared but never required. The floor now matches the artifact
+that is committed.
+
 ## [0.14.1] — 2026-08-15
 
 ### Added — the error catalogs this module owns (ru, es)

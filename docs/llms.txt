@@ -1,4 +1,4 @@
-# stapel-recordings 0.14.1
+# stapel-recordings 0.14.2
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
