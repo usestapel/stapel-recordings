@@ -137,6 +137,7 @@ def answer_question(
     recording_ids=None,
     limit: int = 8,
     model_size: str | None = None,
+    user_id=None,
 ) -> Answer:
     """Answer *query* over workspace *workspace_id*'s transcripts.
 
@@ -151,6 +152,13 @@ def answer_question(
     keyword and optional. Searching without a workspace is an admin task;
     ANSWERING without one means answering from other tenants' meetings, so
     forgetting the argument here must not be possible.
+
+    ``user_id`` is who asked. One question is three billable calls — the
+    query embedding, the optional rerank, and the answer itself — and this
+    is a live human's request, so unlike a pipeline stage it has an obvious
+    subject. Passing it makes those rows attributable in the agent's
+    ledger; it is recorded only and gates nothing. Optional so an existing
+    caller keeps working, though a host that can name the asker should.
 
     Raises ``VectorSearchUnavailable`` if hybrid search isn't set up on this
     deployment (see the module docstring — failure modes are kept apart),
@@ -175,6 +183,7 @@ def answer_question(
         recording_ids=recording_ids,
         mode="hybrid",
         limit=max(1, int(limit)),
+        user_id=user_id,
     )
     if not hits:
         # No grounding — nothing to ask the model. Empty text, not a
@@ -183,11 +192,14 @@ def answer_question(
         return Answer(text="")
 
     prompt = build_prompt(query, hits, int(cfg["QA_CONTEXT_CHARS"]))
+    from ..stages import identity_fields
+
     request: dict = {
         "prompt": prompt,
         "model": size,
         "system_prompt": _SYSTEM_PROMPT,
         "schema": _ANSWER_SCHEMA,
+        **identity_fields(user_id, workspace_id),
     }
     if cfg.get("QA_PROVIDER"):
         request["provider"] = cfg["QA_PROVIDER"]

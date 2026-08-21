@@ -231,3 +231,64 @@ def check_taskstore_installed(app_configs, **kwargs):
             id="stapel_recordings.E004",
         )
     ]
+
+
+#: The stapel-agent release that opened ``user_id`` / ``workspace_id`` on the
+#: ``llm.*`` comm schemas. Below it those schemas are
+#: ``additionalProperties: false`` against the payloads this package now
+#: sends, which is a hard rejection, not a dropped field.
+MIN_AGENT_VERSION = (0, 12, 0)
+
+
+@checks.register(checks.Tags.compatibility)
+def check_agent_version_for_identity(app_configs, **kwargs):
+    """W: an in-process stapel-agent too old for the attribution fields.
+
+    Every delegated payload carries ``user_id`` / ``workspace_id`` so the
+    agent's ledger rows are attributable (``stages.identity_payload``). The
+    ``llm.*`` schemas reject unknown properties, so against stapel-agent
+    < 0.12.0 this is not a degraded feature — it is every transcription,
+    summary, embed and question failing schema validation.
+
+    Only answerable in a monolith, where the agent is importable here. In a
+    split deployment nothing in this process can see the other side's
+    version, so the floor lives in the changelog and this check stays
+    silent rather than guessing. Warning rather than Error for the same
+    reason a missing agent is not fatal: the host may be mid-upgrade, and a
+    check that cannot see the whole system must not block a deploy.
+    """
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+    except ImportError:  # pragma: no cover — stdlib since 3.8
+        return []
+
+    try:
+        raw = version("stapel-agent")
+    except PackageNotFoundError:
+        return []  # not this process's concern — it runs elsewhere
+
+    try:
+        found = tuple(int(part) for part in raw.split(".")[:3])
+    except ValueError:
+        return []  # a dev/local version string — not ours to adjudicate
+
+    if found >= MIN_AGENT_VERSION:
+        return []
+
+    wanted = ".".join(str(n) for n in MIN_AGENT_VERSION)
+    return [
+        checks.Warning(
+            f"stapel-agent {raw} is installed, but stapel-recordings sends "
+            f"'user_id'/'workspace_id' on its llm.* payloads and those "
+            f"fields only exist from stapel-agent {wanted}. The llm.* "
+            f"schemas set additionalProperties=false, so EVERY delegated "
+            f"call (transcribe, summarize, embed, rerank, complete) will "
+            f"fail schema validation, not merely lose attribution.",
+            hint=(
+                f"Upgrade to stapel-agent>={wanted}. The two fields are "
+                "optional there, so nothing else about the upgrade is "
+                "breaking."
+            ),
+            id="stapel_recordings.W009",
+        )
+    ]

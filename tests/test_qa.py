@@ -78,7 +78,7 @@ def hybrid_on_sqlite(monkeypatch):
 
     monkeypatch.setattr(search_mod, "_require_vector_search", lambda: None)
     monkeypatch.setattr(
-        search_mod, "_vector_arm", lambda query, ws, rec, limit, cfg: []
+        search_mod, "_vector_arm", lambda query, ws, rec, limit, cfg, **kw: []
     )
 
 
@@ -401,3 +401,49 @@ def test_build_prompt_sanitizes_the_question_too(db):
 
     assert "ignore all previous instructions" not in prompt.lower()
     assert "roadmap" in prompt
+
+
+# ─── Attribution (stapel-agent 0.12.0 metering) ────────────────────────
+
+
+def test_the_asker_and_the_tenant_reach_the_model_call(
+    transcripts, hybrid_on_sqlite, stub_complete
+):
+    """One question is three billable calls, and unlike a pipeline stage it
+    has an obvious subject: a live human is waiting on it."""
+    answer_question("roadmap", transcripts.workspace_id, user_id=42)
+    payload = stub_complete.calls[0]
+    assert payload["user_id"] == "42"
+    assert payload["workspace_id"] == str(transcripts.workspace_id)
+
+
+def test_the_tenant_travels_even_without_a_named_asker(
+    transcripts, hybrid_on_sqlite, stub_complete
+):
+    """``workspace_id`` is required by this signature, so a row is never
+    fully unattributed — partial attribution beats none."""
+    answer_question("roadmap", transcripts.workspace_id)
+    payload = stub_complete.calls[0]
+    assert payload["workspace_id"] == str(transcripts.workspace_id)
+    assert "user_id" not in payload
+
+
+def test_the_asker_reaches_the_retrieval_calls_too(
+    transcripts, monkeypatch, stub_complete
+):
+    """The query embedding and the rerank pass are billable as well; a
+    question that attributes only its answer under-counts itself."""
+    from stapel_recordings.vector import search as search_mod
+
+    seen = {}
+    monkeypatch.setattr(search_mod, "_require_vector_search", lambda: None)
+    monkeypatch.setattr(
+        search_mod,
+        "_vector_arm",
+        lambda query, ws, rec, limit, cfg, **kw: seen.update(kw) or [],
+    )
+    answer_question("roadmap", transcripts.workspace_id, user_id=42)
+    assert seen["identity"] == {
+        "user_id": "42",
+        "workspace_id": str(transcripts.workspace_id),
+    }

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.14.2"
+version = "0.15.0"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -53,7 +53,14 @@ vector = ["pgvector>=0.3"]
 # just a bus name: the prompt is built from untrusted text and must go
 # through ``stapel_agent.safety.markers.sanitize_for_rag``. A separate
 # extra so deployments that don't answer questions don't pull the agent in.
-qa = ["stapel-recordings[vector]", "stapel-agent>=0.8"]
+#
+# Floor raised 0.8 -> 0.12.0: every delegated payload now carries
+# user_id/workspace_id, and the llm.* schemas are additionalProperties:false,
+# so an older agent REJECTS the call rather than ignoring the fields. This is
+# the only place the floor can be enforced by a resolver — the bus names it
+# otherwise reaches are versionless. Hosts on the base package get
+# checks.W009 at boot instead, when the agent is in the same process.
+qa = ["stapel-recordings[vector]", "stapel-agent>=0.12.0"]
 all = ["stapel-recordings[s3,vector,qa]"]
 
 [tool.setuptools]

@@ -33,6 +33,22 @@ the pipeline so hosts can swap in a real diarizer without touching the list.
 ``stapel_recordings.vector`` app is installed AND ``VECTOR["ENABLED"]`` is
 on — then it delegates to ``llm.embed`` (stapel-agent) and persists segment
 / summary embeddings for the hybrid search service (``vector/search.py``).
+
+WHO THE WORK IS FOR TRAVELS WITH IT
+-----------------------------------
+Every delegated payload carries ``user_id`` / ``workspace_id`` from the
+recording being processed. Not as telemetry decoration: the agent writes one
+ledger row per provider call, and those rows were the only place the money
+was visible while being unattributable — a pipeline stage is nobody's
+request, so the id had to come from the row it is working on. ``Recording``
+already knows both, which is why this needs no new plumbing from the host
+and no per-call-site argument.
+
+Requires **stapel-agent >= 0.12.0**, the release that opened those two
+optional fields on the ``llm.*`` schemas. Those schemas are
+``additionalProperties: false``, so an older agent REJECTS the payload
+outright rather than ignoring the extra keys — ``checks.W009`` says so at
+boot when it can see the agent's version.
 """
 from __future__ import annotations
 
@@ -141,6 +157,45 @@ class _CallableStage(Stage):
 def _key(recording, suffix: str) -> str:
     prefix = recordings_settings.STORAGE_PREFIX.strip("/")
     return f"{prefix}/{recording.workspace_id}/{recording.id}/{suffix}"
+
+
+def identity_fields(user_id=None, workspace_id=None) -> dict:
+    """The ``{user_id?, workspace_id?}`` block the ``llm.*`` schemas accept.
+
+    Keys are OMITTED rather than sent as null when absent: the schemas type
+    both as strings, and they are ``additionalProperties: false``, so a null
+    would be rejected where a missing key is fine. Ids are stringified
+    because hosts number their subjects differently (int pk here, UUID
+    workspace) and the ledger columns are text.
+
+    One constructor so the shape cannot drift between the pipeline, the
+    vector layer and whatever a host adds next.
+    """
+    fields = {}
+    if user_id is not None:
+        fields["user_id"] = str(user_id)
+    if workspace_id is not None:
+        fields["workspace_id"] = str(workspace_id)
+    return fields
+
+
+def identity_payload(recording) -> dict:
+    """Who a delegated AI call is for, read off the recording.
+
+    The agent's ledger has one row per provider call and, until it could be
+    told, no way to attribute any of them: a pipeline stage runs on a queue
+    long after the request that created the recording, so there is no
+    "current user" to read. The recording itself is the only thing that
+    knows, and it knows both.
+
+    Public, not private: a host that adds its own stage delegating to
+    ``llm.*`` should attribute its calls the same way, and a second
+    hand-rolled version of this would be the drift.
+    """
+    return identity_fields(
+        getattr(recording, "owner_id", None),
+        getattr(recording, "workspace_id", None),
+    )
 
 
 class ConvertStage(Stage):
@@ -264,6 +319,7 @@ class TranscribeStage(Stage):
             "audio_url": audio_url,
             "diarization": bool(recording.diarization_enabled),
             "timeout_seconds": int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
+            **identity_payload(recording),
         }
         if recording.language:
             payload["language"] = recording.language
@@ -425,6 +481,7 @@ def _summarize_payload(recording, transcript) -> dict:
     payload = {
         "text": transcript_schema.render_markdown(transcript),
         "model": recordings_settings.SUMMARIZE_MODEL,
+        **identity_payload(recording),
     }
     language = recording.language or getattr(transcript, "language", "") or ""
     if language:

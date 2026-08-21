@@ -1,8 +1,8 @@
-# stapel-recordings 0.14.2
+# stapel-recordings 0.15.0
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 27 · extension points 7 · operations 9 · error codes 54.
+Contract: axes 1 · surface 29 · extension points 7 · operations 9 · error codes 55.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -55,6 +55,10 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - get_storage — stapel_recordings.storage.get_storage
   instead of: boto3.client, django.core.files.storage.default_storage
   THE object-store handle for anything that touches recording bytes — the configured RecordingStorage (Django default_storage, the bundled S3/MinIO backend, or the host's own), memoized per resolved class. An export script, a custom stage or an admin action goes through this rather than building its own boto3 client or reaching for default_storage: the STORAGE seam is what makes the bucket, the credentials and the presign policy one decision instead of one per call site.
+- identity_fields — stapel_recordings.stages.identity_fields
+  The same attribution block built from raw ids, for callers that have them without a Recording — a live question, a search, a host view that knows its request.user. Absent ids are omitted rather than sent as null, which matters because the llm.* schemas type both as strings and reject unknown or ill-typed properties outright.
+- identity_payload — stapel_recordings.stages.identity_payload
+  The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording being processed. Reach for it in every custom stage that calls the agent: a stage runs on a queue long after the request that created the recording, so there is no current user to read, and the agent writes one billable ledger row per provider call. Omit it and that row is unattributable — the spend is recorded and belongs to nobody. Hand-rolling the dict instead is how the two spellings drift and half the ledger goes dark.
 - register_stage — stapel_recordings.stages.register_stage
   instead of: stapel_recordings.stages.BUILTIN_STAGES
   Add, replace or (with None) remove a pipeline stage at runtime — a Stage subclass, an instance, or a plain callable(recording, ctx) -> ctx, adapted automatically. The fork-free way for a plugin, an AppConfig.ready() or a test to contribute a stage when a dotted path in the STAGES setting is not an option; mutating BUILTIN_STAGES reaches the same map from the wrong side and loses to both the setting overlay and this registry.
@@ -121,7 +125,7 @@ Paths are relative to `/recordings/api/v1/`.
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (54) — the StapelError envelope
+## Error codes (55) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -175,5 +179,6 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.429.share_unlock_throttled [429] wait_and_retry
 - error.429.too_many_requests [429] wait_and_retry
 - error.500.internal [500] contact_support
+- error.503.mandate_unavailable [503] retry
 - error.503.recording_media_unavailable [503] retry
 - error.503.recording_upload_unverifiable [503] retry

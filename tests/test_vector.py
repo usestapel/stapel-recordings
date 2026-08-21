@@ -514,3 +514,24 @@ class TestVectorAppRequirements:
         )
         monkeypatch.setattr(apps, "is_installed", lambda name: True)
         assert checks.check_vector_app_requirements(None) == []
+
+
+def test_embed_batches_are_attributed_to_the_recording(
+    make_recording, stub_embed, monkeypatch
+):
+    """Embedding is billable and runs on a queue, so the recording is the
+    only thing that can say whose spend it is."""
+    from stapel_recordings.models import Segment
+    from stapel_recordings.vector.embedding import embed_recording
+
+    rec = make_recording()
+    Segment.objects.create(
+        recording=rec, sequence_num=0, start_time=0.0, end_time=1.0, text="hello"
+    )
+    with override_settings(STAPEL_RECORDINGS=_VECTOR_TEST_SETTINGS):
+        embed_recording(rec, store=FakeVectorStore())
+
+    assert stub_embed.calls, "no llm.embed call was made"
+    for payload in stub_embed.calls:
+        assert payload["user_id"] == str(rec.owner_id)
+        assert payload["workspace_id"] == str(rec.workspace_id)

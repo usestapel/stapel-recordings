@@ -251,6 +251,16 @@
       "kind": "gate_function",
       "intent": "Move a recording to the DLQ once the task it was awaiting has failed for good. DLQ, not retry: the Task primitive has already exhausted its own max_attempts.",
       "instead_of": []
+    },
+    "identity_payload": {
+      "kind": "factory",
+      "intent": "The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording being processed. Reach for it in every custom stage that calls the agent: a stage runs on a queue long after the request that created the recording, so there is no current user to read, and the agent writes one billable ledger row per provider call. Omit it and that row is unattributable — the spend is recorded and belongs to nobody. Hand-rolling the dict instead is how the two spellings drift and half the ledger goes dark.",
+      "instead_of": []
+    },
+    "identity_fields": {
+      "kind": "factory",
+      "intent": "The same attribution block built from raw ids, for callers that have them without a Recording — a live question, a search, a host view that knows its request.user. Absent ids are omitted rather than sent as null, which matters because the llm.* schemas type both as strings and reject unknown or ill-typed properties outright.",
+      "instead_of": []
     }
   }
 }

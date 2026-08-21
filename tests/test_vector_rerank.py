@@ -125,7 +125,9 @@ def hybrid_on_sqlite(searchable_recording, monkeypatch):
     ]
     monkeypatch.setattr(search_mod, "_require_vector_search", lambda: None)
     monkeypatch.setattr(
-        search_mod, "_vector_arm", lambda query, ws, rec, limit, cfg: canned[:limit]
+        search_mod,
+        "_vector_arm",
+        lambda query, ws, rec, limit, cfg, **kw: canned[:limit],
     )
     return canned
 

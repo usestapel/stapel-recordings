@@ -77,7 +77,9 @@ def chunk_text(text: str | None, chunk_chars: int, overlap: int = 0) -> list[str
 # ─── llm.embed boundary ────────────────────────────────────────────────
 
 
-def embed_texts(texts: list[str], cfg: dict) -> tuple[str, list]:
+def embed_texts(
+    texts: list[str], cfg: dict, *, identity: dict | None = None
+) -> tuple[str, list]:
     """Embed *texts* via ``llm.embed`` in ``BATCH_SIZE`` batches.
 
     Returns ``(model, vectors)`` with one vector per input text; ``model``
@@ -85,7 +87,15 @@ def embed_texts(texts: list[str], cfg: dict) -> tuple[str, list]:
     ``VECTOR["MODEL"]``). Transient failures (comm errors, non-ok status,
     a short vector list) raise ``StageRetryable``; a dimensionality that
     contradicts ``VECTOR["DIM"]`` is a configuration error and raises
-    ``StageFatal`` (a retry cannot fix it)."""
+    ``StageFatal`` (a retry cannot fix it).
+
+    ``identity`` is ``{user_id?, workspace_id?}`` (see
+    ``stages.identity_payload``), forwarded so the agent's ledger row for
+    each batch is attributable. Optional and defaulted because embedding
+    also runs on paths with no obvious subject — a reindex command, an
+    admin search — and an unattributed row is better than a fabricated
+    owner.
+    """
     from stapel_core.comm import call
     from stapel_core.comm.exceptions import CommError
 
@@ -97,6 +107,7 @@ def embed_texts(texts: list[str], cfg: dict) -> tuple[str, list]:
         payload: dict = {
             "texts": list(batch),
             "timeout_seconds": int(cfg["TIMEOUT_SECONDS"]),
+            **(identity or {}),
         }
         if cfg.get("MODEL"):
             payload["model"] = cfg["MODEL"]
@@ -227,10 +238,14 @@ def embed_recording(recording, store=None, *, force: bool = False) -> dict:
     The ``recordings_reembed`` management command exposes it as
     ``--force``; the pipeline stage never sets it."""
     from ..conf import vector_config
+    from ..stages import identity_payload
 
     cfg = vector_config()
     store = store or get_store()
     cfg_model = str(cfg.get("MODEL") or "")
+    # The recording knows whose it is; the embed batches it fans out to are
+    # billable calls, and this is the only place that can say for whom.
+    identity = identity_payload(recording)
 
     # ── Segments ──
     segments = list(recording.segments.exclude(text="").order_by("sequence_num"))
@@ -244,7 +259,9 @@ def embed_recording(recording, store=None, *, force: bool = False) -> dict:
 
     segments_embedded = 0
     if pending:
-        model, vectors = embed_texts([seg.text for seg, _ in pending], cfg)
+        model, vectors = embed_texts(
+            [seg.text for seg, _ in pending], cfg, identity=identity
+        )
         for (seg, h), vec in zip(pending, vectors):
             store.upsert_segment(seg, model=model, content_hash=h, vector=vec)
         segments_embedded = len(pending)
@@ -266,7 +283,9 @@ def embed_recording(recording, store=None, *, force: bool = False) -> dict:
             )
         ]
         if pending_chunks:
-            model, vectors = embed_texts([c for _, c, _ in pending_chunks], cfg)
+            model, vectors = embed_texts(
+                [c for _, c, _ in pending_chunks], cfg, identity=identity
+            )
             for (idx, _, h), vec in zip(pending_chunks, vectors):
                 store.upsert_summary_chunk(
                     recording, chunk_index=idx, model=model, text_hash=h, vector=vec

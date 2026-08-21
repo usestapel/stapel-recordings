@@ -150,6 +150,7 @@ def search_recordings(
     recording_ids=None,
     mode: str = "hybrid",
     limit: int = 20,
+    user_id=None,
 ) -> list[SearchHit]:
     """Search segments; see the module docstring for mode semantics.
 
@@ -160,7 +161,14 @@ def search_recordings(
     With ``VECTOR["RERANK"]["ENABLED"]`` the ranked candidates are
     additionally passed through ``llm.rerank`` before truncation (any
     mode; see the module docstring for ordering, failure and privacy
-    semantics — segment texts go to the rerank provider)."""
+    semantics — segment texts go to the rerank provider).
+
+    ``user_id`` attributes the billable calls a search makes — the query
+    embedding on the vector arm, and the rerank pass when enabled. Neither
+    is free, and a search is the one AI call in this package that a live
+    human triggers directly, so it is also the one with an obvious subject
+    to charge. Recorded only; nothing here gates on it. It pairs with
+    ``workspace_id``, which the signature already takes."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     query = (query or "").strip()
@@ -172,19 +180,28 @@ def search_recordings(
     cfg = vector_config()
     limit = int(limit)
 
+    from ..stages import identity_fields
+
+    identity = identity_fields(user_id, workspace_id)
+
     if mode == "text":
         hits = _text_arm(query, workspace_id, recording_ids, _candidate_limit(limit, cfg), cfg)
-        return _apply_rerank(hits, query, cfg)[:limit]
+        return _apply_rerank(hits, query, cfg, identity=identity)[:limit]
 
     _require_vector_search()
     if mode == "vector":
-        hits = _vector_arm(query, workspace_id, recording_ids, _candidate_limit(limit, cfg), cfg)
-        return _apply_rerank(hits, query, cfg)[:limit]
+        hits = _vector_arm(
+            query, workspace_id, recording_ids, _candidate_limit(limit, cfg), cfg,
+            identity=identity,
+        )
+        return _apply_rerank(hits, query, cfg, identity=identity)[:limit]
 
     # hybrid
     arm_limit = max(_candidate_limit(limit, cfg), int(cfg["ARM_LIMIT"]))
     text_hits = _text_arm(query, workspace_id, recording_ids, arm_limit, cfg)
-    vector_hits = _vector_arm(query, workspace_id, recording_ids, arm_limit, cfg)
+    vector_hits = _vector_arm(
+        query, workspace_id, recording_ids, arm_limit, cfg, identity=identity
+    )
     by_id = {}
     for hit in vector_hits:
         by_id[hit.segment_id] = hit
@@ -207,7 +224,7 @@ def search_recordings(
         )
         for seg_id, score in fused
     ]
-    return _apply_rerank(hits, query, cfg)[:limit]
+    return _apply_rerank(hits, query, cfg, identity=identity)[:limit]
 
 
 # ─── Rerank stage (one path, post-fusion / post-text-ranking) ──────────
@@ -227,7 +244,9 @@ def _candidate_limit(limit: int, cfg: dict) -> int:
     return limit
 
 
-def _apply_rerank(hits: list[SearchHit], query: str, cfg: dict) -> list[SearchHit]:
+def _apply_rerank(
+    hits: list[SearchHit], query: str, cfg: dict, *, identity: dict | None = None
+) -> list[SearchHit]:
     """Re-order the top ``RERANK["TOP_K"]`` of *hits* via ``llm.rerank``.
 
     No-op when disabled or on an empty list. Documents are the hits' full
@@ -254,6 +273,7 @@ def _apply_rerank(hits: list[SearchHit], query: str, cfg: dict) -> list[SearchHi
         # segment deleted between ranking and rerank.
         "documents": [texts.get(h.segment_id) or h.snippet for h in head],
         "timeout_seconds": int(rerank_cfg["TIMEOUT_SECONDS"]),
+        **(identity or {}),
     }
     top_n = int(rerank_cfg.get("TOP_N") or 0)
     if top_n > 0:
@@ -406,12 +426,14 @@ def _text_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHit]
     return hits[:limit]
 
 
-def _vector_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHit]:
+def _vector_arm(
+    query, workspace_id, recording_ids, limit, cfg, *, identity=None
+) -> list[SearchHit]:
     from ..stages import StageError
     from .embedding import embed_texts
 
     try:
-        query_model, vectors = embed_texts([query], cfg)
+        query_model, vectors = embed_texts([query], cfg, identity=identity)
     except StageError as exc:
         raise VectorSearchUnavailable(f"query embedding failed: {exc}") from exc
     query_vector = vectors[0]

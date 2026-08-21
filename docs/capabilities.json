@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.14.2",
+  "version": "0.15.0",
   "provides": "Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.",
   "axes": [
     {
@@ -216,6 +216,18 @@
       "kind": "factory",
       "path": "stapel_recordings.stages.get_stage",
       "intent": "Resolve one stage name to a ready-to-run Stage instance — the lookup a custom driver, or a stage that delegates to another stage, needs. Lazy on purpose: only the requested handler is imported, so a broken dotted path elsewhere in the STAGES overlay breaks only the pipelines that include that stage instead of every recording at once."
+    },
+    {
+      "name": "identity_fields",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.identity_fields",
+      "intent": "The same attribution block built from raw ids, for callers that have them without a Recording — a live question, a search, a host view that knows its request.user. Absent ids are omitted rather than sent as null, which matters because the llm.* schemas type both as strings and reject unknown or ill-typed properties outright."
+    },
+    {
+      "name": "identity_payload",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.identity_payload",
+      "intent": "The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording being processed. Reach for it in every custom stage that calls the agent: a stage runs on a queue long after the request that created the recording, so there is no current user to read, and the agent writes one billable ledger row per provider call. Omit it and that row is unattributable — the spend is recorded and belongs to nobody. Hand-rolling the dict instead is how the two spellings drift and half the ledger goes dark."
     },
     {
       "name": "register_stage",

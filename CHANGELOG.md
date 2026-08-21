@@ -6,6 +6,67 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-21
+
+### Changed — every delegated AI call says who it is for (**requires stapel-agent >= 0.12.0**)
+
+Minor, because of that floor. Read the compatibility note before upgrading.
+
+This package makes no AI call of its own; it delegates all of them to
+stapel-agent, which writes one billable ledger row per provider call. Those
+rows had no subject, and the reason only becomes visible with both sides in
+view: a pipeline stage runs on a queue long after the request that created the
+recording, so there is no "current user" to read — and the `llm.*` comm
+schemas would have rejected an id anyway, being
+`additionalProperties: false`. The result was a product whose entire AI spend
+was recorded and belonged to nobody.
+
+stapel-agent 0.12.0 opened optional `user_id` / `workspace_id` on those
+schemas. This release fills them, from the only thing that knows: the
+`Recording`, which already carries `owner` and `workspace_id`. So there is no
+new plumbing for a host to do and no per-call-site argument to remember — the
+transcribe and summarize payloads, and the vector layer's embed batches, are
+attributed automatically.
+
+Two new public helpers, `stages.identity_payload(recording)` and
+`stages.identity_fields(user_id, workspace_id)`, build the block. A host that
+adds its own stage delegating to `llm.*` should use them rather than
+hand-rolling the dict — a second spelling is how half a ledger goes dark.
+Absent ids are omitted rather than sent as null, because the schemas type both
+as strings and reject anything else.
+
+`vector.qa.answer_question()` takes a new optional `user_id`, and
+`vector.search.search_recordings()` likewise. A question is three billable
+calls — the query embedding, the optional rerank, and the answer — and unlike
+a pipeline stage it has an obvious subject: a live human is waiting on it. All
+of them are now attributed. Both parameters are optional and recorded only;
+nothing here gates, entitles or debits on them.
+
+### Compatibility
+
+**Upgrade stapel-agent to >= 0.12.0 first.** The `llm.*` schemas reject
+unknown properties, so against an older agent this is not a degraded feature —
+it is every transcribe, summarize, embed, rerank and complete call failing
+schema validation. The two fields are optional in the agent, so nothing else
+about that upgrade is breaking.
+
+A new system check, `stapel_recordings.W009`, says so at startup when it can
+see the answer — i.e. in a monolith, where stapel-agent is importable in the
+same process. In a split deployment nothing here can read the other side's
+version, so the check stays silent rather than guessing, and the floor lives
+in this note.
+
+Internal signature changes, listed for anyone who monkeypatches them:
+`vector.embedding.embed_texts()` takes a keyword-only `identity`, and the
+private `search._vector_arm` / `search._apply_rerank` do too. Keyword-only
+deliberately — a positional tail is what a stubbed seam mismatches silently.
+
+### Fixed
+
+`docs/errors.json` regenerated: stapel-core gained
+`error.503.mandate_unavailable`, and the committed artifact had drifted behind
+it (the contract gate was already red on `main` before this change).
+
 ## [0.14.2] — 2026-08-15
 
 ### Changed — `stapel-core` floor raised to 0.26.0
