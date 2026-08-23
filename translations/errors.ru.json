@@ -1,6 +1,8 @@
 {
   "error.400.recording_invalid_state": "Запись находится в состоянии, в котором это действие невозможно",
   "error.401.share_passcode_required": "Для этой ссылки требуется код доступа",
+  "error.402.recording_payment_required": "Для этого действия нужен доступный баланс",
+  "error.403.recording_action_denied": "Вам не разрешено выполнять это действие с этой записью",
   "error.403.recording_workspace_forbidden": "Вы не являетесь участником этого рабочего пространства",
   "error.403.share_permission_denied": "Эта ссылка не даёт такого права",
   "error.404.recording_not_found": "Запись не найдена",

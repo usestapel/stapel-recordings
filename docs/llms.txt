@@ -1,8 +1,8 @@
-# stapel-recordings 0.17.1
+# stapel-recordings 0.18.0
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 39 · extension points 7 · operations 10 · error codes 57.
+Contract: axes 1 · surface 39 · extension points 7 · operations 10 · error codes 59.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -28,7 +28,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever.
 - reprocess_recording — stapel_recordings.pipeline.reprocess_recording
   instead of: stapel_recordings.events.emit_stage
-  completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the ASR tier or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.
+  completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the transcription provider or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.
 - resume_resummarize — stapel_recordings.stages.resume_resummarize
   instead of: stapel_recordings.pipeline.resume_stage
   Apply an arriving llm.summarize task result to a standalone re-summary, answering True only when the task belonged to one. Wire it BEFORE pipeline.resume_stage in a task.completed subscriber: a re-summary runs on a finished recording, whose status the pipeline driver treats as terminal, so the driver would silently drop the result. Redelivery-safe — a second delivery finds the job closed and answers False.
@@ -152,7 +152,7 @@ Paths are relative to `/recordings/api/v1/`.
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (57) — the StapelError envelope
+## Error codes (59) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -177,8 +177,10 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.401.share_passcode_required [401] reauthenticate
 - error.401.unauthorized [401] reauthenticate
 - error.402.payment_required [402] retry
+- error.402.recording_payment_required [402] retry
 - error.403.forbidden [403] retry
 - error.403.network_blocked [403] contact_support
+- error.403.recording_action_denied [403] retry
 - error.403.recording_workspace_forbidden [403] retry
 - error.403.share_permission_denied [403] retry
 - error.403.verification_enrollment_required [403] verify

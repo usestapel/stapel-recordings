@@ -8,6 +8,14 @@
       "hash": "6ce9ea3f1b954079",
       "origin": "llm"
     },
+    "error.402.recording_payment_required": {
+      "hash": "9ab74036bd940a2e",
+      "origin": "llm"
+    },
+    "error.403.recording_action_denied": {
+      "hash": "b725825bebaefed5",
+      "origin": "llm"
+    },
     "error.403.recording_workspace_forbidden": {
       "hash": "45127bdec965abde",
       "origin": "llm"
@@ -68,6 +76,14 @@
     },
     "error.401.share_passcode_required": {
       "hash": "6ce9ea3f1b954079",
+      "origin": "llm"
+    },
+    "error.402.recording_payment_required": {
+      "hash": "9ab74036bd940a2e",
+      "origin": "llm"
+    },
+    "error.403.recording_action_denied": {
+      "hash": "b725825bebaefed5",
       "origin": "llm"
     },
     "error.403.recording_workspace_forbidden": {

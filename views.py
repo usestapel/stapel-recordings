@@ -63,6 +63,7 @@ from .dto import (
     upload_session_to_dto,
 )
 from .errors import (
+    ERR_403_ACTION_DENIED,
     ERR_403_WORKSPACE_FORBIDDEN,
     ERR_404_NOT_FOUND,
     ERR_409_INVALID_STATE,
@@ -73,10 +74,11 @@ from .errors import (
     ERR_503_MEDIA_UNAVAILABLE,
     ERR_503_SUMMARIZE_UNAVAILABLE,
     ERR_503_UPLOAD_UNVERIFIABLE,
+    POLICY_DENIAL_CODES,
 )
 from .media_types import UnsupportedUploadContent
 from .models import Recording
-from .policy import get_policy
+from .policy import as_decision, get_policy
 from .resources import resolve_resource_key
 from .serializers import (
     CreateRecordingRequestSerializer,
@@ -157,6 +159,28 @@ def _media_response(view, request, recording, *, ttl_seconds=None):
     if _wants_redirect(request):
         return HttpResponseRedirect(grant.url)
     return StapelResponse(view.get_response_serializer_class()(media_grant_to_dto(grant)))
+
+
+def _policy_refusal(decision):
+    """Render an object-policy denial into the StapelError envelope.
+
+    The policy seam answers with a reason (``PolicyDecision``), and this is
+    where the reason becomes an HTTP answer: the host's own status and error
+    key travel through untouched, so a re-summary refused for an empty
+    balance reaches the client as ``402`` with the key the host registered
+    and the UI can render a top-up instead of "not found".
+
+    A decision that names neither — and a policy that still answers with a
+    bare ``bool``, which :func:`~stapel_recordings.policy.as_decision`
+    coerces — keeps the module's historical answer: ``404``, which reveals
+    nothing about a recording the caller may not touch. A decision that
+    names a status but no key gets that status' generic key
+    (:data:`~stapel_recordings.errors.POLICY_DENIAL_CODES`) rather than a
+    404 key stapled onto someone else's status.
+    """
+    status = decision.status or 404
+    code = decision.error_code or POLICY_DENIAL_CODES.get(status, ERR_403_ACTION_DENIED)
+    return StapelErrorResponse(status, code)
 
 
 def _unlock_token(request) -> str:
@@ -368,7 +392,12 @@ class ReprocessRecordingView(SerializerSeamMixin, APIView):
     resume-in-place retry). Allowed **only** from ``completed`` — from any other
     status the transition is a no-op and the endpoint answers ``409``
     (``error.409.recording_invalid_state``). Owner-scoped, like every other
-    per-recording verb; an unknown/foreign/deleted recording is ``404``."""
+    per-recording verb; an unknown/foreign/deleted recording is ``404``.
+
+    Authority is the object policy's ``can_reprocess``. A policy that
+    answers with a :class:`~stapel_recordings.policy.PolicyDecision` names
+    the status and error key of its own refusal (``402`` for an unpaid
+    balance, say); a bare ``bool`` keeps the ``404``."""
 
     # Re-runs every pipeline stage from zero — the one endpoint that can spend
     # the pipeline's cost twice. Owner-scoped, now also account-gated.
@@ -378,11 +407,14 @@ class ReprocessRecordingView(SerializerSeamMixin, APIView):
     @extend_schema(request=None, responses={200: RecordingSerializer})
     def post(self, request, recording_id):  # noqa: R007
         recording = _owned_qs(request).filter(pk=recording_id).first()
-        if recording is None or not get_policy().can_reprocess(request.user, recording):
-            # Reprocess spends the whole pipeline again and rewrites derived
-            # artifacts, so it asks the policy for that verb specifically —
-            # being able to READ a recording is not authority to re-run it.
+        if recording is None:
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        # Reprocess spends the whole pipeline again and rewrites derived
+        # artifacts, so it asks the policy for that verb specifically —
+        # being able to READ a recording is not authority to re-run it.
+        decision = as_decision(get_policy().can_reprocess(request.user, recording))
+        if not decision.allowed:
+            return _policy_refusal(decision)
         if not pipeline.reprocess_recording(str(recording.id)):
             # Recording exists and is owned (checked above), so the only reason
             # the transition is refused is a non-``completed`` status.
@@ -420,7 +452,14 @@ class ResummarizeRecordingView(SerializerSeamMixin, APIView):
     whatever the policy says about ``can_reprocess``, so a host that already
     narrowed reprocess does not have to discover a second verb, while a host
     that wants "users may re-summarize, only staff may reprocess" overrides
-    one method."""
+    one method.
+
+    A denial answers with the policy's OWN status and error key when it
+    returns a :class:`~stapel_recordings.policy.PolicyDecision`: a metered
+    host refuses an out-of-credit re-summary with ``402`` and a key its UI
+    can turn into a top-up prompt, instead of the ``404`` that says the
+    recording does not exist. A policy that answers with a bare ``bool``
+    keeps the ``404``."""
 
     permission_classes = [IsNotAnonymousUser]
     response_serializer_class = JobSerializer
@@ -428,8 +467,11 @@ class ResummarizeRecordingView(SerializerSeamMixin, APIView):
     @extend_schema(request=None, responses={202: JobSerializer})
     def post(self, request, recording_id):  # noqa: R007
         recording = _owned_qs(request).filter(pk=recording_id).first()
-        if recording is None or not get_policy().can_resummarize(request.user, recording):
+        if recording is None:
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        decision = as_decision(get_policy().can_resummarize(request.user, recording))
+        if not decision.allowed:
+            return _policy_refusal(decision)
         try:
             job, _started = stages.start_resummarize(recording, user=request.user)
         except stages.NoTranscriptToSummarize:

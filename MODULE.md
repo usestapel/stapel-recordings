@@ -371,7 +371,13 @@ under `schemas/emits/`, validated in tests.
   and `503` (`error.503.recording_summarize_unavailable`) when the deployment
   has summaries off or the bus refused the work; `202` + a `JobDTO` when
   accepted. Authority is the object policy's `can_resummarize`, which
-  delegates to `can_reprocess` unless a host splits them. Success emits
+  delegates to `can_reprocess` unless a host splits them — and since 0.18.0
+  a denial may state its reason: returning
+  `PolicyDecision.deny("error.402.myhost_out_of_credits", status=402)`
+  instead of `False` answers `402` with the host's own key, so the metered
+  host that debits on `recording.resummarized` can also refuse for an empty
+  balance without the UI being told the recording does not exist. A bare
+  `bool` is still accepted and still renders the fail-closed `404`. Success emits
   `recording.resummarized` **inside the storing transaction**, which is the
   hook a host debits/captures credits on — this module imports no billing.
   Hosts driving a broker must route `task.completed`/`task.failed` through

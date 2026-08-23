@@ -344,7 +344,8 @@ def reprocess_recording(recording_id: str) -> bool:
     Distinct from :func:`retry_recording` (``error -> queued``, which *resumes*
     at the first not-yet-completed stage keeping the completed-set): reprocess
     is for a recording that finished successfully but a host wants re-run
-    (e.g. after changing the pipeline, ASR tier, or a stage's config). It
+    (e.g. after changing the pipeline, the transcription provider, or a
+    stage's config). It
     **clears the pipeline progress cursor** (``completed`` / ``completed_index``
     / carried ``ctx``) so every stage runs again from the top, then re-emits
     ``recording.stage(0)``.

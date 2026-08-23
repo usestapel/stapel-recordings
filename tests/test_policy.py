@@ -82,3 +82,42 @@ def test_widened_read_does_not_widen_reprocess(use_fakes, api_client, make_recor
     assert detail.status_code == 200, detail.content
     assert reprocess.status_code == 404, reprocess.content
     assert Recording.objects.get(pk=recording.id).status == RecordingStatus.COMPLETED
+
+
+# ─── a refusal carries its reason (0.18.0) ─────────────────────────────
+
+
+def test_a_bool_coerces_to_the_old_semantics():
+    """``as_decision`` is the compatibility seam: the pre-0.18 bool means
+    what it always meant — True allows, False is this module's 404."""
+    from stapel_recordings.policy import PolicyDecision, as_decision
+
+    assert as_decision(True) == PolicyDecision(True, None, None)
+    assert as_decision(False) == PolicyDecision(False, None, None)
+    # A decision passes through untouched — including its reason.
+    denial = PolicyDecision.deny("error.402.myapp_out_of_credits", status=402)
+    assert as_decision(denial) is denial
+
+
+def test_a_decision_is_falsy_when_it_denies():
+    """Truthiness follows ``allowed``, so a host that returns a decision from
+    a verb whose call site still expects a bool is refused, not granted."""
+    from stapel_recordings.policy import PolicyDecision
+
+    assert PolicyDecision.allow()
+    assert not PolicyDecision.deny()
+    assert not PolicyDecision.deny("error.402.myapp_out_of_credits", status=402)
+
+
+def test_the_resummarize_delegation_carries_the_reason(make_recording, user):
+    """``can_resummarize`` inherits ``can_reprocess``'s answer — the reason
+    included, so a host that metered one verb metered both."""
+    from stapel_recordings.policy import OwnerOnlyPolicy, PolicyDecision
+
+    class Metered(OwnerOnlyPolicy):
+        def can_reprocess(self, user, recording):
+            return PolicyDecision.deny("error.402.myapp_out_of_credits", status=402)
+
+    decision = Metered().can_resummarize(user, make_recording(owner=user))
+    assert decision.status == 402
+    assert decision.error_code == "error.402.myapp_out_of_credits"

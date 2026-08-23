@@ -35,11 +35,6 @@ class SourceType(models.TextChoices):
     OTHER = "other", "Other"
 
 
-class ASRTier(models.TextChoices):
-    FAST = "fast", "Fast"
-    ACCURATE = "accurate", "Accurate"
-
-
 class LanguageMode(models.TextChoices):
     AUTO = "auto", "Auto"
     MANUAL = "manual", "Manual"
@@ -95,9 +90,6 @@ class Recording(models.Model):
     title = models.CharField(max_length=500)
     source_type = models.CharField(
         max_length=32, choices=SourceType.choices, default=SourceType.UPLOAD
-    )
-    asr_tier = models.CharField(
-        max_length=16, choices=ASRTier.choices, default=ASRTier.FAST
     )
     language_mode = models.CharField(
         max_length=16, choices=LanguageMode.choices, default=LanguageMode.AUTO

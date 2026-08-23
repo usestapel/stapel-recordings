@@ -66,7 +66,7 @@ the string `"false"` means false.
 
 | Key | Source | Purpose | Required | Default |
 |-----|--------|---------|----------|---------|
-| RECORDING_POLICY | env | dotted path to the class answering may-this-user-read/edit/delete/upload/reprocess. | no | stapel_recordings.policy.OwnerOnlyPolicy |
+| RECORDING_POLICY | env | dotted path to the class answering may-this-user-read/edit/delete/upload/reprocess. `can_reprocess`/`can_resummarize` may answer with a `PolicyDecision` carrying the refusal's status + error key (402 for an empty balance); a bare bool still means the fail-closed 404. | no | stapel_recordings.policy.OwnerOnlyPolicy |
 | REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE | env | verify membership of the workspace `POST /recordings` writes into. False only where no workspaces module can answer. | no | true |
 | WORKSPACE_LISTING_MEMBERS_SEE_ALL | env | `?workspace_id=` returns every member's recordings instead of what RECORDING_POLICY makes visible. | no | false |
 | UPLOAD_CONTENT_POLICY | env | finalize-time gate on the stored object's leading bytes: reject_known_bad / require_known_media / off. `off` also waives the refusal when the backend cannot serve a ranged read. | no | reject_known_bad |

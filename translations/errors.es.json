@@ -1,6 +1,8 @@
 {
   "error.400.recording_invalid_state": "La grabación no está en un estado válido para esta acción",
   "error.401.share_passcode_required": "Este enlace de acceso requiere un código",
+  "error.402.recording_payment_required": "Esta acción requiere saldo disponible",
+  "error.403.recording_action_denied": "No tienes permiso para hacer eso con esta grabación",
   "error.403.recording_workspace_forbidden": "No eres miembro de este espacio de trabajo",
   "error.403.share_permission_denied": "Este enlace de acceso no concede ese permiso",
   "error.404.recording_not_found": "Grabación no encontrada",

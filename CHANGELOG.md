@@ -6,6 +6,96 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-08-23
+
+### Removed — `Recording.asr_tier`, a column nothing ever read
+
+**Breaking (minor): a column is dropped and a model attribute disappears.**
+`asr_tier` (`fast` / `accurate`) was written on every recording since
+`0001_initial` and consulted by nothing: the transcribe stage builds its
+payload from the provider settings, never from this column. It was never
+serialized either — no DTO, no serializer, no schema entry carried it — so
+**no response body changes**; what breaks is Python that touches
+`recording.asr_tier`, filters on it, or passes it to `Recording(...)`, and
+any SQL against the `asr_tier` column.
+
+A write-only column is not a seam a host can use, and it is worse than
+absent: one host had already deleted its own surface for the setting and
+could not drop the column, because dropping another app's column is not its
+migration to write. So the deletion happens here, in one release —
+`models.ASRTier` and the field, `migrations/0005_drop_asr_tier` for the
+column. `Recording` is otherwise unchanged.
+
+- `0005_drop_asr_tier` is marked `# stapel: contract-phase`. The cutover
+  marker is the machine-checked one and it wants a data-carrying `RunPython`
+  before the destructive operation; there is no data to carry — the values
+  are being discarded, deliberately — so this is a contract-phase drop of a
+  column no code path reads. Rolling back re-adds the column with its old
+  default, not the old values.
+
+### Changed — a policy refusal states its reason (402 is now expressible)
+
+`RecordingPolicy.can_reprocess` / `can_resummarize` may now answer with a
+**`PolicyDecision`** instead of a bare `bool`:
+
+```python
+class MeteredPolicy(OwnerOnlyPolicy):
+    def can_resummarize(self, user, recording):
+        if not self.can_read(user, recording):
+            return PolicyDecision.deny()                       # 404, as before
+        if credits_of(user) < 1:
+            return PolicyDecision.deny("error.402.myapp_out_of_credits", status=402)
+        return PolicyDecision.allow()
+```
+
+**Why it had to change shape.** 0.17.0 shipped the re-summary as the endpoint
+a host *bills* against — the `recording.resummarized` event fires inside the
+storing transaction precisely so a host can debit there. But the authority
+seam in front of it answered `True`/`False`, and the view rendered every
+`False` as the module's fail-closed `404 error.404.recording_not_found`. A
+host that meters re-summaries therefore had exactly one way to refuse an
+out-of-credit user: tell them the recording does not exist. The bit was one
+bit short of the answer — the moment it decided the user may not proceed is
+the moment the reason mattered most, and that is where it was thrown away.
+(Same defect the frontend's `ActionAvailability` closes on the rendering
+side; there is no Python-side canon for it in stapel-core, so this is the
+module's own dataclass, deliberately the same shape: allowed, or refused
+*with* a code.)
+
+- The host's `error_code` reaches the client untouched in the StapelError
+  envelope, so a key the host registered through `register_service_errors`
+  renders its own sentence and the UI can branch on it (offer a top-up
+  instead of an "it's gone").
+- Both endpoints honour it: `POST .../{id}/resummarize` and
+  `POST .../{id}/reprocess`.
+- **`bool` stays accepted for one minor** and is coerced to the old
+  semantics (`True` allows, `False` → `404`), which is what the shipped
+  `OwnerOnlyPolicy` still returns — no host has to move. Returning a bool
+  from the two metered verbs is deprecated: a host that wants any answer
+  other than 404 must return a `PolicyDecision`.
+- `PolicyDecision.__bool__` follows `allowed`, so a host that returns a
+  decision from a verb whose call site still expects a bool
+  (read/edit/delete/upload) is refused, not accidentally granted.
+- Order of checks is unchanged: unknown/foreign/deleted recording is still
+  `404` before the policy is consulted, and the policy is still consulted
+  before the `409`/`503` state refusals.
+
+**Two new error keys** (`docs/errors.json`, ru + es catalogs), used as
+fallbacks when a decision names a status but no key — never as a rewrite of
+a key the host supplied:
+
+- `error.402.recording_payment_required` — "This action requires available
+  credit"
+- `error.403.recording_action_denied` — "You are not allowed to do that with
+  this recording"
+
+### Docs
+
+- `pipeline.reprocess_recording`'s docstring (and the matching capability
+  intent) no longer offers "changing the ASR tier" as a reason to reprocess:
+  with `asr_tier` gone that named nothing in this module. It now says the
+  transcription provider, which is what a host actually changes.
+
 ## [0.17.1] — 2026-08-23
 
 ### Fixed

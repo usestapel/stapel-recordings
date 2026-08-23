@@ -272,6 +272,10 @@ DEFAULTS = {
         # recording". Default: owner-only for every verb. A host that wants
         # workspace members to read (or edit) subclasses it and points this
         # here — the decision stops being spread across view bodies.
+        # The metered verbs (can_reprocess / can_resummarize) may answer with
+        # a ``PolicyDecision`` instead of a bool, which carries the status and
+        # error key of the refusal (402 + a host key for an empty balance)
+        # rather than collapsing every denial into this module's 404.
         "RECORDING_POLICY": "stapel_recordings.policy.OwnerOnlyPolicy",
 
         # ── Source-type registry (merge-over-builtins extension point) ─

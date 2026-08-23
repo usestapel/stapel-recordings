@@ -32,6 +32,16 @@ ERR_503_UPLOAD_UNVERIFIABLE = "error.503.recording_upload_unverifiable"
 # should wait for the pipeline; a caller told 503 should stop asking.
 ERR_409_NO_TRANSCRIPT = "error.409.recording_no_transcript"
 ERR_503_SUMMARIZE_UNAVAILABLE = "error.503.recording_summarize_unavailable"
+# Object-policy refusals that are NOT "no such recording" (0.18.0). A host
+# policy answers with a :class:`~stapel_recordings.policy.PolicyDecision`
+# carrying its OWN key — these two are the fallbacks for a decision that
+# named a status and left the key out, so the envelope never carries a key
+# that contradicts its status. 402 is the one that pays for itself: a
+# re-summary refused for an empty balance must be distinguishable from one
+# refused because the recording is not yours, or the UI cannot offer a
+# top-up.
+ERR_402_PAYMENT_REQUIRED = "error.402.recording_payment_required"
+ERR_403_ACTION_DENIED = "error.403.recording_action_denied"
 
 STAPEL_RECORDINGS_ERRORS = {
     ERR_404_NOT_FOUND: "Recording not found",
@@ -49,6 +59,19 @@ STAPEL_RECORDINGS_ERRORS = {
     ERR_503_UPLOAD_UNVERIFIABLE: "Upload could not be verified",
     ERR_409_NO_TRANSCRIPT: "This recording has no transcript to summarize yet",
     ERR_503_SUMMARIZE_UNAVAILABLE: "Summaries are not available",
+    ERR_402_PAYMENT_REQUIRED: "This action requires available credit",
+    ERR_403_ACTION_DENIED: "You are not allowed to do that with this recording",
+}
+
+#: Fallback key per status for an object-policy refusal that named a status
+#: but no error key. Anything not listed here answers
+#: :data:`ERR_403_ACTION_DENIED` — a refusal whose status this module cannot
+#: name is still a refusal, and it keeps the host's status rather than being
+#: rewritten into a 404 the host did not ask for.
+POLICY_DENIAL_CODES = {
+    402: ERR_402_PAYMENT_REQUIRED,
+    403: ERR_403_ACTION_DENIED,
+    404: ERR_404_NOT_FOUND,
 }
 
 register_service_errors(STAPEL_RECORDINGS_ERRORS)
@@ -70,4 +93,7 @@ __all__ = [
     "ERR_503_UPLOAD_UNVERIFIABLE",
     "ERR_409_NO_TRANSCRIPT",
     "ERR_503_SUMMARIZE_UNAVAILABLE",
+    "ERR_402_PAYMENT_REQUIRED",
+    "ERR_403_ACTION_DENIED",
+    "POLICY_DENIAL_CODES",
 ]

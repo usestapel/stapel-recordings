@@ -210,6 +210,14 @@
     "owner": "stapel_core"
   },
   {
+    "code": "error.402.recording_payment_required",
+    "status": 402,
+    "params": [],
+    "remediation": "retry",
+    "en": "This action requires available credit",
+    "owner": "stapel_recordings"
+  },
+  {
     "code": "error.403.forbidden",
     "status": 403,
     "params": [],
@@ -224,6 +232,14 @@
     "remediation": "contact_support",
     "en": "Requests from this network are not allowed",
     "owner": "stapel_core"
+  },
+  {
+    "code": "error.403.recording_action_denied",
+    "status": 403,
+    "params": [],
+    "remediation": "retry",
+    "en": "You are not allowed to do that with this recording",
+    "owner": "stapel_recordings"
   },
   {
     "code": "error.403.recording_workspace_forbidden",

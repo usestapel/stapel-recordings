@@ -124,6 +124,8 @@ def test_policy_verb_defaults_to_the_reprocess_answer(transcribed, user):
 def test_a_host_policy_denying_resummarize_gets_404(
     api_client, transcribed, stub_summarize, user
 ):
+    """The pre-0.18 shape: a verb answering with a bare ``bool`` still gets
+    this module's fail-closed 404 for every denial."""
     api_client.force_authenticate(user=user)
     calls = len(stub_summarize.calls)
     with override_settings(
@@ -153,6 +155,110 @@ class NoResummaryPolicy:
 
     def can_resummarize(self, user, recording):
         return False
+
+
+# ─── a refusal carries its reason (0.18.0) ─────────────────────────────
+#
+# The bool above renders 404 for every denial, which is a lie for the denial
+# a metered host actually has to make: "you are out of credits". A policy
+# that answers with a PolicyDecision names the status and the key itself.
+
+
+class OutOfCreditsPolicy(NoResummaryPolicy):
+    """A metered host: everyone reads, an empty balance is 402 + a host key."""
+
+    def can_resummarize(self, user, recording):
+        from stapel_recordings.policy import PolicyDecision
+
+        return PolicyDecision.deny("error.402.myapp_out_of_credits", status=402)
+
+
+class PaymentRequiredWithoutAKeyPolicy(NoResummaryPolicy):
+    """Names the status, leaves the key out — the module fills it in."""
+
+    def can_resummarize(self, user, recording):
+        from stapel_recordings.policy import PolicyDecision
+
+        return PolicyDecision.deny(status=402)
+
+
+class AllowedByDecisionPolicy(NoResummaryPolicy):
+    """The allow arm of the new shape — must behave exactly like True."""
+
+    def can_resummarize(self, user, recording):
+        from stapel_recordings.policy import PolicyDecision
+
+        return PolicyDecision.allow()
+
+
+def _with_policy(dotted):
+    return override_settings(
+        STAPEL_RECORDINGS={**_FAKE, "RECORDING_POLICY": dotted}
+    )
+
+
+def test_a_decision_denial_renders_its_own_status_and_code(
+    api_client, transcribed, stub_summarize, user
+):
+    api_client.force_authenticate(user=user)
+    calls = len(stub_summarize.calls)
+    with _with_policy(
+        "stapel_recordings.tests.test_resummarize.OutOfCreditsPolicy"
+    ):
+        response = api_client.post(_url(transcribed.id))
+
+    assert response.status_code == 402
+    # The host's OWN key, untouched: this is what the UI branches on to offer
+    # a top-up instead of rendering "this recording does not exist".
+    assert response.json()["localizable_error"] == "error.402.myapp_out_of_credits"
+    assert len(stub_summarize.calls) == calls  # refused before anything is billed
+    assert not Job.objects.filter(recording=transcribed).exists()
+
+
+def test_a_denial_that_names_only_a_status_gets_this_modules_key(
+    api_client, transcribed, stub_summarize, user
+):
+    api_client.force_authenticate(user=user)
+    with _with_policy(
+        "stapel_recordings.tests.test_resummarize.PaymentRequiredWithoutAKeyPolicy"
+    ):
+        response = api_client.post(_url(transcribed.id))
+
+    assert response.status_code == 402
+    assert response.json()["localizable_error"] == "error.402.recording_payment_required"
+
+
+def test_a_decision_denial_precedes_the_state_refusals(
+    api_client, make_recording, stub_summarize, user
+):
+    """Authority is still answered BEFORE state: a caller who may not ask
+    gets the policy's answer, not a 409 that describes the recording."""
+    r = make_recording(status=RecordingStatus.TRANSCRIBING)  # nothing to summarize
+    api_client.force_authenticate(user=user)
+    with _with_policy(
+        "stapel_recordings.tests.test_resummarize.OutOfCreditsPolicy"
+    ):
+        response = api_client.post(_url(r.id))
+
+    assert response.status_code == 402
+    assert stub_summarize.calls == []
+
+
+def test_an_allowed_decision_is_the_same_202_as_true(
+    api_client, transcribed, stub_summarize, user
+):
+    """The allow arm changes nothing: same 202, same job, same summary."""
+    stub_summarize.result = {"status": "ok", "summary": "Decided.", "usage": {}}
+    api_client.force_authenticate(user=user)
+    with _with_policy(
+        "stapel_recordings.tests.test_resummarize.AllowedByDecisionPolicy"
+    ):
+        response = api_client.post(_url(transcribed.id))
+
+    assert response.status_code == 202
+    assert response.data["type"] == JobType.SUMMARIZE
+    assert Job.objects.get(pk=response.data["id"]).recording_id == transcribed.id
+    assert Recording.objects.get(pk=transcribed.id).summary == "Decided."
 
 
 # ─── refusals ──────────────────────────────────────────────────────────

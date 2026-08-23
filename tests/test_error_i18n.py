@@ -88,6 +88,11 @@ _MACHINE_RU = {
         "У этой записи пока нет расшифровки для краткого пересказа",
     "error.503.recording_summarize_unavailable":
         "Краткий пересказ недоступен",
+    # Policy refusals that are not "no such recording" (0.18.0).
+    "error.402.recording_payment_required":
+        "Для этого действия нужен доступный баланс",
+    "error.403.recording_action_denied":
+        "Вам не разрешено выполнять это действие с этой записью",
     # Media delivery (STORE-01, 0.14.0).
     "error.409.recording_media_not_stored": "У этой записи нет медиафайла",
     "error.503.recording_media_unavailable": "Выдача медиа недоступна",
@@ -121,6 +126,11 @@ _MACHINE_ES = {
         "Esta grabación todavía no tiene transcripción que resumir",
     "error.503.recording_summarize_unavailable":
         "Los resúmenes no están disponibles",
+    # Policy refusals that are not "no such recording" (0.18.0).
+    "error.402.recording_payment_required":
+        "Esta acción requiere saldo disponible",
+    "error.403.recording_action_denied":
+        "No tienes permiso para hacer eso con esta grabación",
     # Media delivery (STORE-01, 0.14.0).
     "error.409.recording_media_not_stored":
         "Esta grabación no tiene archivo multimedia",
