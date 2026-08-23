@@ -31,6 +31,10 @@
     "hash": "4887caad331deaad",
     "text": "Esta grabación no tiene archivo multimedia"
   },
+  "error.409.recording_no_transcript": {
+    "hash": "02d5b727487e0e6f",
+    "text": "Esta grabación todavía no tiene transcripción que resumir"
+  },
   "error.413.recording_too_large": {
     "hash": "eca0b4b6e8a0895b",
     "text": "La subida supera el tamaño máximo permitido"
@@ -46,6 +50,10 @@
   "error.503.recording_media_unavailable": {
     "hash": "23da65a35dd970b0",
     "text": "La entrega de archivos multimedia no está disponible"
+  },
+  "error.503.recording_summarize_unavailable": {
+    "hash": "9e46f0a279f5da74",
+    "text": "Los resúmenes no están disponibles"
   },
   "error.503.recording_upload_unverifiable": {
     "hash": "9666c3e8fb36349e",

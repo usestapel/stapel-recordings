@@ -114,8 +114,12 @@ class Recording(models.Model):
     normalized_storage_key = models.CharField(max_length=512, null=True, blank=True)
     transcript_storage_key = models.CharField(max_length=512, null=True, blank=True)
     #: CLIENT-WRITABLE. Whatever the host lets its users attach to a
-    #: recording — a note, a colour, a language they picked. Nothing in this
-    #: module ever makes a decision from it.
+    #: recording — a note, a colour, a language they picked. No pipeline
+    #: decision is ever made from it. The one server-owned exception lives
+    #: here on purpose: ``derived``/``staleness``, the receipt naming the
+    #: transcript a summary was built from, because that answer is serialized
+    #: onto the wire. Both are in ``metadata.LIBRARY_RESERVED_KEYS``, so a
+    #: client can neither write them nor drop them.
     metadata = models.JSONField(default=dict, blank=True)
     #: SERVER-ONLY. The pipeline's own state: the start marker, the
     #: completed-stage cursor, the awaiting-task handle, the carried stage

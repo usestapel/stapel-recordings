@@ -20,8 +20,8 @@
 - A **storage seam** (`RecordingStorage`) — no hard dependency on any S3
   client in the module core.
 - A REST surface (create + upload session, detail, list — owner- /
-  workspace- / `resource_key`-scoped —, finalize, reprocess) with
-  serializer seams, and a GDPR provider + `user.deleted` consumer.
+  workspace- / `resource_key`-scoped —, finalize, reprocess, resummarize)
+  with serializer seams, and a GDPR provider + `user.deleted` consumer.
 - An **opt-in vector/search layer** (`stapel_recordings.vector` — a
   separate Django app + the `[vector]` extra): segment/summary embeddings
   written by the `embed` pipeline stage via `llm.embed`, and a hybrid
@@ -319,6 +319,7 @@ under `schemas/emits/`, validated in tests.
 | Action (emit) | `recording.stage_completed` | public, per-stage | `schemas/emits/recording.stage_completed.json` |
 | Action (emit) | `recording.completed` | public terminal | `schemas/emits/recording.completed.json` |
 | Action (emit) | `recording.failed` | public DLQ terminal | `schemas/emits/recording.failed.json` |
+| Action (emit) | `recording.resummarized` | public — a summary was regenerated on request (a host meters/bills on this; `job_id` is the idempotency key) | `schemas/emits/recording.resummarized.json` |
 | Action (consume) | `recording.uploaded` | start the pipeline | — |
 | Action (consume) | `recording.stage` | run stage N (driver) | — |
 | Action (consume) | `gdpr.erasure.requested` | erase one subject + receipt (owned by **stapel-gdpr**) | `schemas/consumes/gdpr.erasure.requested.json` |
@@ -353,6 +354,39 @@ under `schemas/emits/`, validated in tests.
   host that wants derived data (segments/transcript/summary) regenerated
   clears the relevant keys as part of its reprocess flow — the module never
   destroys transcript data itself.
+- **Re-summary (summarize only)** — **`stages.start_resummarize(recording,
+  user=...)`**, exposed as `POST /recordings/api/v1/recordings/{id}/resummarize`.
+  Re-runs the *same* `llm.summarize` call the `merge` stage makes, over the
+  transcript already stored: no STT, no diarization, no pipeline, and the
+  recording's `status` never moves. Reprocess is the wrong tool for the case
+  that actually happens — the transcript is right (often because a human just
+  corrected it) and only the summary built from an older transcript is out of
+  date; reprocess would re-transcribe and bill for it, which is why the only
+  regenerate path products ended up shipping was staff-only. Runs on the
+  module's `Job` ledger (`type="summarize"`), not on the pipeline cursor, so
+  it can neither move a status nor disturb a run in flight. **Idempotent**: a
+  request arriving while one is in flight joins that Job — a double-clicked
+  button costs one summary. Answers `409`
+  (`error.409.recording_no_transcript`) when there is nothing to summarize
+  and `503` (`error.503.recording_summarize_unavailable`) when the deployment
+  has summaries off or the bus refused the work; `202` + a `JobDTO` when
+  accepted. Authority is the object policy's `can_resummarize`, which
+  delegates to `can_reprocess` unless a host splits them. Success emits
+  `recording.resummarized` **inside the storing transaction**, which is the
+  hook a host debits/captures credits on — this module imports no billing.
+  Hosts driving a broker must route `task.completed`/`task.failed` through
+  `stages.resume_resummarize` / `stages.fail_resummarize` **before**
+  `pipeline.resume_stage` / `fail_stage` (this module's `actions.py` already
+  does): a re-summary runs on a finished recording, whose status the pipeline
+  driver treats as terminal.
+- **The summary carries its version key** — `stages.store_summary()` is the
+  one writer for a produced summary, and it pins
+  `metadata["derived"]["summary"]["transcript_hash"]` (the canonical
+  transcript's own hash) plus clears `metadata["staleness"]["summary"]`.
+  Staleness is therefore *computed* — recorded key vs current key — so an
+  edit path that never heard of staleness still invalidates the summary.
+  Both keys are in `metadata.LIBRARY_RESERVED_KEYS`: a client can neither
+  forge freshness nor drop the receipt by writing metadata.
 - **Reconcile** — `python manage.py recordings_reconcile [--once]` re-emits
   `recording.stage` for recordings stuck past `STUCK_THRESHOLD_SECONDS` in
   any non-terminal, non-upload status (custom stage statuses included;

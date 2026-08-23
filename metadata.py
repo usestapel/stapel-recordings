@@ -22,6 +22,10 @@ enforced by the schema alone:
   half and nothing else, so a client write can never touch workflow state
   even by accident.
 
+Reserved keys are not only refused on the way IN: :func:`set_user_metadata`
+carries the ones already stored across a write, because a whole-document
+replace deletes a server receipt just as effectively as overwriting it.
+
 Hosts reserve their own keys through ``RESERVED_METADATA_KEYS`` — a billing
 waiver flag, an entitlement stamp, anything a server decision reads. That is
 a setting rather than a fork because the keys are the host's vocabulary,
@@ -35,12 +39,23 @@ from rest_framework import serializers
 from .conf import recordings_settings
 
 #: Keys this module owns. Reserved everywhere in ``metadata``, at any depth.
+#:
+#: ``derived`` / ``staleness`` are the receipt that says which transcript a
+#: derived artifact (today: the summary) was built from — written by the
+#: server when the artifact is produced, read to answer "is this summary
+#: still current". They live in ``metadata`` rather than ``workflow_state``
+#: because that answer crosses the seam: hosts already serialize it onto the
+#: wire. Reserving them is what keeps them server-owned in a client column —
+#: a client can neither hand in a version key (forging freshness) nor drop
+#: one by writing metadata (see :func:`set_user_metadata`).
 LIBRARY_RESERVED_KEYS = frozenset(
     {
         "pipeline",
         "workflow_state",
         "last_error",
         "recovered_error",
+        "derived",
+        "staleness",
     }
 )
 
@@ -101,8 +116,20 @@ def set_user_metadata(recording, value) -> None:
 
     The write path a host's PATCH endpoint should call: it saves
     ``metadata`` alone, so no client write can reach workflow state even if
-    the caller hands over a whole model instance."""
-    recording.metadata = sanitize_user_metadata(value)
+    the caller hands over a whole model instance.
+
+    Reserved keys already present are CARRIED OVER rather than replaced.
+    Refusing to let a client *write* them was only half the guard: a metadata
+    write is a whole-document replace, so a client that submitted a document
+    without them deleted the server's receipts — and losing the summary's
+    version key reads exactly like "this summary is current", the one lie the
+    receipt exists to prevent."""
+    incoming = sanitize_user_metadata(value)
+    banned = reserved_keys()
+    preserved = {
+        k: v for k, v in (recording.metadata or {}).items() if str(k) in banned
+    }
+    recording.metadata = {**preserved, **(incoming or {})}
     recording.save(update_fields=["metadata", "updated_at"])
 
 

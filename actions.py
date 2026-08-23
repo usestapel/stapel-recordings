@@ -172,6 +172,7 @@ def handle_task_completed(event):
     from stapel_core.comm import status
 
     from .pipeline import resume_stage
+    from .stages import resume_resummarize
 
     recording_id = _recording_of(event)
     task_id = event.payload.get("task_id")
@@ -182,15 +183,26 @@ def handle_task_completed(event):
     except Exception:
         logger.exception("task.completed: failed to read task %s", task_id)
         return
+    # A standalone re-summary is NOT a pipeline stage — it runs on a finished
+    # recording, whose status the driver treats as terminal — so it is asked
+    # first. It claims only the task ids its own Job rows are waiting on and
+    # answers False for everything else, which is what makes this an ordering
+    # and not a fork.
+    if resume_resummarize(recording_id, task_id, snapshot.result):
+        return
     resume_stage(recording_id, task_id, snapshot.result)
 
 
 @on_action("task.failed")
 def handle_task_failed(event):
     from .pipeline import fail_stage
+    from .stages import fail_resummarize
 
     recording_id = _recording_of(event)
     task_id = event.payload.get("task_id")
     if not recording_id or not task_id:
         return
-    fail_stage(recording_id, task_id, event.payload.get("error") or "")
+    error = event.payload.get("error") or ""
+    if fail_resummarize(recording_id, task_id, error):
+        return
+    fail_stage(recording_id, task_id, error)

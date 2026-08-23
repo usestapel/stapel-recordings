@@ -271,6 +271,43 @@
         }
       }
     },
+    "/recordings/api/v1/recordings/{recording_id}/resummarize": {
+      "post": {
+        "operationId": "recordings_api_v1_recordings_resummarize_create",
+        "description": "Regenerate the summary of ONE recording — no STT, no diarization.\n\nThe cheap half of :class:`ReprocessRecordingView`. Reprocess re-runs the\nwhole pipeline (a second transcription, a second bill) and is the wrong\ntool for the case that actually happens: the transcript is right — often\nbecause a human just corrected it — and the summary built from the older\ntranscript is the only thing out of date. Where reprocess is a staff\nverb, this is the user's own: it re-runs the same ``llm.summarize`` call\nthe ``merge`` stage makes, stores the result the same way, and re-pins\nthe summary to the transcript it was built from so the staleness marker\nclears.\n\n``202`` with a :class:`~stapel_recordings.dto.JobDTO` — the work is\naccepted, not finished. **Idempotent**: while a re-summary for this\nrecording is in flight, every further POST answers ``202`` with the SAME\njob instead of paying for a second summary, so a double-clicked button\ncosts one summary.\n\n``409`` (``error.409.recording_no_transcript``) when there is nothing to\nsummarize yet; ``503`` (``error.503.recording_summarize_unavailable``)\nwhen the deployment has summaries switched off or the bus refused the\nwork. ``404`` for an unknown, foreign or deleted recording.\n\nAuthority is the object policy's ``can_resummarize`` — which defaults to\nwhatever the policy says about ``can_reprocess``, so a host that already\nnarrowed reprocess does not have to discover a second verb, while a host\nthat wants \"users may re-summarize, only staff may reprocess\" overrides\none method.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
     "/recordings/api/v1/shares/{link_token}": {
       "get": {
         "operationId": "recordings_api_v1_shares_retrieve",
@@ -463,6 +500,39 @@
             "minimum": 0
           }
         }
+      },
+      "JobDTO": {
+        "type": "object",
+        "description": "A background job this module accepted — the receipt for a 202.\n\nDeliberately not the whole Job row: a caller needs to know WHICH run was\naccepted (so it can poll, and so it can recognize its own retry landing\non the same one) and what state it is in. ``recording_id`` is here\nbecause the job reference travels on its own once the client stores it.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "recording_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "queued_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "queued_at",
+          "recording_id",
+          "status",
+          "type",
+          "workspace_id"
+        ]
       },
       "MediaURLDTO": {
         "type": "object",

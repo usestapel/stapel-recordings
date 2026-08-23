@@ -346,6 +346,14 @@
     "owner": "stapel_recordings"
   },
   {
+    "code": "error.409.recording_no_transcript",
+    "status": 409,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "This recording has no transcript to summarize yet",
+    "owner": "stapel_recordings"
+  },
+  {
     "code": "error.410.gone",
     "status": 410,
     "params": [],
@@ -444,19 +452,19 @@
     "owner": "stapel_core"
   },
   {
-    "code": "error.503.mandate_unavailable",
-    "status": 503,
-    "params": [],
-    "remediation": "retry",
-    "en": "Cannot verify workspace mandate right now",
-    "owner": "stapel_core"
-  },
-  {
     "code": "error.503.recording_media_unavailable",
     "status": 503,
     "params": [],
     "remediation": "retry",
     "en": "Media delivery is not available",
+    "owner": "stapel_recordings"
+  },
+  {
+    "code": "error.503.recording_summarize_unavailable",
+    "status": 503,
+    "params": [],
+    "remediation": "retry",
+    "en": "Summaries are not available",
     "owner": "stapel_recordings"
   },
   {

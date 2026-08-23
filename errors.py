@@ -26,6 +26,12 @@ ERR_503_MEDIA_UNAVAILABLE = "error.503.recording_media_unavailable"
 # ranged read), so they are not accepted. The deployment's fault, not the
 # caller's — hence 5xx, and hence not 415, which would blame the file.
 ERR_503_UPLOAD_UNVERIFIABLE = "error.503.recording_upload_unverifiable"
+# Re-summary. Same split as media above: 409 is the CALLER's state (there is
+# no transcript to summarize yet), 503 is the DEPLOYMENT's (summaries are
+# switched off, or the task bus refused the submission). A caller told 409
+# should wait for the pipeline; a caller told 503 should stop asking.
+ERR_409_NO_TRANSCRIPT = "error.409.recording_no_transcript"
+ERR_503_SUMMARIZE_UNAVAILABLE = "error.503.recording_summarize_unavailable"
 
 STAPEL_RECORDINGS_ERRORS = {
     ERR_404_NOT_FOUND: "Recording not found",
@@ -41,6 +47,8 @@ STAPEL_RECORDINGS_ERRORS = {
     ERR_409_MEDIA_NOT_STORED: "This recording has no media file",
     ERR_503_MEDIA_UNAVAILABLE: "Media delivery is not available",
     ERR_503_UPLOAD_UNVERIFIABLE: "Upload could not be verified",
+    ERR_409_NO_TRANSCRIPT: "This recording has no transcript to summarize yet",
+    ERR_503_SUMMARIZE_UNAVAILABLE: "Summaries are not available",
 }
 
 register_service_errors(STAPEL_RECORDINGS_ERRORS)
@@ -60,4 +68,6 @@ __all__ = [
     "ERR_409_MEDIA_NOT_STORED",
     "ERR_503_MEDIA_UNAVAILABLE",
     "ERR_503_UPLOAD_UNVERIFIABLE",
+    "ERR_409_NO_TRANSCRIPT",
+    "ERR_503_SUMMARIZE_UNAVAILABLE",
 ]

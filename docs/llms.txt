@@ -1,8 +1,8 @@
-# stapel-recordings 0.16.1
+# stapel-recordings 0.17.0
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 34 · extension points 7 · operations 9 · error codes 55.
+Contract: axes 1 · surface 39 · extension points 7 · operations 10 · error codes 56.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -19,6 +19,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - erase — stapel_recordings.erasure.erase
   instead of: stapel_recordings.models.Recording.delete
   The ONLY code that destroys a recording, for any subject: account, workspace, meeting or recording. Removes the rows, everything cascading from them (speakers, segments, upload sessions, shares, jobs, embeddings) and every storage object they reference through the STORAGE seam, then returns Django's own per-model tally so a gdpr receipt can carry counts instead of a claim. Idempotent by construction — a redelivered erasure removes nothing and still answers. Hand-rolled deletion is how an object survives its row: the keys live on the row you are about to delete.
+- fail_resummarize — stapel_recordings.stages.fail_resummarize
+  instead of: stapel_recordings.pipeline.fail_stage
+  Close a standalone re-summary whose task failed for good (True when it owned the task). No retry — the Task primitive already spent its attempts — and no recording.resummarized event, so a host metering re-summaries is never billed for a summary that was not produced. Wire it before pipeline.fail_stage in a task.failed subscriber.
 - fail_stage — stapel_recordings.pipeline.fail_stage
   Move a recording to the DLQ once the task it was awaiting has failed for good. DLQ, not retry: the Task primitive has already exhausted its own max_attempts.
 - purge_soft_deleted_recordings — stapel_recordings.tasks.purge_soft_deleted_recordings
@@ -26,6 +29,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - reprocess_recording — stapel_recordings.pipeline.reprocess_recording
   instead of: stapel_recordings.events.emit_stage
   completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the ASR tier or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.
+- resume_resummarize — stapel_recordings.stages.resume_resummarize
+  instead of: stapel_recordings.pipeline.resume_stage
+  Apply an arriving llm.summarize task result to a standalone re-summary, answering True only when the task belonged to one. Wire it BEFORE pipeline.resume_stage in a task.completed subscriber: a re-summary runs on a finished recording, whose status the pipeline driver treats as terminal, so the driver would silently drop the result. Redelivery-safe — a second delivery finds the job closed and answers False.
 - resume_stage — stapel_recordings.pipeline.resume_stage
   Complete a stage that was awaiting a task, using its result — mirrors the successful tail of run_stage: same lock, same completion marker, same events. Checks task_id: delivery is at-least-once, and a response to a stale attempt must not be applied.
 - retry_recording — stapel_recordings.pipeline.retry_recording
@@ -48,6 +54,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The membership test for a source kind — ask this rather than comparing against the model enum's values, which rejects exactly the kinds a host went to the trouble of registering.
 - recordings_for — stapel_recordings.erasure.recordings_for
   Turn a gdpr (subject_type, subject_key) pair into the recordings this module owns about that subject — the one place the four subject vocabularies are resolved (owner, workspace, meeting-or-metadata-link, id). Returns an empty queryset for a key that addresses nothing rather than raising, because an owner that cannot find a subject owns nothing about it and a zero-count receipt is the honest answer.
+- summary_from_result — stapel_recordings.stages.summary_from_result
+  Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure.
 ### factory
 - create_upload_session — stapel_recordings.services.create_upload_session
   instead of: stapel_recordings.storage.RecordingStorage.presigned_put_url
@@ -97,6 +105,12 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - start_multipart_upload — stapel_recordings.services.start_multipart_upload
   instead of: stapel_recordings.storage.RecordingStorage.create_multipart_upload
   The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects.
+- start_resummarize — stapel_recordings.stages.start_resummarize
+  instead of: stapel_core.comm.call, stapel_recordings.pipeline.reprocess_recording
+  Regenerate ONE recording's summary — the same llm.summarize call the merge stage makes, with no re-transcription and no pipeline run. This is the cheap counterpart of reprocess_recording, which re-runs every stage (a second STT bill) for a recording whose transcript is usually already correct. Returns (job, started); a request that arrives while one is in flight joins it instead of paying for a second summary. Raises NoTranscriptToSummarize / SummarizationUnavailable rather than degrading quietly, so a caller can answer 409 vs 503 honestly.
+- store_summary — stapel_recordings.stages.store_summary
+  instead of: stapel_recordings.models.Recording.save
+  The one sanctioned way to persist a produced summary: writes the text AND pins it to the version key of the transcript it was built from, so 'is this summary still current' is computed instead of guessed. Assigning recording.summary yourself leaves the previous transcript's key in place, and a freshly regenerated summary then reads as stale forever — the key outlives the flag.
 - submit_task — stapel_recordings.stages.submit_task
   instead of: stapel_core.comm.call
   Submit long-running work (transcription, summary) as a task and return control right away: a result comes back only under synchronous dispatch, otherwise StageAwaiting is raised and the stage resumes in Stage.resume on task.completed. Unlike comm.call, a synchronous call would hold the worker for the model's entire runtime and requires guessing a timeout that a queue makes unguessable.
@@ -124,7 +138,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - stapel-auth (optional) — every endpoint requires an authenticated user (IsAuthenticated); stapel-auth is the shelf's session issuer — any stapel-core-compatible JWT issuer satisfies the check
 - stapel-core (required) — comm bus (recording.stage pipeline driving, llm.transcribe / llm.summarize calls), JWT authentication, GDPR provider registry, AppSettings config layer
 
-## HTTP operations (9) — call by operationId, never by a typed path
+## HTTP operations (10) — call by operationId, never by a typed path
 Paths are relative to `/recordings/api/v1/`.
 ### Recordings
 - POST /recordings — recordings_api_v1_recordings_create
@@ -132,12 +146,13 @@ Paths are relative to `/recordings/api/v1/`.
 - GET /recordings — recordings_api_v1_recordings_list
 - GET /recordings/{recording_id}/media — recordings_api_v1_recordings_media_retrieve
 - POST /recordings/{recording_id}/reprocess — recordings_api_v1_recordings_reprocess_create
+- POST /recordings/{recording_id}/resummarize — recordings_api_v1_recordings_resummarize_create
 - GET /recordings/{recording_id} — recordings_api_v1_recordings_retrieve
 - GET /shares/{link_token}/media — recordings_api_v1_shares_media_retrieve
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (55) — the StapelError envelope
+## Error codes (56) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -179,6 +194,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.409.conflict [409] fix_input
 - error.409.recording_invalid_state [409] fix_input
 - error.409.recording_media_not_stored [409] fix_input
+- error.409.recording_no_transcript [409] fix_input
 - error.410.gone [410] retry
 - error.413.payload_too_large [413] retry
 - error.413.recording_too_large [413] retry
@@ -191,6 +207,6 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.429.share_unlock_throttled [429] wait_and_retry
 - error.429.too_many_requests [429] wait_and_retry
 - error.500.internal [500] contact_support
-- error.503.mandate_unavailable [503] retry
 - error.503.recording_media_unavailable [503] retry
+- error.503.recording_summarize_unavailable [503] retry
 - error.503.recording_upload_unverifiable [503] retry

@@ -51,11 +51,12 @@ from rest_framework.views import APIView
 from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse
 from stapel_core.django.api.permissions import IsNotAnonymousUser
 
-from . import media, pipeline, services, shares
+from . import media, pipeline, services, shares, stages
 from .conf import flag, recordings_settings
 from .dto import (
     CreateRecordingResponse,
     ShareUnlockDTO,
+    job_to_dto,
     media_grant_to_dto,
     recording_to_dto,
     shared_recording_to_dto,
@@ -66,9 +67,11 @@ from .errors import (
     ERR_404_NOT_FOUND,
     ERR_409_INVALID_STATE,
     ERR_409_MEDIA_NOT_STORED,
+    ERR_409_NO_TRANSCRIPT,
     ERR_413_TOO_LARGE,
     ERR_415_UNSUPPORTED_MEDIA,
     ERR_503_MEDIA_UNAVAILABLE,
+    ERR_503_SUMMARIZE_UNAVAILABLE,
     ERR_503_UPLOAD_UNVERIFIABLE,
 )
 from .media_types import UnsupportedUploadContent
@@ -79,6 +82,7 @@ from .serializers import (
     CreateRecordingRequestSerializer,
     CreateRecordingResponseSerializer,
     FinalizeUploadRequestSerializer,
+    JobSerializer,
     MediaURLSerializer,
     RecordingSerializer,
     SharedRecordingSerializer,
@@ -385,6 +389,56 @@ class ReprocessRecordingView(SerializerSeamMixin, APIView):
             return StapelErrorResponse(409, ERR_409_INVALID_STATE)
         recording.refresh_from_db()
         return StapelResponse(self.get_response_serializer_class()(recording_to_dto(recording)))
+
+
+@extend_schema(tags=["Recordings"])
+class ResummarizeRecordingView(SerializerSeamMixin, APIView):
+    """Regenerate the summary of ONE recording — no STT, no diarization.
+
+    The cheap half of :class:`ReprocessRecordingView`. Reprocess re-runs the
+    whole pipeline (a second transcription, a second bill) and is the wrong
+    tool for the case that actually happens: the transcript is right — often
+    because a human just corrected it — and the summary built from the older
+    transcript is the only thing out of date. Where reprocess is a staff
+    verb, this is the user's own: it re-runs the same ``llm.summarize`` call
+    the ``merge`` stage makes, stores the result the same way, and re-pins
+    the summary to the transcript it was built from so the staleness marker
+    clears.
+
+    ``202`` with a :class:`~stapel_recordings.dto.JobDTO` — the work is
+    accepted, not finished. **Idempotent**: while a re-summary for this
+    recording is in flight, every further POST answers ``202`` with the SAME
+    job instead of paying for a second summary, so a double-clicked button
+    costs one summary.
+
+    ``409`` (``error.409.recording_no_transcript``) when there is nothing to
+    summarize yet; ``503`` (``error.503.recording_summarize_unavailable``)
+    when the deployment has summaries switched off or the bus refused the
+    work. ``404`` for an unknown, foreign or deleted recording.
+
+    Authority is the object policy's ``can_resummarize`` — which defaults to
+    whatever the policy says about ``can_reprocess``, so a host that already
+    narrowed reprocess does not have to discover a second verb, while a host
+    that wants "users may re-summarize, only staff may reprocess" overrides
+    one method."""
+
+    permission_classes = [IsNotAnonymousUser]
+    response_serializer_class = JobSerializer
+
+    @extend_schema(request=None, responses={202: JobSerializer})
+    def post(self, request, recording_id):  # noqa: R007
+        recording = _owned_qs(request).filter(pk=recording_id).first()
+        if recording is None or not get_policy().can_resummarize(request.user, recording):
+            return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        try:
+            job, _started = stages.start_resummarize(recording, user=request.user)
+        except stages.NoTranscriptToSummarize:
+            return StapelErrorResponse(409, ERR_409_NO_TRANSCRIPT)
+        except stages.SummarizationUnavailable:
+            return StapelErrorResponse(503, ERR_503_SUMMARIZE_UNAVAILABLE)
+        return StapelResponse(
+            self.get_response_serializer_class()(job_to_dto(job)), status=202
+        )
 
 
 @extend_schema(tags=["Recordings"])

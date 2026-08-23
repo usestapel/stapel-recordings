@@ -44,6 +44,24 @@ class CreateRecordingResponse:  # noqa: R004
 
 
 @dataclass
+class JobDTO:
+    """A background job this module accepted — the receipt for a 202.
+
+    Deliberately not the whole Job row: a caller needs to know WHICH run was
+    accepted (so it can poll, and so it can recognize its own retry landing
+    on the same one) and what state it is in. ``recording_id`` is here
+    because the job reference travels on its own once the client stores it.
+    """
+
+    id: str
+    recording_id: Optional[str]
+    workspace_id: str
+    type: str
+    status: str
+    queued_at: str
+
+
+@dataclass
 class MediaURLDTO:
     """A short-lived, authorized URL to a recording's media object.
 
@@ -118,6 +136,17 @@ def recording_to_dto(recording) -> RecordingDTO:
         transcript_storage_key=recording.transcript_storage_key,
         summary=recording.summary,
         created_at=recording.created_at.isoformat(),
+    )
+
+
+def job_to_dto(job) -> JobDTO:
+    return JobDTO(
+        id=str(job.id),
+        recording_id=str(job.recording_id) if job.recording_id else None,
+        workspace_id=str(job.workspace_id),
+        type=job.type,
+        status=job.status,
+        queued_at=job.queued_at.isoformat(),
     )
 
 

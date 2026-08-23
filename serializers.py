@@ -4,6 +4,7 @@ from stapel_core.django.api.serializers import StapelDataclassSerializer
 
 from .dto import (
     CreateRecordingResponse,
+    JobDTO,
     MediaURLDTO,
     RecordingDTO,
     SharedRecordingDTO,
@@ -66,6 +67,11 @@ class FinalizeUploadRequestSerializer(serializers.Serializer):
 class SharedRecordingSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = SharedRecordingDTO
+
+
+class JobSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = JobDTO
 
 
 class MediaURLSerializer(StapelDataclassSerializer):

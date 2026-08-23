@@ -7,9 +7,11 @@
   "error.404.share_not_found": "Enlace de acceso no encontrado",
   "error.409.recording_invalid_state": "La grabación no está en un estado válido para esta acción",
   "error.409.recording_media_not_stored": "Esta grabación no tiene archivo multimedia",
+  "error.409.recording_no_transcript": "Esta grabación todavía no tiene transcripción que resumir",
   "error.413.recording_too_large": "La subida supera el tamaño máximo permitido",
   "error.415.recording_unsupported_media": "El tipo de archivo subido no es compatible",
   "error.429.share_unlock_throttled": "Demasiados intentos: inténtalo de nuevo más tarde",
   "error.503.recording_media_unavailable": "La entrega de archivos multimedia no está disponible",
+  "error.503.recording_summarize_unavailable": "Los resúmenes no están disponibles",
   "error.503.recording_upload_unverifiable": "No se ha podido verificar la subida"
 }

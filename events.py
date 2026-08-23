@@ -15,6 +15,12 @@ Action surface:
 - ``recording.stage_completed`` (public) — informational; observers can
   react to a specific stage finishing (e.g. billing on "transcribe").
 - ``recording.completed`` (public, terminal) — pipeline exhausted.
+- ``recording.resummarized`` (public) — a summary was regenerated on its
+  own, outside the pipeline, because a user asked for it. Separate from
+  ``recording.stage_completed(stage="merge")`` on purpose: that one says a
+  pipeline run passed through summarization, this one says somebody spent a
+  request on a new summary of an unchanged recording, which is the event a
+  host meters or bills.
 - ``recording.failed`` (public, terminal / DLQ) — a stage gave up.
 
 Every name has a JSON schema under ``schemas/emits/`` validated in tests.
@@ -28,6 +34,7 @@ ACTION_STAGE = "recording.stage"
 ACTION_STAGE_COMPLETED = "recording.stage_completed"
 ACTION_COMPLETED = "recording.completed"
 ACTION_FAILED = "recording.failed"
+ACTION_RESUMMARIZED = "recording.resummarized"
 
 
 def emit_uploaded(recording) -> None:
@@ -84,6 +91,26 @@ def emit_completed(recording) -> None:
     )
 
 
+def emit_resummarized(recording, *, job_id, user_id=None) -> None:
+    """A standalone re-summary finished and its summary is stored.
+
+    ``job_id`` travels with it as the idempotency key: delivery is
+    at-least-once, so a host that debits credits for this needs something
+    that identifies THIS re-summary and not merely this recording, which can
+    be re-summarized any number of times.
+    """
+    emit(
+        ACTION_RESUMMARIZED,
+        {
+            "recording_id": str(recording.id),
+            "workspace_id": str(recording.workspace_id),
+            "user_id": str(user_id) if user_id is not None else None,
+            "job_id": str(job_id),
+        },
+        key=str(recording.id),
+    )
+
+
 def emit_failed(recording, *, stage: str, reason: str, user_retryable: bool) -> None:
     emit(
         ACTION_FAILED,
@@ -104,9 +131,11 @@ __all__ = [
     "ACTION_STAGE_COMPLETED",
     "ACTION_COMPLETED",
     "ACTION_FAILED",
+    "ACTION_RESUMMARIZED",
     "emit_uploaded",
     "emit_stage",
     "emit_stage_completed",
     "emit_completed",
     "emit_failed",
+    "emit_resummarized",
 ]

@@ -49,6 +49,18 @@ class RecordingPolicy:
     def can_reprocess(self, user, recording) -> bool:
         return False
 
+    def can_resummarize(self, user, recording) -> bool:
+        """Regenerate the summary alone (no re-transcription).
+
+        Delegates to :meth:`can_reprocess` by default, and that default is
+        the point: a host that narrowed "may re-run derived work" once
+        already answered this question, and a NEW verb that silently
+        defaulted to deny (or to allow) would either break that host or widen
+        it. Override this method alone for the split hosts actually ask for —
+        users may pay to re-summarize, only staff may re-run the pipeline.
+        """
+        return self.can_reprocess(user, recording)
+
 
 class OwnerOnlyPolicy(RecordingPolicy):
     """The default: the owner does everything, nobody else does anything.

@@ -1,6 +1,6 @@
 """Localized error catalogs (``translations/errors.<lang>.json``) + provenance gate.
 
-i18n-shipping.md §5. This module owns 13 ``error.*.recording_*`` /
+i18n-shipping.md §5. This module owns 15 ``error.*.recording_*`` /
 ``error.*.share_*`` keys — 0.14.0 added the whole sharing vocabulary — and
 shipped no catalog for any of them. Since stapel-core 0.23.1 a reader resolves
 a key it does not own from the **owner's** catalog
@@ -83,6 +83,11 @@ _MACHINE_RU = {
         "Тип загружаемого файла не поддерживается",
     "error.503.recording_upload_unverifiable":
         "Не удалось проверить загрузку",
+    # Summarize-only re-run (0.17.0).
+    "error.409.recording_no_transcript":
+        "У этой записи пока нет расшифровки для краткого пересказа",
+    "error.503.recording_summarize_unavailable":
+        "Краткий пересказ недоступен",
     # Media delivery (STORE-01, 0.14.0).
     "error.409.recording_media_not_stored": "У этой записи нет медиафайла",
     "error.503.recording_media_unavailable": "Выдача медиа недоступна",
@@ -111,6 +116,11 @@ _MACHINE_ES = {
         "El tipo de archivo subido no es compatible",
     "error.503.recording_upload_unverifiable":
         "No se ha podido verificar la subida",
+    # Summarize-only re-run (0.17.0).
+    "error.409.recording_no_transcript":
+        "Esta grabación todavía no tiene transcripción que resumir",
+    "error.503.recording_summarize_unavailable":
+        "Los resúmenes no están disponibles",
     # Media delivery (STORE-01, 0.14.0).
     "error.409.recording_media_not_stored":
         "Esta grabación no tiene archivo multimedia",

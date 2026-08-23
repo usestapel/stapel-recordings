@@ -32,6 +32,10 @@
       "hash": "4887caad331deaad",
       "origin": "llm"
     },
+    "error.409.recording_no_transcript": {
+      "hash": "02d5b727487e0e6f",
+      "origin": "llm"
+    },
     "error.413.recording_too_large": {
       "hash": "eca0b4b6e8a0895b",
       "origin": "llm"
@@ -46,6 +50,10 @@
     },
     "error.503.recording_media_unavailable": {
       "hash": "23da65a35dd970b0",
+      "origin": "llm"
+    },
+    "error.503.recording_summarize_unavailable": {
+      "hash": "9e46f0a279f5da74",
       "origin": "llm"
     },
     "error.503.recording_upload_unverifiable": {
@@ -86,6 +94,10 @@
       "hash": "4887caad331deaad",
       "origin": "llm"
     },
+    "error.409.recording_no_transcript": {
+      "hash": "02d5b727487e0e6f",
+      "origin": "llm"
+    },
     "error.413.recording_too_large": {
       "hash": "eca0b4b6e8a0895b",
       "origin": "llm"
@@ -100,6 +112,10 @@
     },
     "error.503.recording_media_unavailable": {
       "hash": "23da65a35dd970b0",
+      "origin": "llm"
+    },
+    "error.503.recording_summarize_unavailable": {
+      "hash": "9e46f0a279f5da74",
       "origin": "llm"
     },
     "error.503.recording_upload_unverifiable": {

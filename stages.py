@@ -416,16 +416,13 @@ class MergeStage(Stage):
         # The summary is best-effort: the transcript already exists, and the
         # recording must not fail because of it. But staying SILENT about a
         # failure is also wrong — that used to be exactly what happened.
-        summary = None
-        if isinstance(result, dict) and result.get("status") == "ok":
-            summary = result.get("summary")
-        else:
+        summary = summary_from_result(result)
+        if summary is None:
             logger.warning(
                 "merge: summary for %s not produced: %.200s", recording.id, result
             )
-        if summary:
-            recording.summary = summary
-            recording.save(update_fields=["summary", "updated_at"])
+        else:
+            store_summary(recording, summary)
         return ctx
 
 
@@ -489,6 +486,318 @@ def _summarize_payload(recording, transcript) -> dict:
     return payload
 
 
+# ─── the summary as a derived artifact ─────────────────────────────────
+#
+# A summary is not a fact about the recording, it is a fact about the
+# TRANSCRIPT IT WAS BUILT FROM — and transcripts get edited (a speaker
+# renamed, a turn reassigned, a word corrected). So storing a summary means
+# storing two things: the text, and which transcript produced it. With only
+# the text, "is this summary still current" has no answer that is not a
+# guess, and the guess a product makes is always "yes".
+#
+# The version key is ``transcript_schema.transcript_hash`` — the same
+# deterministic hash the canonical transcript already has — recorded under
+# ``metadata["derived"]["summary"]["transcript_hash"]``. Staleness is then
+# COMPUTED (recorded key != current key), not remembered: an edit path that
+# never heard of staleness still invalidates the summary, because it changed
+# the transcript. The older boolean flag (``metadata["staleness"]["summary"]``)
+# is cleared here for readers that only know about the flag.
+#
+# ``metadata`` and not ``workflow_state`` (audit REC-01 splits them) because
+# this receipt is read across the seam — a host's wire serializer answers
+# "summary_stale" from it, and consumers of this convention already exist. It
+# is a server-written value living in the client's column, which is exactly
+# what ``metadata.LIBRARY_RESERVED_KEYS`` is for: both keys are reserved, so
+# a client can neither forge freshness nor lose it in a metadata write.
+
+#: Derived-artifact kind for the narrative summary (the key under
+#: ``metadata["derived"]`` / ``metadata["staleness"]``).
+DERIVED_SUMMARY = "summary"
+
+
+def summary_from_result(result):
+    """The summary text out of an ``llm.summarize`` result, or ``None``.
+
+    One reader for the delegated call's answer, because there are now two
+    callers (the ``merge`` stage and the standalone re-summary) and "what
+    counts as a produced summary" must not become two slightly different
+    truthiness checks.
+    """
+    if not isinstance(result, dict) or result.get("status") != "ok":
+        return None
+    summary = result.get("summary")
+    return summary if summary else None
+
+
+def store_summary(recording, summary: str, *, transcript=None) -> None:
+    """Persist a produced summary AND pin it to the transcript behind it.
+
+    The sanctioned write: setting ``recording.summary`` alone leaves the
+    version key pointing at whatever transcript the PREVIOUS summary was
+    built from, so a freshly regenerated summary keeps reading as stale
+    forever — the flag says fresh, the key says stale, and the key wins.
+
+    *transcript* is an already-built :class:`~stapel_recordings.transcript_schema.UnifiedTranscript`
+    when the caller has one (the merge stage does); otherwise it is rebuilt
+    from the persisted rows.
+    """
+    from . import transcript_schema
+
+    if transcript is None:
+        transcript = transcript_schema.from_db_segments(recording)
+
+    metadata = dict(recording.metadata or {})
+    derived = dict(metadata.get("derived") or {})
+    derived[DERIVED_SUMMARY] = {
+        "transcript_hash": transcript_schema.transcript_hash(transcript)
+    }
+    metadata["derived"] = derived
+    staleness = dict(metadata.get("staleness") or {})
+    staleness.pop(DERIVED_SUMMARY, None)
+    if staleness:
+        metadata["staleness"] = staleness
+    else:
+        metadata.pop("staleness", None)
+
+    recording.summary = summary
+    recording.metadata = metadata
+    recording.save(update_fields=["summary", "metadata", "updated_at"])
+
+
+# ─── summarize-only: one recording, no STT, no diarize ─────────────────
+#
+# The pipeline driver cannot do this job. It refuses to touch a recording in
+# a terminal status (``completed`` is terminal), it walks a stage LIST from a
+# cursor, and its only "run it again" transition is ``reprocess_recording``,
+# which re-runs every stage from zero — a new transcription, a new
+# diarization and a new bill for a recording whose transcript is already
+# correct and was probably just corrected BY HAND. That is why the only
+# regenerate path a product ended up with was staff-only: the cheap version
+# of it did not exist.
+#
+# So the re-summary is its own small runner, not a pipeline entry. It reuses
+# the exact ``llm.summarize`` call and the exact storage write the merge
+# stage uses (``_summarize_payload`` / :func:`store_summary`) — one summarize
+# implementation, two ways in — and tracks its own life on the module's
+# ``Job`` ledger rather than on the pipeline cursor, so it can never move a
+# recording's status or disturb a run in flight.
+
+
+class ResummarizeRefused(Exception):
+    """Base: this recording cannot be re-summarized right now."""
+
+    def __init__(self, reason: str, detail: str | None = None):
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
+        self.detail = detail
+
+
+class NoTranscriptToSummarize(ResummarizeRefused):
+    """The caller's state: there is nothing to summarize yet (409)."""
+
+
+class SummarizationUnavailable(ResummarizeRefused):
+    """The deployment's state: summarization is off or unreachable (503)."""
+
+
+def _inflight_summarize_jobs(recording_id):
+    from .models import Job, JobStatus, JobType
+
+    return (
+        Job.objects.select_for_update()
+        .filter(
+            recording_id=recording_id,
+            type=JobType.SUMMARIZE,
+            status__in=(JobStatus.QUEUED, JobStatus.PROCESSING),
+        )
+        .order_by("queued_at")
+    )
+
+
+def start_resummarize(recording, *, user=None):
+    """Re-run summarization for ONE recording. Returns ``(job, started)``.
+
+    ``started`` is False when an identical run is already in flight: a second
+    request joins the first job instead of paying for a second summary. That
+    is the whole idempotency contract — a double-clicked button, a retried
+    POST and a client that lost the response all converge on one Job and one
+    delegated call.
+
+    Raises :class:`NoTranscriptToSummarize` when the recording has no
+    transcript to summarize (nothing has been transcribed, or the merge stage
+    has not stored one yet) and :class:`SummarizationUnavailable` when the
+    deployment has summaries switched off or the task bus refused the
+    submission.
+
+    The recording's ``status`` is never touched: a re-summary is work ABOUT a
+    finished recording, and moving a completed recording back into a
+    processing status would tell every listing and every client that the
+    transcript is in doubt when it is not.
+    """
+    from django.db import transaction
+    from django.utils import timezone
+
+    from . import transcript_schema
+    from .conf import flag
+    from .models import Job, JobStatus, JobType, Recording
+
+    if not flag("SUMMARIZE_ENABLED"):
+        raise SummarizationUnavailable("summarize_disabled")
+
+    with transaction.atomic():
+        locked = Recording.objects.select_for_update().filter(pk=recording.pk).first()
+        if locked is None:
+            raise NoTranscriptToSummarize("recording_gone")
+
+        job = _inflight_summarize_jobs(locked.pk).first()
+        if job is not None:
+            return job, False
+
+        transcript = transcript_schema.from_db_segments(locked)
+        if not locked.transcript_storage_key or not transcript.segments:
+            # Both halves matter: rows without a stored transcript means the
+            # pipeline has not merged yet, and a stored transcript with no
+            # segments is an empty conversation. Either way there is nothing
+            # to summarize, and submitting the call anyway would bill for a
+            # summary of nothing.
+            raise NoTranscriptToSummarize("no_transcript")
+
+        job = Job.objects.create(
+            workspace_id=locked.workspace_id,
+            owner=user if getattr(user, "is_authenticated", False) else locked.owner,
+            recording=locked,
+            type=JobType.SUMMARIZE,
+            status=JobStatus.QUEUED,
+            current_step="summarize",
+        )
+
+        try:
+            result = submit_task(
+                "llm.summarize",
+                _summarize_payload(locked, transcript),
+                recording=locked,
+                deadline_seconds=int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
+            )
+        except StageAwaiting as exc:
+            # The normal production path: the work is queued, the request
+            # returns, and `resume_resummarize` finishes the job when the
+            # result arrives.
+            job.status = JobStatus.PROCESSING
+            job.started_at = timezone.now()
+            job.options = {**(job.options or {}), "task_id": str(exc.task_id)}
+            job.save(update_fields=["status", "started_at", "options"])
+            return job, True
+        except StageRetryable as exc:
+            # Could not even SUBMIT — the bus, not the recording. Raising
+            # rolls the whole block back, Job row included, which is the
+            # honest outcome: nothing was queued, nothing was spent, and a
+            # "failed" job row would put a run in the user's history that
+            # never existed. The 503 is the whole answer.
+            raise SummarizationUnavailable(exc.reason, exc.detail) from exc
+
+        # Inline task dispatch (brokerless monolith / tests): the result is
+        # already here, so the job completes inside the request.
+        _apply_summary_result(locked, job, result)
+        return job, True
+
+
+def resume_resummarize(recording_id, task_id, result) -> bool:
+    """Finish a standalone re-summary from its ``llm.summarize`` result.
+
+    Returns True when *task_id* belonged to a re-summary job (and was
+    applied), False when it did not — the caller then routes the result to
+    the pipeline driver. Delivery is at-least-once, so a redelivery finds the
+    job already completed and answers False rather than storing twice.
+    """
+    from django.db import transaction
+
+    from .models import Recording
+
+    with transaction.atomic():
+        recording = (
+            Recording.objects.select_for_update().filter(pk=recording_id).first()
+        )
+        if recording is None:
+            return False
+        job = _job_awaiting(recording.pk, task_id)
+        if job is None:
+            return False
+        _apply_summary_result(recording, job, result)
+        return True
+
+
+def fail_resummarize(recording_id, task_id, error: str) -> bool:
+    """The task a re-summary was waiting on failed for good. True if handled.
+
+    No retry: the Task primitive already exhausted its own attempts. The
+    recording keeps its previous summary and its previous version key, so it
+    still reads as stale — which is the truth, and the reason no
+    ``recording.resummarized`` event leaves here.
+    """
+    from django.db import transaction
+
+    with transaction.atomic():
+        job = _job_awaiting(recording_id, task_id)
+        if job is None:
+            return False
+        _fail_job(job, "summarize_task_failed", error)
+        return True
+
+
+def _job_awaiting(recording_id, task_id):
+    """The in-flight re-summary job waiting on *task_id*, if any.
+
+    Matched in Python over the (few) in-flight rows rather than with a JSON
+    key lookup: this runs on every ``task.completed`` in the process, and the
+    query has to behave identically on every database the fleet supports.
+    """
+    return next(
+        (
+            job
+            for job in _inflight_summarize_jobs(recording_id)
+            if str((job.options or {}).get("task_id") or "") == str(task_id)
+        ),
+        None,
+    )
+
+
+def _apply_summary_result(recording, job, result) -> bool:
+    """Store a delegated summary against *job*; emit the public receipt."""
+    from django.utils import timezone
+
+    from . import events
+    from .models import JobStatus
+
+    summary = summary_from_result(result)
+    if summary is None:
+        logger.warning(
+            "resummarize: summary for %s not produced: %.200s", recording.id, result
+        )
+        _fail_job(job, "summary_not_produced", str(result)[:500])
+        return False
+
+    store_summary(recording, summary)
+    job.status = JobStatus.COMPLETED
+    job.progress_percent = 100
+    job.completed_at = timezone.now()
+    job.result = {"summary_chars": len(summary)}
+    job.save(update_fields=["status", "progress_percent", "completed_at", "result"])
+    # Emitted INSIDE the same transaction as the write (outbox discipline):
+    # a host that debits for this must never be told about a summary that
+    # rolled back, and must always be told about one that did not.
+    events.emit_resummarized(recording, job_id=job.id, user_id=job.owner_id)  # emit-check: ok — every caller (start_resummarize / resume_resummarize) holds the atomic block
+    return True
+
+
+def _fail_job(job, reason: str, detail=None) -> None:
+    from django.utils import timezone
+
+    from .models import JobStatus
+
+    job.status = JobStatus.FAILED
+    job.error = {"reason": reason, "detail": detail}
+    job.completed_at = timezone.now()
+    job.save(update_fields=["status", "error", "completed_at"])
 
 
 def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_used) -> None:
@@ -683,6 +992,15 @@ __all__ = [
     "StageError",
     "StageRetryable",
     "StageFatal",
+    "ResummarizeRefused",
+    "NoTranscriptToSummarize",
+    "SummarizationUnavailable",
+    "DERIVED_SUMMARY",
+    "summary_from_result",
+    "store_summary",
+    "start_resummarize",
+    "resume_resummarize",
+    "fail_resummarize",
     "ConvertStage",
     "TranscribeStage",
     "DiarizeStage",

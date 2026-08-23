@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.16.1",
+  "version": "0.17.0",
   "provides": "Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.",
   "axes": [
     {
@@ -236,6 +236,15 @@
       ]
     },
     {
+      "name": "fail_resummarize",
+      "kind": "gate_function",
+      "path": "stapel_recordings.stages.fail_resummarize",
+      "intent": "Close a standalone re-summary whose task failed for good (True when it owned the task). No retry — the Task primitive already spent its attempts — and no recording.resummarized event, so a host metering re-summaries is never billed for a summary that was not produced. Wire it before pipeline.fail_stage in a task.failed subscriber.",
+      "instead_of": [
+        "stapel_recordings.pipeline.fail_stage"
+      ]
+    },
+    {
       "name": "get_stage",
       "kind": "factory",
       "path": "stapel_recordings.stages.get_stage",
@@ -278,6 +287,34 @@
       ]
     },
     {
+      "name": "resume_resummarize",
+      "kind": "gate_function",
+      "path": "stapel_recordings.stages.resume_resummarize",
+      "intent": "Apply an arriving llm.summarize task result to a standalone re-summary, answering True only when the task belonged to one. Wire it BEFORE pipeline.resume_stage in a task.completed subscriber: a re-summary runs on a finished recording, whose status the pipeline driver treats as terminal, so the driver would silently drop the result. Redelivery-safe — a second delivery finds the job closed and answers False.",
+      "instead_of": [
+        "stapel_recordings.pipeline.resume_stage"
+      ]
+    },
+    {
+      "name": "start_resummarize",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.start_resummarize",
+      "intent": "Regenerate ONE recording's summary — the same llm.summarize call the merge stage makes, with no re-transcription and no pipeline run. This is the cheap counterpart of reprocess_recording, which re-runs every stage (a second STT bill) for a recording whose transcript is usually already correct. Returns (job, started); a request that arrives while one is in flight joins it instead of paying for a second summary. Raises NoTranscriptToSummarize / SummarizationUnavailable rather than degrading quietly, so a caller can answer 409 vs 503 honestly.",
+      "instead_of": [
+        "stapel_recordings.pipeline.reprocess_recording",
+        "stapel_core.comm.call"
+      ]
+    },
+    {
+      "name": "store_summary",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.store_summary",
+      "intent": "The one sanctioned way to persist a produced summary: writes the text AND pins it to the version key of the transcript it was built from, so 'is this summary still current' is computed instead of guessed. Assigning recording.summary yourself leaves the previous transcript's key in place, and a freshly regenerated summary then reads as stale forever — the key outlives the flag.",
+      "instead_of": [
+        "stapel_recordings.models.Recording.save"
+      ]
+    },
+    {
       "name": "submit_task",
       "kind": "factory",
       "path": "stapel_recordings.stages.submit_task",
@@ -285,6 +322,12 @@
       "instead_of": [
         "stapel_core.comm.call"
       ]
+    },
+    {
+      "name": "summary_from_result",
+      "kind": "predicate",
+      "path": "stapel_recordings.stages.summary_from_result",
+      "intent": "Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure."
     },
     {
       "name": "unregister_stage",
@@ -321,7 +364,7 @@
       "intent": "The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever."
     }
   ],
-  "operations_total": 9,
+  "operations_total": 10,
   "requires": [
     {
       "module": "stapel-core",

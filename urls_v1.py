@@ -15,6 +15,7 @@ from .views import (
     RecordingListCreateView,
     RecordingMediaView,
     ReprocessRecordingView,
+    ResummarizeRecordingView,
     SharedRecordingMediaView,
     SharedRecordingView,
     ShareUnlockView,
@@ -29,6 +30,11 @@ urlpatterns = [
     # client reaches the bytes. Everything else — a key pasted into a public
     # bucket URL, a proxy in front of the store — is delivery without an
     # authorization decision.
+    # The cheap regenerate: summary only, no STT/diarize re-run. A sibling of
+    # /reprocess rather than a flag on it — they differ in cost, in authority
+    # and in what they touch, and one endpoint with a "just the summary"
+    # switch would hide all three behind a request body.
+    path("recordings/<uuid:recording_id>/resummarize", ResummarizeRecordingView.as_view(), name="recordings-resummarize"),
     path("recordings/<uuid:recording_id>/media", RecordingMediaView.as_view(), name="recordings-media"),
     # Public share surface. The link token is a path segment because it IS
     # the credential the route resolves; unlock tokens travel in a header.
