@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user.deleted",
+  "description": "All user PII permanently deleted after grace period. Deprecated by stapel-gdpr 0.5.0 in favour of gdpr.erasure.requested (which carries the subject pair) and removed in 0.6.0; still consumed here for one minor, routed through the same erase(subject_type=\"account\") code.",
+  "type": "object",
+  "required": ["user_id"],
+  "properties": {
+    "user_id":        { "type": "string" },
+    "deleted_at":     { "type": "string", "format": "date-time" },
+    "trigger":        { "type": "string", "enum": ["manual", "inactivity", "platform"] },
+    "correlation_id": { "type": "string" }
+  },
+  "additionalProperties": false
+}

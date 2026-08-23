@@ -86,6 +86,14 @@
     {
       "select": "functions",
       "path": "resources.py"
+    },
+    {
+      "select": "functions",
+      "path": "erasure.py"
+    },
+    {
+      "select": "functions",
+      "path": "tasks.py"
     }
   ],
   "surface": {
@@ -260,6 +268,35 @@
     "identity_fields": {
       "kind": "factory",
       "intent": "The same attribution block built from raw ids, for callers that have them without a Recording — a live question, a search, a host view that knows its request.user. Absent ids are omitted rather than sent as null, which matters because the llm.* schemas type both as strings and reject unknown or ill-typed properties outright.",
+      "instead_of": []
+    },
+    "erase": {
+      "kind": "gate_function",
+      "intent": "The ONLY code that destroys a recording, for any subject: account, workspace, meeting or recording. Removes the rows, everything cascading from them (speakers, segments, upload sessions, shares, jobs, embeddings) and every storage object they reference through the STORAGE seam, then returns Django's own per-model tally so a gdpr receipt can carry counts instead of a claim. Idempotent by construction — a redelivered erasure removes nothing and still answers. Hand-rolled deletion is how an object survives its row: the keys live on the row you are about to delete.",
+      "instead_of": [
+        "stapel_recordings.models.Recording.delete"
+      ]
+    },
+    "recordings_for": {
+      "kind": "predicate",
+      "intent": "Turn a gdpr (subject_type, subject_key) pair into the recordings this module owns about that subject — the one place the four subject vocabularies are resolved (owner, workspace, meeting-or-metadata-link, id). Returns an empty queryset for a key that addresses nothing rather than raising, because an owner that cannot find a subject owns nothing about it and a zero-count receipt is the honest answer.",
+      "instead_of": []
+    },
+    "get_erasure_client": {
+      "kind": "factory",
+      "intent": "The configured ERASURE_CLIENT — how this module ASKS for an erasure rather than performing one. Use it (never an import of stapel_gdpr) when host code wants a recording erased through the receipts path; the seam is what lets a monolith call an orchestrator in-process and a service call one over HTTP.",
+      "instead_of": [
+        "stapel_gdpr.orchestrator.gdpr_orchestrator"
+      ]
+    },
+    "purge_soft_deleted_recordings": {
+      "kind": "gate_function",
+      "intent": "The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever.",
+      "instead_of": []
+    },
+    "get_recordings_beat_schedule": {
+      "kind": "factory",
+      "intent": "The beat entries this module needs, on the cadence PURGE_SCHEDULE states: merge into CELERY_BEAT_SCHEDULE. Fleet canon (stapel_gdpr.tasks.get_gdpr_beat_schedule) — a host that spells the entry by hand pins a task path that refactors out from under it, and checks.W010 only knows to stay quiet about the name this factory emits.",
       "instead_of": []
     }
   }

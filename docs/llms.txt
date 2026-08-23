@@ -1,8 +1,8 @@
-# stapel-recordings 0.15.0
+# stapel-recordings 0.16.0
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 29 · extension points 7 · operations 9 · error codes 55.
+Contract: axes 1 · surface 34 · extension points 7 · operations 9 · error codes 55.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -16,8 +16,13 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - abort_multipart_upload_session — stapel_recordings.services.abort_multipart_upload_session
   instead of: stapel_recordings.storage.RecordingStorage.abort_multipart_upload
   Cancel an unfinished multipart upload: aborts it at the object store AND deletes the session row. Aborting at the storage layer alone leaves a live UploadSession pointing at a key that no longer exists, which a retrying client will happily finalize.
+- erase — stapel_recordings.erasure.erase
+  instead of: stapel_recordings.models.Recording.delete
+  The ONLY code that destroys a recording, for any subject: account, workspace, meeting or recording. Removes the rows, everything cascading from them (speakers, segments, upload sessions, shares, jobs, embeddings) and every storage object they reference through the STORAGE seam, then returns Django's own per-model tally so a gdpr receipt can carry counts instead of a claim. Idempotent by construction — a redelivered erasure removes nothing and still answers. Hand-rolled deletion is how an object survives its row: the keys live on the row you are about to delete.
 - fail_stage — stapel_recordings.pipeline.fail_stage
   Move a recording to the DLQ once the task it was awaiting has failed for good. DLQ, not retry: the Task primitive has already exhausted its own max_attempts.
+- purge_soft_deleted_recordings — stapel_recordings.tasks.purge_soft_deleted_recordings
+  The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever.
 - reprocess_recording — stapel_recordings.pipeline.reprocess_recording
   instead of: stapel_recordings.events.emit_stage
   completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the ASR tier or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.
@@ -41,6 +46,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - is_valid_source_type — stapel_recordings.sources.is_valid_source_type
   instead of: stapel_recordings.models.SourceType.values
   The membership test for a source kind — ask this rather than comparing against the model enum's values, which rejects exactly the kinds a host went to the trouble of registering.
+- recordings_for — stapel_recordings.erasure.recordings_for
+  Turn a gdpr (subject_type, subject_key) pair into the recordings this module owns about that subject — the one place the four subject vocabularies are resolved (owner, workspace, meeting-or-metadata-link, id). Returns an empty queryset for a key that addresses nothing rather than raising, because an owner that cannot find a subject owns nothing about it and a zero-count receipt is the honest answer.
 ### factory
 - create_upload_session — stapel_recordings.services.create_upload_session
   instead of: stapel_recordings.storage.RecordingStorage.presigned_put_url
@@ -50,6 +57,11 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - finalize_upload — stapel_recordings.services.finalize_upload
   instead of: stapel_recordings.events.emit_uploaded
   Close an upload session and enter the pipeline: completes the multipart if there was one, stamps the real object size off a HEAD, moves the recording to queued and emits recording.uploaded through the outbox — idempotent under a concurrent second finalize. This is also the entry point for a programmatic import (a batch of historical recordings, a recorder that uploaded out of band); emitting recording.uploaded yourself skips every one of those steps.
+- get_erasure_client — stapel_recordings.erasure.get_erasure_client
+  instead of: stapel_gdpr.orchestrator.gdpr_orchestrator
+  The configured ERASURE_CLIENT — how this module ASKS for an erasure rather than performing one. Use it (never an import of stapel_gdpr) when host code wants a recording erased through the receipts path; the seam is what lets a monolith call an orchestrator in-process and a service call one over HTTP.
+- get_recordings_beat_schedule — stapel_recordings.tasks.get_recordings_beat_schedule
+  The beat entries this module needs, on the cadence PURGE_SCHEDULE states: merge into CELERY_BEAT_SCHEDULE. Fleet canon (stapel_gdpr.tasks.get_gdpr_beat_schedule) — a host that spells the entry by hand pins a task path that refactors out from under it, and checks.W010 only knows to stay quiet about the name this factory emits.
 - get_stage — stapel_recordings.stages.get_stage
   Resolve one stage name to a ready-to-run Stage instance — the lookup a custom driver, or a stage that delegates to another stage, needs. Lazy on purpose: only the requested handler is imported, so a broken dotted path elsewhere in the STAGES overlay breaks only the pipelines that include that stage instead of every recording at once.
 - get_storage — stapel_recordings.storage.get_storage

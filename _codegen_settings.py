@@ -54,7 +54,11 @@ def _postgres_database() -> dict | None:
     the connecting role must be allowed to ``CREATE EXTENSION vector`` (or
     have it pre-created in template1). Default (env var unset): sqlite, no
     vector app — the canonical zero-extra suite."""
-    url = os.environ.get("STAPEL_RECORDINGS_TEST_DB", "")
+    # noqa: CFG001 — this file IS the settings module for the test/codegen
+    # harness, and the knob selects the TEST database. It is not a runtime
+    # configuration key and has no place in CONFIG.MD, which describes what
+    # a host configures in production.
+    url = os.environ.get("STAPEL_RECORDINGS_TEST_DB", "")  # noqa: CFG001
     if not url.startswith(("postgres://", "postgresql://")):
         return None
     parsed = urlparse(url)

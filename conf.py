@@ -312,6 +312,22 @@ DEFAULTS = {
         "STUCK_THRESHOLD_SECONDS": 35 * 60,
         "ABANDONED_UPLOAD_THRESHOLD_SECONDS": 60 * 60,
 
+        # ── Erasure / retention (stapel_recordings.tasks) ─────────────
+        # How long a soft-deleted recording is kept before the scheduled
+        # purge opens a gdpr erasure for it. 30 days is the platform's
+        # purge SLA (STAPEL_GDPR["ERASURE_SLA_DAYS"]); a host that promises
+        # its users a shorter window sets a smaller number here, and the
+        # erasure — not this task — is what actually destroys the data.
+        "PURGE_AFTER_DAYS": 30,
+        # Cadence of that purge as crontab kwargs, so the schedule is
+        # configuration rather than a literal buried in a factory.
+        "PURGE_SCHEDULE": {"hour": 4, "minute": 20},
+        # How this module ASKS for an erasure (it never deletes outside the
+        # receipts path). Dotted path to an ErasureClient; the default uses
+        # stapel-gdpr's orchestrator in-process when that app is installed,
+        # and reports itself unavailable when it is not.
+        "ERASURE_CLIENT": "stapel_recordings.erasure.GDPRErasureClient",
+
         # ── Opt-in vector/search layer (stapel_recordings.vector) ─────
         # Nested tuning block for the optional embeddings app; see
         # DEFAULT_VECTOR above and vector_config() below. Not an axis —
@@ -322,17 +338,22 @@ DEFAULTS = {
 recordings_settings = AppSettings(
     "STAPEL_RECORDINGS",
     defaults=DEFAULTS,
-    import_strings=("STORAGE", "NORMALIZER", "PIPELINE_RESOLVER", "RECORDING_POLICY"),
+    import_strings=(
+        "STORAGE", "NORMALIZER", "PIPELINE_RESOLVER", "RECORDING_POLICY",
+        "ERASURE_CLIENT",
+    ),
     # Keys that must NOT fall back to an environment variable. AppSettings
     # reads os.environ for every key not listed here, and these names are
     # generic enough to collide in a shared pod or a compose file
     # (STORAGE, NORMALIZER, RECORDING_POLICY…) while each of them decides
     # something a stray value must never decide:
     #
-    #   * the four dotted-path seams are IMPORTED and then called — one env
+    #   * the five dotted-path seams are IMPORTED and then called — one env
     #     var swaps the authorization policy (RECORDING_POLICY), where the
-    #     bytes go (STORAGE), which stages run (PIPELINE_RESOLVER) or what
-    #     runs at the pipeline's subprocess entrance (NORMALIZER), with
+    #     bytes go (STORAGE), which stages run (PIPELINE_RESOLVER), what
+    #     runs at the pipeline's subprocess entrance (NORMALIZER) or who is
+    #     asked to open an erasure (ERASURE_CLIENT — a stray value there
+    #     silently unhooks retention from the receipts path), with
     #     FFMPEG_BIN / FFPROBE_BIN the literal argv[0] that entrance execs;
     #   * UPLOAD_CONTENT_POLICY="off" disables the finalize-time content
     #     gate, and STORAGE_SIGNS_GET_URLS vouches that a backend mints
@@ -350,6 +371,7 @@ recordings_settings = AppSettings(
         "FFPROBE_BIN",
         "PIPELINE_RESOLVER",
         "RECORDING_POLICY",
+        "ERASURE_CLIENT",
         "UPLOAD_CONTENT_POLICY",
         "STORAGE_SIGNS_GET_URLS",
         "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE",

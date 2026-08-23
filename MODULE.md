@@ -159,6 +159,9 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 | `MAX_UPLOAD_BYTES` | `2 GiB` | value | Upload cap |
 | `STUCK_THRESHOLD_SECONDS` | `2100` | value | Reconcile: age before re-drive. **Must exceed the longest stage duration** (built-ins: `TRANSCRIBE_TIMEOUT_SECONDS`), or reconcile re-drives stages that are still running (checked: W005) |
 | `ABANDONED_UPLOAD_THRESHOLD_SECONDS` | `3600` | value | Reconcile: abandoned-upload age |
+| `PURGE_AFTER_DAYS` | `30` | value | Days a soft-deleted recording is kept before the purge opens an erasure (below) |
+| `PURGE_SCHEDULE` | `{"hour": 4, "minute": 20}` | value | Crontab kwargs for the purge's beat entry |
+| `ERASURE_CLIENT` | `…erasure.GDPRErasureClient` | **replace** (dotted path) | Who is asked to OPEN an erasure (never deletes directly) |
 | `S3_*` | — | value | Config for the optional `S3Backend` |
 | `VECTOR` | see `DEFAULT_VECTOR` | **merge** (one nested level, via `vector_config()`) | Tuning block for the opt-in vector layer (below) |
 
@@ -318,7 +321,11 @@ under `schemas/emits/`, validated in tests.
 | Action (emit) | `recording.failed` | public DLQ terminal | `schemas/emits/recording.failed.json` |
 | Action (consume) | `recording.uploaded` | start the pipeline | — |
 | Action (consume) | `recording.stage` | run stage N (driver) | — |
-| Action (consume) | `user.deleted` | GDPR erase (owned by auth) | — |
+| Action (consume) | `gdpr.erasure.requested` | erase one subject + receipt (owned by **stapel-gdpr**) | `schemas/consumes/gdpr.erasure.requested.json` |
+| Action (consume) | `gdpr.owner.probe` | answer `gdpr.owner.alive` from the erasure subscriber | `schemas/consumes/gdpr.owner.probe.json` |
+| Action (consume) | `user.deleted` | account erase, deprecated (removed with gdpr 0.6.0) | `schemas/consumes/user.deleted.json` |
+| Action (emit) | `gdpr.section.erased` | this owner's receipt, with counts | owned by **stapel-gdpr** |
+| Action (emit) | `gdpr.owner.alive` | probe answer: `{owner, subject_types}` | owned by **stapel-gdpr** |
 | Function (**call**) | `llm.transcribe` | STT | provided by **stapel-agent** |
 | Function (**call**) | `llm.summarize` | summary | provided by **stapel-agent** |
 | Function (**call**) | `llm.embed` | embeddings (opt-in vector layer only) | provided by **stapel-agent** ≥ 0.4 |
@@ -358,21 +365,78 @@ under `schemas/emits/`, validated in tests.
   worker/connection even though the completion cursor keeps it
   semantically harmless. System check W005 warns on inconsistency.
 
-### GDPR
+### Erasure
 
-`RecordingsGDPRProvider` (section `recordings`) is registered in
-`ready()`; `@on_action("user.deleted")` hard-deletes the user's recordings
-and their storage objects (via the seam). Consumer + provider are both
-required because this module holds user data.
+This module is a **gdpr data owner** (`recordings`) for four subject types:
+`account`, `workspace`, `meeting`, `recording`. Declare it in the host's
+inventory so an erasure of any of them waits for this module's receipt:
 
-Erasure contract (idempotent, at-least-once): rows are locked
-(`select_for_update`) before their object keys are read — serializing with
-a live `run_stage` so a stage can't commit a new object key for a row being
+```python
+STAPEL_GDPR = {
+    "DATA_OWNERS": {
+        "recordings": ["account", "workspace", "meeting", "recording"],
+        ...
+    },
+}
+```
+
+**One destruction path.** `erasure.erase(subject_type, subject_key,
+workspace_id=None)` is the only code that destroys a recording, and
+everything routes through it: the comm subscriber
+(`@on_action("gdpr.erasure.requested")`), the deprecated
+`@on_action("user.deleted")` (account subject; stapel-gdpr keeps firing it
+until 0.6.0), and `RecordingsGDPRProvider.delete()` (the in-process provider
+the monolith orchestrator calls). It removes the `Recording` rows for the
+subject, everything cascading from them (`Speaker`, `Segment`,
+`UploadSession`, `RecordingShare`, `Job`, and — with the opt-in vector app —
+`SegmentEmbedding` / `RecordingEmbedding`) and every storage object they
+reference, through the **STORAGE seam** the uploads use. It returns Django's
+own per-model tally, so the receipt carries counts rather than a claim.
+
+Subject resolution: `account` → `owner_id`; `workspace` → `workspace_id`;
+`recording` → the row's id; `meeting` → the recording with that id **and**
+every recording whose `metadata["meeting_id"]` matches (a recording IS the
+meeting where the host has no separate entity — `transcript_schema` already
+numbers transcripts by `meeting_id = recording.id` — while a host that does
+have one links its recordings through that key). A `workspace_id` on the
+request narrows the meeting lookup, since a host's meeting id is unique
+inside a workspace, not across the platform.
+
+**Reliability contract** (idempotent, at-least-once): rows are locked
+(`select_for_update`) before their object keys are read — serializing with a
+live `run_stage`, so a stage cannot commit a new object key for a row being
 deleted — and a row is deleted only after **all** of its objects were
 deleted. Storage failures keep the affected rows and raise
 `GDPRStorageDeleteError` after the clean rows' deletion commits, so the
-`user.deleted` redelivery / GDPR-orchestrator retry re-drives erasure for
-exactly the remaining rows.
+redelivery / orchestrator retry re-drives erasure for exactly the remaining
+rows. A second erasure of the same subject removes nothing, raises nothing,
+and still receipts — zero counts is an answer; silence is a timeout.
+
+**Liveness.** `@on_action("gdpr.owner.probe")` answers `gdpr.owner.alive
+{owner: "recordings", subject_types}` **from the same module** as the
+erasure handler. That co-location is the point: an answer proves the erasure
+path is being consumed, not that a container was deployed. It is what
+`gdpr.W006` and `GET /gdpr/api/v1/owners/health` read.
+
+**Retention — the soft delete finally ends.** Deleting a recording stamps
+`deleted_at`; nothing used to remove it afterwards. `tasks.
+purge_soft_deleted_recordings` (daily) takes every recording soft-deleted
+longer than `PURGE_AFTER_DAYS` (30) ago with no erasure already in flight and
+**opens a gdpr erasure** for it through the `ERASURE_CLIENT` seam — it never
+deletes directly, so a single-recording delete is receipted by every owner
+that claims the `recording` subject and the product can show its state. Wire
+it up:
+
+```python
+from stapel_recordings.tasks import get_recordings_beat_schedule
+
+CELERY_BEAT_SCHEDULE = {**get_recordings_beat_schedule(), ...}
+```
+
+Celery is optional (the task is a plain callable any scheduler can invoke),
+but a host that drives a beat schedule containing nothing from this module
+gets **`stapel_recordings.W010`** at boot — a retention policy nobody
+schedules is a promise, not a mechanism.
 
 ### Admin categories (`stapel_core.access`, admin-suite AS-5)
 

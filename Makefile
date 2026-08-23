@@ -20,15 +20,16 @@ PYTHON ?= python3
 # Emit the contract triad + capabilities.json + llms.txt (the fifth contract
 # artifact, stapel_tools.llms_txt) into docs/.
 #
-# The llms.txt budget is raised from the generator's default 4000 to 5000,
+# The llms.txt budget is raised from the generator's default 4000 to 6000,
 # same exception stapel-auth (8000) and stapel-workspaces (4500) already
-# take. This is the fleet's most file-rich module (27 usage-surface entries
-# across services, storage, pipeline, stages, sources, resources), and the
-# QA capability (vector/qa.py) pushed it past the old 4500 ceiling. Raise
-# the ceiling, do NOT shorten `intent` lines in docs/capabilities.meta.json
-# to fit — a trimmed context file is indistinguishable from a complete one
-# at the point of use, which is the failure mode the budget gate exists to
-# prevent. contract-check below enforces the same 5000 ceiling.
+# take. This is the fleet's most file-rich module (34 usage-surface entries
+# across services, storage, pipeline, stages, sources, resources, erasure
+# and tasks); the QA capability (vector/qa.py) pushed it past the old 4500
+# ceiling and 0.16.0's erasure surface past 5000. Raise the ceiling, do NOT
+# shorten `intent` lines in docs/capabilities.meta.json to fit — a trimmed
+# context file is indistinguishable from a complete one at the point of
+# use, which is the failure mode the budget gate exists to prevent.
+# contract-check below enforces the same 6000 ceiling.
 #
 # README.md is the SIXTH artifact (tracker #257): assembled by
 # stapel_tools.readme from docs/readme.md (the human half — what this module
@@ -38,7 +39,7 @@ PYTHON ?= python3
 contract:
 	$(PYTHON) -m stapel_recordings._codegen --out docs
 	$(PYTHON) -m stapel_recordings._capabilities --out docs
-	$(PYTHON) -m stapel_tools.llms_txt . --out docs --budget 5000
+	$(PYTHON) -m stapel_tools.llms_txt . --out docs --budget 6000
 	$(PYTHON) -m stapel_tools.readme .
 
 # Drift gate: regenerate into a temp dir and diff against the committed docs/*.json
@@ -47,7 +48,7 @@ contract-check:
 	@tmp=$$(mktemp -d); \
 	$(PYTHON) -m stapel_recordings._codegen --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
 	$(PYTHON) -m stapel_recordings._capabilities --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
-	$(PYTHON) -m stapel_tools.llms_txt . --out "$$tmp" --budget 5000 || { rm -rf "$$tmp"; exit 1; }; \
+	$(PYTHON) -m stapel_tools.llms_txt . --out "$$tmp" --budget 6000 || { rm -rf "$$tmp"; exit 1; }; \
 	rc=0; \
 	for f in schema.json flows.json errors.json capabilities.json llms.txt; do \
 		if ! diff -q "docs/$$f" "$$tmp/$$f" >/dev/null 2>&1; then \

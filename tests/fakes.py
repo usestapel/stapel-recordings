@@ -145,3 +145,42 @@ def broken_resolver(recording):
     """PIPELINE_RESOLVER double that fails (missing per-workspace row, DB
     glitch) — used to assert bounded retry -> DLQ instead of a crash loop."""
     raise RuntimeError("pipeline definition unavailable")
+
+
+# ── ERASURE_CLIENT seam double ────────────────────────────────────────
+#
+# The scheduled purge asks a gdpr client to OPEN an erasure; it never
+# deletes anything itself. stapel-gdpr is not installed in this suite (this
+# package does not depend on it), so the seam is what the tests drive.
+
+#: (subject_type, subject_key, workspace_id) triples the purge asked for.
+ERASURE_REQUESTS: list[tuple] = []
+#: Subjects the fake reports as already having an erasure in flight.
+OPEN_ERASURES: set[tuple] = set()
+
+
+def reset_fake_erasures() -> None:
+    ERASURE_REQUESTS.clear()
+    OPEN_ERASURES.clear()
+
+
+class FakeErasureClient:
+    """Records what the purge asked for. Available by construction."""
+
+    def available(self) -> bool:
+        return True
+
+    def has_open_erasure(self, subject_type, subject_key) -> bool:
+        return (subject_type, str(subject_key)) in OPEN_ERASURES
+
+    def request_erasure(self, subject_type, subject_key, *, workspace_id=None):
+        ERASURE_REQUESTS.append((subject_type, str(subject_key), workspace_id))
+        OPEN_ERASURES.add((subject_type, str(subject_key)))
+        return f"corr-{len(ERASURE_REQUESTS)}"
+
+
+class UnavailableErasureClient(FakeErasureClient):
+    """No gdpr in this deployment: the purge must report, not destroy."""
+
+    def available(self) -> bool:
+        return False

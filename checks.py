@@ -292,3 +292,42 @@ def check_agent_version_for_identity(app_configs, **kwargs):
             id="stapel_recordings.W009",
         )
     ]
+
+
+@checks.register(checks.Tags.compatibility)
+def check_purge_is_scheduled(app_configs, **kwargs):
+    """W010: is the soft-delete purge actually going to run?
+
+    ``PURGE_AFTER_DAYS`` is a promise to the user that a recording they
+    deleted stops existing. The mechanism that keeps it is a scheduled task,
+    and a task nobody schedules is indistinguishable, from the outside, from
+    a retention policy that works — the rows are gone from the UI either
+    way. This check is the difference, stated at boot instead of discovered
+    in an audit.
+
+    Only hosts that drive a beat schedule are checked: a host with no
+    ``CELERY_BEAT_SCHEDULE`` runs the purge from its own cron or systemd
+    timer, which this check cannot see and must not second-guess.
+    """
+    from django.conf import settings
+
+    from .tasks import PURGE_TASK_NAME
+
+    schedule = getattr(settings, "CELERY_BEAT_SCHEDULE", None)
+    if schedule is None:
+        return []
+    if any((entry or {}).get("task") == PURGE_TASK_NAME for entry in schedule.values()):
+        return []
+    return [checks.Warning(
+        "Soft-deleted recordings are never purged: no CELERY_BEAT_SCHEDULE "
+        f"entry runs {PURGE_TASK_NAME}, so a recording a user deleted keeps "
+        "its rows, its audio and its transcript forever while "
+        "STAPEL_RECORDINGS['PURGE_AFTER_DAYS'] claims otherwise.",
+        hint=(
+            "Add **stapel_recordings.tasks.get_recordings_beat_schedule() to "
+            "CELERY_BEAT_SCHEDULE, or invoke "
+            "stapel_recordings.tasks.purge_soft_deleted_recordings from your "
+            "own scheduler."
+        ),
+        id="stapel_recordings.W010",
+    )]

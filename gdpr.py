@@ -1,8 +1,17 @@
 """GDPR data handler for the recordings a user owns.
 
 Recordings hold user data (owner, titles, transcripts, audio objects), so
-this module is a GDPR data holder: it registers a provider (monolith
-mode) and an ``@on_action("user.deleted")`` consumer (``actions.py``).
+this module is a GDPR data holder: it registers a provider (monolith mode)
+and the erasure/probe subscribers in ``actions.py`` (any transport).
+
+This file owns the *account* view of that data — export, and the in-process
+provider interface, which is account-scoped by construction. Destruction
+itself lives in :mod:`stapel_recordings.erasure`, which is subject-scoped:
+:meth:`RecordingsGDPRProvider.delete` is a thin call into
+``erase("account", user_id)``, the same function the comm subscriber runs
+for every other subject. One deletion path, four subjects — a provider that
+destroyed rows its own way would be the second implementation that drifts.
+
 Storage objects are erased through the STORAGE seam, not a hardcoded S3
 client.
 """
@@ -12,13 +21,9 @@ import logging
 
 from stapel_core.gdpr import GDPRProvider
 
+from .erasure import SUBJECT_ACCOUNT, GDPRStorageDeleteError, erase
+
 logger = logging.getLogger(__name__)
-
-
-class GDPRStorageDeleteError(RuntimeError):
-    """Raised when one or more storage objects could not be erased. The rows
-    referencing them are kept, so the at-least-once retry paths (``user.deleted``
-    redelivery / the GDPR orchestrator) can re-drive the erasure."""
 
 
 class RecordingsGDPRProvider(GDPRProvider):
@@ -47,53 +52,16 @@ class RecordingsGDPRProvider(GDPRProvider):
 
     def delete(self, user_id) -> None:
         """Hard-delete the user's recordings and every storage object they
-        reference (raw, normalized, transcript). Cascade removes Speaker/
-        Segment/UploadSession/Job rows.
+        reference — :func:`stapel_recordings.erasure.erase` for the
+        ``account`` subject.
 
-        Reliability contract (idempotent, at-least-once):
-
-        - Rows are locked (``select_for_update``) before their keys are
-          snapshotted, serializing with ``run_stage`` — a live stage cannot
-          commit a *new* object key (normalized/transcript) for a row we are
-          about to delete, so no orphan slips through the race window.
-        - A row is deleted only after **all** of its objects were deleted.
-          Failures are collected and re-raised at the end
-          (:class:`GDPRStorageDeleteError`) *after* the clean rows' deletion
-          committed — the caller's retry (``user.deleted`` redelivery or the
-          GDPR orchestrator) re-runs erasure for the kept rows only.
+        Idempotent and at-least-once safe; a storage failure keeps the
+        referencing rows and raises :class:`GDPRStorageDeleteError` so the
+        caller's retry can re-drive it. See ``erasure.erase`` for the full
+        contract (row locking against a live pipeline stage, per-row
+        all-or-nothing object deletion, cascade counts).
         """
-        from django.db import transaction
-
-        from .models import Recording
-        from .storage import get_storage
-
-        storage = get_storage()
-        failed_keys: list[str] = []
-        with transaction.atomic():
-            rows = Recording.objects.select_for_update().filter(owner_id=user_id)
-            deletable_ids = []
-            for r in rows:
-                row_ok = True
-                for key in (r.file_storage_key, r.normalized_storage_key, r.transcript_storage_key):
-                    if not key:
-                        continue
-                    try:
-                        storage.delete_object(key)
-                    except Exception:
-                        logger.warning(
-                            "gdpr: could not delete object %s for user %s (row kept for retry)",
-                            key, user_id, exc_info=True,
-                        )
-                        row_ok = False
-                        failed_keys.append(key)
-                if row_ok:
-                    deletable_ids.append(r.pk)
-            Recording.objects.filter(pk__in=deletable_ids).delete()
-        if failed_keys:
-            raise GDPRStorageDeleteError(
-                f"could not delete {len(failed_keys)} storage object(s) for user {user_id}; "
-                "the referencing recording rows were kept — erasure will be retried"
-            )
+        erase(SUBJECT_ACCOUNT, user_id)
 
     def anonymize(self, user_id) -> None:
         # Recordings are hard-deleted (they are private user artifacts), so

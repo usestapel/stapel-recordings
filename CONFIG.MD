@@ -47,15 +47,15 @@ for the keys marked `no_env`, which skip the environment step entirely (see
 | STUCK_THRESHOLD_SECONDS | env | reconcile watchdog: age at which a running stage is re-emitted (must exceed the longest stage). | no | 2100 |
 | ABANDONED_UPLOAD_THRESHOLD_SECONDS | env | age at which an incomplete upload session is abandoned. | no | 3600 |
 
-### ffmpeg shell-out (source: settings)
+### ffmpeg shell-out (source: env — but never the process environment)
 
 | Key | Source | Purpose | Required | Default |
 |-----|--------|---------|----------|---------|
-| FFMPEG_BIN | settings | ffmpeg binary path/name. **Not read from the environment** (`no_env`). | no | ffmpeg |
-| FFPROBE_BIN | settings | ffprobe binary path/name. **Not read from the environment** (`no_env`). | no | ffprobe |
+| FFMPEG_BIN | env | ffmpeg binary path/name. **Not read from the environment** (`no_env`). | no | ffmpeg |
+| FFPROBE_BIN | env | ffprobe binary path/name. **Not read from the environment** (`no_env`). | no | ffprobe |
 | FFMPEG_TIMEOUT_SECONDS | env | subprocess timeout (seconds) for an ffmpeg/ffprobe call. | no | 1800 |
 
-### Authorization switches (source: settings — never the environment)
+### Authorization switches (source: env — but never the process environment)
 
 Every key in this section is `no_env`: it resolves from
 `settings.STAPEL_RECORDINGS`, a flat Django setting, or its default, and a
@@ -66,8 +66,25 @@ the string `"false"` means false.
 
 | Key | Source | Purpose | Required | Default |
 |-----|--------|---------|----------|---------|
-| RECORDING_POLICY | settings | dotted path to the class answering may-this-user-read/edit/delete/upload/reprocess. | no | stapel_recordings.policy.OwnerOnlyPolicy |
-| REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE | settings | verify membership of the workspace `POST /recordings` writes into. False only where no workspaces module can answer. | no | true |
-| WORKSPACE_LISTING_MEMBERS_SEE_ALL | settings | `?workspace_id=` returns every member's recordings instead of what RECORDING_POLICY makes visible. | no | false |
-| UPLOAD_CONTENT_POLICY | settings | finalize-time gate on the stored object's leading bytes: reject_known_bad / require_known_media / off. `off` also waives the refusal when the backend cannot serve a ranged read. | no | reject_known_bad |
-| STORAGE_SIGNS_GET_URLS | settings | tri-state override of `RecordingStorage.signs_get_urls`; True vouches that the backend mints EXPIRING GET URLs. | no | null (ask the backend) |
+| RECORDING_POLICY | env | dotted path to the class answering may-this-user-read/edit/delete/upload/reprocess. | no | stapel_recordings.policy.OwnerOnlyPolicy |
+| REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE | env | verify membership of the workspace `POST /recordings` writes into. False only where no workspaces module can answer. | no | true |
+| WORKSPACE_LISTING_MEMBERS_SEE_ALL | env | `?workspace_id=` returns every member's recordings instead of what RECORDING_POLICY makes visible. | no | false |
+| UPLOAD_CONTENT_POLICY | env | finalize-time gate on the stored object's leading bytes: reject_known_bad / require_known_media / off. `off` also waives the refusal when the backend cannot serve a ranged read. | no | reject_known_bad |
+| STORAGE_SIGNS_GET_URLS | env | tri-state override of `RecordingStorage.signs_get_urls`; True vouches that the backend mints EXPIRING GET URLs. | no | null (ask the backend) |
+
+### Erasure & retention (source: env — `ERASURE_CLIENT` never from the process environment)
+
+A soft-deleted recording is not a deleted one. `PURGE_AFTER_DAYS` is how long
+it is kept, and the scheduled purge
+(`stapel_recordings.tasks.purge_soft_deleted_recordings`, wired with
+`get_recordings_beat_schedule()`) does not delete it — it opens a gdpr erasure
+through `ERASURE_CLIENT`, so the destruction is receipted by every data owner
+that claims the `recording` subject. `ERASURE_CLIENT` is `no_env` for the same
+reason the other dotted-path seams are: a stray value unhooks retention from
+the receipts path without anything looking wrong.
+
+| Key | Source | Purpose | Required | Default |
+|-----|--------|---------|----------|---------|
+| PURGE_AFTER_DAYS | env | days a soft-deleted recording is kept before the purge opens a gdpr erasure for it. | no | 30 |
+| PURGE_SCHEDULE | env | crontab kwargs for the purge's beat entry (`get_recordings_beat_schedule`). | no | {"hour": 4, "minute": 20} |
+| ERASURE_CLIENT | env | dotted path to the ErasureClient that OPENS erasures (never deletes directly). | no | stapel_recordings.erasure.GDPRErasureClient |

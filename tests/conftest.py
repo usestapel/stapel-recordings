@@ -10,9 +10,11 @@ def _reset_fakes():
     from stapel_recordings.tests import fakes
 
     fakes.reset_fake_storage()
+    fakes.reset_fake_erasures()
     fakes.STAGE_TRACE.clear()
     yield
     fakes.reset_fake_storage()
+    fakes.reset_fake_erasures()
     fakes.STAGE_TRACE.clear()
 
 

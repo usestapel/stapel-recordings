@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gdpr.owner.probe",
+  "description": "Liveness probe for declared data owners. Answered with gdpr.owner.alive {owner: \"recordings\", subject_types} from the SAME subscriber that handles gdpr.erasure.requested, so the answer proves this module's erasure path is being consumed rather than that a container is deployed.",
+  "type": "object",
+  "required": ["correlation_id"],
+  "properties": {
+    "correlation_id": { "type": "string", "format": "uuid" }
+  },
+  "additionalProperties": false
+}

@@ -6,6 +6,106 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-23
+
+### Added — a deleted recording is finally deleted (subject-scoped erasure)
+
+Minor, not patch: three new settings, two new modules on the public surface,
+a new system check, and two comm actions this module now consumes and
+answers. Nothing existing changes shape.
+
+Two halves of the same hole, closed together.
+
+**The first: the soft delete had no end.** Deleting a recording stamped
+`deleted_at`, the row left every listing, and the audio, the transcript and
+the embeddings stayed exactly where they were — forever. The only thing that
+could still erase the bytes was closing the whole account. `tasks.
+purge_soft_deleted_recordings` is the missing half: daily, every recording
+soft-deleted longer than `PURGE_AFTER_DAYS` (30) ago with no erasure already
+in flight gets one **opened** for it. It deletes nothing itself, and that is
+the design — routing the purge through a gdpr erasure is what gets a
+single-recording delete receipted by every owner that claims it (this module
+for the rows and objects, media for derived files, the agent for prompts
+about it) and lets the product show "pending deletion until X" instead of
+guessing. `get_recordings_beat_schedule()` wires it (fleet canon:
+`stapel_gdpr.tasks.get_gdpr_beat_schedule`); celery stays optional, the task
+is a plain callable. A host that drives a beat schedule containing nothing
+from this module gets **`stapel_recordings.W010`** at boot — a retention
+policy nobody schedules is a promise, not a mechanism, and from the outside
+it is indistinguishable from one that works.
+
+**The second: the account was the only subject anyone could erase.** With
+stapel-gdpr 0.5.0 the subject of an erasure became a parameter, so this
+module now declares itself a data owner for four of them — `account`,
+`workspace`, `meeting`, `recording` — and `actions.py` handles
+`gdpr.erasure.requested` for all four: erase, then confirm with
+`gdpr.section.erased` carrying the **counts** it removed. Counts, because
+"it says it ran" and "it says what it did" are not the same receipt.
+
+`erasure.erase(subject_type, subject_key, workspace_id=None)` is now the ONLY
+code that destroys a recording. `RecordingsGDPRProvider.delete()` is a call
+into it (`subject_type="account"`), and so is the deprecated
+`@on_action("user.deleted")` — which keeps working for one minor, since
+stapel-gdpr keeps firing it until 0.6.0, and now receipts too when the
+payload carries a correlation_id. One destruction path, four subjects: rows,
+everything cascading from them (`Speaker`, `Segment`, `UploadSession`,
+`RecordingShare`, `Job`, and — with the opt-in vector app —
+`SegmentEmbedding` / `RecordingEmbedding`), and every storage object, through
+the STORAGE seam the uploads already use. No second object client: a bucket
+reached by a path this module does not otherwise use is a bucket erasure
+will one day miss.
+
+`meeting` resolves to the recording with that id **and** every recording
+whose `metadata["meeting_id"]` matches — a recording IS the meeting where the
+host has no separate entity (`transcript_schema` already numbers transcripts
+by `meeting_id = recording.id`), and a host that does have one links through
+that key. A `workspace_id` on the request narrows it, since a meeting id is
+unique inside a workspace and not across the platform.
+
+`@on_action("gdpr.owner.probe")` answers `gdpr.owner.alive {owner,
+subject_types}` **from that same module**. That co-location is the whole
+value of the answer: it proves the erasure path is being consumed, not that a
+container was deployed. It is what `gdpr.W006` and `GET
+/gdpr/api/v1/owners/health` read — the fleet finding that seven declared
+owners were silent becomes a warning at boot instead of an erasure that times
+out thirty days later.
+
+Erasure is idempotent by construction: a second one for the same subject
+removes nothing, raises nothing, and still receipts. Zero counts is an
+answer; silence is a timeout.
+
+### Added — settings
+
+| Key | Default | What it decides |
+|---|---|---|
+| `PURGE_AFTER_DAYS` | `30` | Days a soft-deleted recording is kept before the purge opens an erasure |
+| `PURGE_SCHEDULE` | `{"hour": 4, "minute": 20}` | Crontab kwargs for the purge's beat entry |
+| `ERASURE_CLIENT` | `…erasure.GDPRErasureClient` | Who is asked to OPEN an erasure. `no_env`, like the other dotted-path seams — a stray value would unhook retention from the receipts path without anything looking wrong |
+
+The default client uses stapel-gdpr's orchestrator in-process when that app
+is installed and reports itself **unavailable** when it is not; the purge
+then counts the aged rows and logs that nothing was erased, rather than
+destroying data outside the receipts path or raising once per row in a
+scheduled task. This package still does not depend on stapel-gdpr.
+
+### Host wiring
+
+```python
+STAPEL_GDPR = {"DATA_OWNERS": {"recordings": ["account", "workspace", "meeting", "recording"], ...}}
+CELERY_BEAT_SCHEDULE = {**get_recordings_beat_schedule(), ...}
+```
+
+and a `consume_actions` process for this module — without one, `alive` never
+answers and every erasure naming a subject it claims times out.
+
+### Fixed
+
+- `CONFIG.MD` used `settings` in the Source column for the seven `no_env`
+  keys. The fleet's manifest vocabulary is `env` / `vault`, so
+  `stapel-config-lint` could not parse the file at all and every rule below
+  the parse went unchecked. The distinction those rows carry lives where it
+  is enforced anyway — in each row's own text and in `conf.no_env`.
+
 ## [0.15.0] — 2026-08-21
 
 ### Changed — every delegated AI call says who it is for (**requires stapel-agent >= 0.12.0**)
