@@ -6,7 +6,21 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
-## [0.16.0] — 2026-08-23
+## [0.16.1] — 2026-08-23
+
+### Fixed
+
+- **0.16.0 was tagged but never published.** Two of its new tests reached for
+  `celery` to build the beat entry, and celery is not a dependency of this
+  package — it is optional by design, since `purge_soft_deleted_recordings`
+  is a plain callable any scheduler can invoke. The tests passed in a
+  workspace venv that happened to have celery and failed on every CI matrix
+  row. The beat-factory test now skips without celery; the system-check test
+  builds its schedule from `PURGE_TASK_NAME` instead, so the check stays
+  pinned everywhere. No library code changed — 0.16.1 is 0.16.0's content,
+  published.
+
+## [0.16.0] — 2026-08-23 (tagged, unpublished — see 0.16.1)
 
 ### Added — a deleted recording is finally deleted (subject-scoped erasure)
 

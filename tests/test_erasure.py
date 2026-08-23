@@ -386,6 +386,10 @@ def test_purge_without_a_gdpr_client_reports_instead_of_deleting(use_fakes, make
 
 
 def test_beat_schedule_points_at_the_purge_task():
+    # celery is optional for this package (the purge is a plain callable any
+    # scheduler can invoke), so only the factory that builds a celery crontab
+    # needs it.
+    pytest.importorskip("celery")
     from stapel_recordings.tasks import PURGE_TASK_NAME, get_recordings_beat_schedule
 
     entries = list(get_recordings_beat_schedule().values())
@@ -408,9 +412,14 @@ def test_check_fires_when_a_beat_schedule_runs_everything_but_the_purge():
 
 
 def test_check_is_silent_once_the_schedule_is_registered():
-    from stapel_recordings.tasks import get_recordings_beat_schedule
+    # Built from the shared constant rather than from the factory, so the
+    # check is pinned where celery is not installed too; the factory's own
+    # test is what pins that it emits this very task name.
+    from stapel_recordings.tasks import PURGE_TASK_NAME
 
-    with override_settings(CELERY_BEAT_SCHEDULE=get_recordings_beat_schedule()):
+    with override_settings(CELERY_BEAT_SCHEDULE={
+        "recordings-soft-delete-purge": {"task": PURGE_TASK_NAME},
+    }):
         assert _w010() == []
 
 
