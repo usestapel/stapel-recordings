@@ -24,13 +24,13 @@ pip install stapel-recordings
 
 | Fact | Value |
 |---|---|
-| Version | `0.17.0` |
+| Version | `0.17.1` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 10 |
 | Config axes | 1 |
 | Usage surface | 39 |
 | Extension points | 7 |
-| Error codes | 56 |
+| Error codes | 57 |
 | Fleet dependencies | [`stapel-agent`](https://github.com/usestapel/stapel-agent) (optional) · [`stapel-auth`](https://github.com/usestapel/stapel-auth) (optional) · [`stapel-core`](https://github.com/usestapel/stapel-core) |
 
 ## Documentation

@@ -6,7 +6,25 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
-## [0.17.0] — 2026-08-23
+## [0.17.1] — 2026-08-23
+
+### Fixed
+
+- **0.17.0 was tagged but never published.** `docs/errors.json` is generated
+  from the *live* error registry, which includes every key stapel-core
+  registers — and the workspace venv that generated it was pinned to
+  stapel-core 0.26.0 while CI installs core from git main (0.34.0). The
+  committed artifact was missing `error.503.mandate_unavailable`, a key core
+  gained in between, so the drift gate failed on every CI row while passing
+  locally. Regenerated against core main; the error count goes 56 → 57. No
+  library code changed — 0.17.1 is 0.17.0's content, published.
+
+  The lesson is about the gate, not the key: an artifact generated from an
+  installed dependency is only as current as that dependency, so "make
+  contract is green" means nothing until the venv that ran it matches what CI
+  installs.
+
+## [0.17.0] — 2026-08-23 (tagged, unpublished — see 0.17.1)
 
 ### Added — the cheap regenerate: a summary re-run that is not a reprocess
 
