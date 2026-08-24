@@ -24,11 +24,11 @@ pip install stapel-recordings
 
 | Fact | Value |
 |---|---|
-| Version | `0.18.0` |
+| Version | `0.19.0` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 10 |
 | Config axes | 1 |
-| Usage surface | 39 |
+| Usage surface | 40 |
 | Extension points | 7 |
 | Error codes | 59 |
 | Fleet dependencies | [`stapel-agent`](https://github.com/usestapel/stapel-agent) (optional) · [`stapel-auth`](https://github.com/usestapel/stapel-auth) (optional) · [`stapel-core`](https://github.com/usestapel/stapel-core) |
@@ -106,7 +106,7 @@ Highlights: `PIPELINE`, `STAGES`, `PIPELINE_RESOLVER`, `STORAGE`,
 
 | Kind | Name | Contract |
 |---|---|---|
-| Action (emit) | `recording.uploaded`, `recording.stage_completed`, `recording.completed`, `recording.failed` | pipeline lifecycle (public) |
+| Action (emit) | `recording.uploaded`, `recording.stage_completed`, `recording.completed`, `recording.failed` | pipeline lifecycle (public); the run events carry `run_id` + `attempt` — a reprocess is a new run, so meter on `recording_id` + `run_id` |
 | Action (consume) | `recording.uploaded`, `recording.stage`, `user.deleted` | driver + GDPR erase |
 | Function (call) | `llm.transcribe`, `llm.summarize` | provided by stapel-agent |
 

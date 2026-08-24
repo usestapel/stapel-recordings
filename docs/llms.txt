@@ -1,8 +1,8 @@
-# stapel-recordings 0.18.0
+# stapel-recordings 0.19.0
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 39 · extension points 7 · operations 10 · error codes 59.
+Contract: axes 1 · surface 40 · extension points 7 · operations 10 · error codes 59.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -28,7 +28,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever.
 - reprocess_recording — stapel_recordings.pipeline.reprocess_recording
   instead of: stapel_recordings.events.emit_stage
-  completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the transcription provider or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.
+  completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the transcription provider or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, mints a NEW run_id and increments attempt so the re-run's events are distinguishable from the first run's (a metered consumer keyed on the recording alone bills the re-run as free), and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.
 - resume_resummarize — stapel_recordings.stages.resume_resummarize
   instead of: stapel_recordings.pipeline.resume_stage
   Apply an arriving llm.summarize task result to a standalone re-summary, answering True only when the task belonged to one. Wire it BEFORE pipeline.resume_stage in a task.completed subscriber: a re-summary runs on a finished recording, whose status the pipeline driver treats as terminal, so the driver would silently drop the result. Redelivery-safe — a second delivery finds the job closed and answers False.
@@ -102,6 +102,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The effective {name: handler} map — built-ins, then the STAGES overlay, then runtime registrations. Read this to answer "which stages exist in this deployment" (a pipeline editor's picker, a config check, an error message listing the options); BUILTIN_STAGES answers only "which stages shipped", which stops being the same question the moment a host configures anything.
 - resource_key — stapel_recordings.resources.resource_key
   The opaque, signed handle a recording is referenced by in API payloads. Anything rendering a recording for a client publishes this instead of the row's UUID: the list surface is workspace-scoped, so it returns recordings owned by other members, and their raw ids would cross the wire in a form a client can store, guess at and replay.
+- run_identity — stapel_recordings.pipeline.run_identity
+  instead of: stapel_recordings.models.Recording.workflow_state
+  The recording's current pipeline run as {run_id, attempt} — the same pair recording.stage_completed / recording.completed / recording.failed carry. Read it to tie a run to what it cost: an invoice line, a credit hold, an audit trail, or the idempotency key a metering consumer builds (recording_id + run_id — keyed on the recording alone, every reprocess after the first is free). Read-only, and cheaper than re-deriving the workflow_state key names, which are the driver's private cursor layout.
 - start_multipart_upload — stapel_recordings.services.start_multipart_upload
   instead of: stapel_recordings.storage.RecordingStorage.create_multipart_upload
   The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects.

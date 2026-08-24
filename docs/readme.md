@@ -67,7 +67,7 @@ Highlights: `PIPELINE`, `STAGES`, `PIPELINE_RESOLVER`, `STORAGE`,
 
 | Kind | Name | Contract |
 |---|---|---|
-| Action (emit) | `recording.uploaded`, `recording.stage_completed`, `recording.completed`, `recording.failed` | pipeline lifecycle (public) |
+| Action (emit) | `recording.uploaded`, `recording.stage_completed`, `recording.completed`, `recording.failed` | pipeline lifecycle (public); the run events carry `run_id` + `attempt` — a reprocess is a new run, so meter on `recording_id` + `run_id` |
 | Action (consume) | `recording.uploaded`, `recording.stage`, `user.deleted` | driver + GDPR erase |
 | Function (call) | `llm.transcribe`, `llm.summarize` | provided by stapel-agent |
 

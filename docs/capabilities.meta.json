@@ -180,9 +180,16 @@
   },
   "reprocess_recording": {
    "kind": "gate_function",
-   "intent": "completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the transcription provider or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.",
+   "intent": "completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the transcription provider or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, mints a NEW run_id and increments attempt so the re-run's events are distinguishable from the first run's (a metered consumer keyed on the recording alone bills the re-run as free), and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.",
    "instead_of": [
     "stapel_recordings.events.emit_stage"
+   ]
+  },
+  "run_identity": {
+   "kind": "factory",
+   "intent": "The recording's current pipeline run as {run_id, attempt} — the same pair recording.stage_completed / recording.completed / recording.failed carry. Read it to tie a run to what it cost: an invoice line, a credit hold, an audit trail, or the idempotency key a metering consumer builds (recording_id + run_id — keyed on the recording alone, every reprocess after the first is free). Read-only, and cheaper than re-deriving the workflow_state key names, which are the driver's private cursor layout.",
+   "instead_of": [
+    "stapel_recordings.models.Recording.workflow_state"
    ]
   },
   "register_stage": {

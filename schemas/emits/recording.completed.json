@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "recording.completed",
-  "description": "The pipeline finished; the recording is ready to view.",
+  "description": "The pipeline finished; the recording is ready to view. run_id identifies THIS pipeline run and attempt counts the runs of this recording (1 = the first processing, +1 per reprocess): the same recording can be run again, so a metering/billing consumer keys its idempotency on recording_id + run_id — recording_id alone makes every re-run free. Optional in the schema so payloads emitted before run identity existed still validate; the driver always sends both.",
   "type": "object",
   "additionalProperties": false,
   "required": ["recording_id", "workspace_id"],
@@ -13,6 +13,8 @@
     "segments_count": {"type": "integer"},
     "speakers_count": {"type": "integer"},
     "word_count": {"type": "integer"},
-    "provider_used": {"type": ["string", "null"]}
+    "provider_used": {"type": ["string", "null"]},
+    "run_id": {"type": "string"},
+    "attempt": {"type": "integer", "minimum": 1}
   }
 }

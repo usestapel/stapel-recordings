@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "provides": "Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.",
   "axes": [
     {
@@ -97,7 +97,7 @@
       "name": "reprocess_recording",
       "kind": "gate_function",
       "path": "stapel_recordings.pipeline.reprocess_recording",
-      "intent": "completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the transcription provider or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.",
+      "intent": "completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the transcription provider or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, mints a NEW run_id and increments attempt so the re-run's events are distinguishable from the first run's (a metered consumer keyed on the recording alone bills the re-run as free), and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.",
       "instead_of": [
         "stapel_recordings.events.emit_stage"
       ]
@@ -121,6 +121,15 @@
       "intent": "The ONLY way back from error: an explicit error -> queued transition that resumes at the first stage whose name has not completed. Expose it from a retry endpoint or admin action instead of setting status and re-emitting recording.stage by hand — a redelivered event deliberately never resurrects a DLQ'd recording, and a hand-reset status without the completed-set cursor re-runs stages whose results were already published.",
       "instead_of": [
         "stapel_recordings.events.emit_stage"
+      ]
+    },
+    {
+      "name": "run_identity",
+      "kind": "factory",
+      "path": "stapel_recordings.pipeline.run_identity",
+      "intent": "The recording's current pipeline run as {run_id, attempt} — the same pair recording.stage_completed / recording.completed / recording.failed carry. Read it to tie a run to what it cost: an invoice line, a credit hold, an audit trail, or the idempotency key a metering consumer builds (recording_id + run_id — keyed on the recording alone, every reprocess after the first is free). Read-only, and cheaper than re-deriving the workflow_state key names, which are the driver's private cursor layout.",
+      "instead_of": [
+        "stapel_recordings.models.Recording.workflow_state"
       ]
     },
     {

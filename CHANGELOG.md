@@ -6,6 +6,65 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-08-24
+
+### Added — every pipeline run says which run it is (`run_id` / `attempt`)
+
+**Additive; no payload field changes meaning, none is removed, and the new
+ones are optional in the committed schemas.**
+
+A recording can be put through the pipeline more than once —
+`pipeline.reprocess_recording` clears the cursor and re-runs every stage —
+and each run costs whoever hosts it real money. Until now the terminal
+`recording.completed` of the second run was byte-identical to the first
+run's: same `recording_id`, same counts, same provider. A consumer that
+meters or bills **post-hoc on that event** could therefore only build the
+idempotency key `recording:<id>`, its second debit short-circuited on the
+first run's transaction, and **every re-run was free**. That is the exact
+shape of the documented monetization path — a free user's upload is trimmed
+to the cap, they buy credits, they reprocess to unlock the rest — so the
+full run it exists to sell charged zero.
+
+Runs now carry identity:
+
+- **`run_id`** (uuid) is minted when a run starts: the first
+  `start_pipeline`, and again on **every** `reprocess_recording`.
+  **`attempt`** counts the runs of one recording (`1` = initial processing,
+  `+1` per reprocess). Both live in `workflow_state["pipeline"]` beside the
+  progress cursor — the driver's field, never the client's `metadata` (audit
+  REC-01) — so **no migration**: `workflow_state` is already a JSONField.
+- Both travel in the public run events: **`recording.completed`**,
+  **`recording.stage_completed`** and **`recording.failed`**. The key a
+  metering consumer builds is `recording:<id>:<run_id>`.
+- **`pipeline.run_identity(recording)`** reads the pair back
+  (`{"run_id", "attempt"}`) for an invoice line, a credit hold or an audit
+  trail, instead of re-deriving the driver's private cursor key names. It
+  never mints — a recording that has not entered the pipeline answers
+  `{"run_id": None, "attempt": 1}`.
+- **`retry_recording` deliberately keeps the identity.** Resuming a DLQ'd
+  run is the *same* run; a run that needed a retry to finish must be billed
+  once, not twice. Only a reprocess is a new run.
+- A run already in flight when this version ships has a `pipeline` marker
+  but no `run_id`; the driver backfills one on its next write, so no
+  in-flight recording reaches `recording.completed` without one.
+
+`recording.resummarized` was audited for the same gap and has none: its
+`job_id` is minted per re-summary, so two re-summaries of one recording
+already produce two keys (0.17.0). `recording.uploaded` needs none — it is
+emitted once, when the file lands.
+
+Schemas: `run_id` (string) and `attempt` (integer ≥ 1) added to
+`schemas/emits/recording.{completed,stage_completed,failed}.json`, **not**
+in `required` — a payload emitted by 0.18.0 still validates, so this widens
+the contract rather than breaking it. The driver always sends both.
+
+Consumer side: a host billing on `recording.completed` must re-key its
+idempotency to `recording:<id>:<run_id>` to actually collect for a reprocess.
+
+- llms.txt budget 6500 → 7000 (Makefile + `tests/test_contract.py`): the new
+  surface entry landed the artifact at 6488/6500, on the ceiling. Per the
+  standing rule, the ceiling moves; `intent` lines are not shortened to fit.
+
 ## [0.18.0] — 2026-08-23
 
 ### Removed — `Recording.asr_tier`, a column nothing ever read

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "recording.stage_completed",
-  "description": "A pipeline stage finished (informational for observers).",
+  "description": "A pipeline stage finished (informational for observers). run_id / attempt identify the pipeline run this stage belonged to — an observer that meters a specific stage (e.g. transcribe) keys on recording_id + run_id, since a reprocess runs every stage again.",
   "type": "object",
   "additionalProperties": false,
   "required": ["recording_id", "workspace_id", "stage", "stage_index", "status"],
@@ -10,6 +10,8 @@
     "workspace_id": {"type": "string"},
     "stage": {"type": "string"},
     "stage_index": {"type": "integer", "minimum": 0},
-    "status": {"type": "string"}
+    "status": {"type": "string"},
+    "run_id": {"type": "string"},
+    "attempt": {"type": "integer", "minimum": 1}
   }
 }

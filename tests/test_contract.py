@@ -83,10 +83,13 @@ CANONICAL_PREFIX = "/recordings/api/v1/"
 # (vector/qa.py) pushed past the old ceiling, and to 6000 once 0.16.0's
 # erasure surface (erasure.py + tasks.py) pushed past that one, and to 6500
 # once 0.17.0's summarize-only surface (start/resume/fail_resummarize +
-# store_summary + summary_from_result) pushed past THAT one. Must match
+# store_summary + summary_from_result) pushed past THAT one, and to 7000
+# once 0.19.0's run identity (pipeline.run_identity) landed the artifact at
+# 6488/6500 — on the ceiling, where the next intent line would fail the
+# gate for having something to say. Must match
 # the Makefile — if they drift, the gate measures the wrong number.
 ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
-LLMS_TXT_BUDGET = "6500"
+LLMS_TXT_BUDGET = "7000"
 
 
 def _emit(out_dir: Path) -> None:

@@ -33,6 +33,21 @@ as each successful stage, the *names* of the completed stages
   (never a silent ``completed``). Stage names within one pipeline must be
   unique — the completed-set treats a repeated name as already done.
 
+Run identity — ``run_id`` / ``attempt``. A recording can go through the
+pipeline more than once (:func:`reprocess_recording`), and every run costs
+real money to whoever hosts it. Each run therefore carries its own
+identity: a uuid ``run_id`` minted when the run starts (the first
+:func:`start_pipeline`, and again on every reprocess) plus a monotonic
+``attempt`` counter, both kept in ``workflow_state["pipeline"]`` next to the
+cursor and both carried in the public run events
+(``recording.stage_completed`` / ``recording.completed`` /
+``recording.failed``). Without it the terminal event of the second run is
+byte-identical to the first, so a consumer that meters or bills on it can
+only build an idempotency key per *recording* — and every re-run after the
+first is free. ``retry_recording`` deliberately does NOT mint a new one: a
+DLQ'd run that is resumed is the same run, and finishing it must not be
+billed twice. :func:`run_identity` reads the pair back.
+
 Where that state lives — ``Recording.workflow_state``, never
 ``Recording.metadata`` — is load-bearing (audit REC-01). ``metadata`` is the
 client's field; a cursor kept there is a cursor a client PATCH can rewrite,
@@ -53,6 +68,7 @@ at runtime. Resolver failures are parked as retryable (bounded by
 from __future__ import annotations
 
 import logging
+import uuid
 
 from django.db import transaction
 from django.utils import timezone
@@ -94,7 +110,11 @@ def start_pipeline(recording_id: str) -> None:
     concurrent duplicate deliveries: the row is locked and a
     ``workflow_state.pipeline`` marker is written in the same transaction as the
     ``recording.stage(0)`` emit, so a second delivery (or a concurrent one —
-    it serializes on the lock) sees the marker and skips."""
+    it serializes on the lock) sees the marker and skips.
+
+    The marker carries this run's identity (``run_id`` / ``attempt``), minted
+    here once — a duplicate delivery skips on the marker and therefore never
+    re-mints, so the whole first run reports one run_id."""
     with transaction.atomic():
         try:
             recording = Recording.objects.select_for_update().get(pk=recording_id)
@@ -106,7 +126,11 @@ def start_pipeline(recording_id: str) -> None:
         if (recording.workflow_state or {}).get("pipeline"):
             return  # already started
         state = dict(recording.workflow_state or {})
-        state["pipeline"] = {"started_at": timezone.now().isoformat()}
+        state["pipeline"] = {
+            "started_at": timezone.now().isoformat(),
+            "run_id": str(uuid.uuid4()),
+            "attempt": 1,
+        }
         recording.workflow_state = state
         recording.save(update_fields=["workflow_state", "updated_at"])
         events.emit_stage(recording.id, 0)
@@ -179,6 +203,7 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             return
 
         _set_current(recording, next_index, stage_name)
+        _ensure_run(recording)  # a run started before run ids existed gets one here
         if stage.status:
             recording.status = stage.status
         recording.save(update_fields=["status", "workflow_state", "updated_at"])
@@ -221,7 +246,7 @@ def run_stage(recording_id: str, stage_index: int) -> None:
         _mark_completed(recording, next_index, stage_name)
         recording.save(update_fields=["retry_count", "workflow_state", "updated_at"])
 
-        events.emit_stage_completed(recording, stage_name, next_index)
+        events.emit_stage_completed(recording, stage_name, next_index, **run_identity(recording))
         events.emit_stage(recording.id, next_index + 1)
 
 
@@ -283,9 +308,10 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
         _clear_last_error(recording)
         _store_ctx(recording, new_ctx)
         _mark_completed(recording, stage_index, stage_name)
+        _ensure_run(recording)
         recording.save(update_fields=["retry_count", "workflow_state", "updated_at"])
 
-        events.emit_stage_completed(recording, stage_name, stage_index)
+        events.emit_stage_completed(recording, stage_name, stage_index, **run_identity(recording))
         events.emit_stage(recording.id, stage_index + 1)
 
 
@@ -320,7 +346,11 @@ def retry_recording(recording_id: str) -> bool:
     resurrect a DLQ'd recording. Completed stages are kept (the cursor is
     the persisted completed-set), so the retry resumes at the first
     not-yet-completed stage of the currently resolved pipeline. Expose this
-    from an app-layer endpoint/admin action as needed."""
+    from an app-layer endpoint/admin action as needed.
+
+    The run identity is deliberately KEPT: resuming a failed run is the same
+    run, and a consumer that meters on ``recording.completed`` must charge
+    once for a run that needed a retry to finish, not twice."""
     with transaction.atomic():
         try:
             recording = Recording.objects.select_for_update().get(pk=recording_id)
@@ -349,6 +379,14 @@ def reprocess_recording(recording_id: str) -> bool:
     **clears the pipeline progress cursor** (``completed`` / ``completed_index``
     / carried ``ctx``) so every stage runs again from the top, then re-emits
     ``recording.stage(0)``.
+
+    A reprocess is a NEW RUN, so it mints a new ``run_id`` and increments
+    ``attempt``. Everything the run publishes — every
+    ``recording.stage_completed`` and the terminal ``recording.completed`` —
+    carries them. This is what makes the second run distinguishable from the
+    first for a consumer that meters or bills post-hoc: keyed on the
+    recording alone, the terminal events of run 1 and run 2 are identical
+    and the re-run is free.
 
     Allowed only from ``completed``. Every other status — ``created`` /
     ``uploading`` / ``queued`` / any in-flight processing status / ``error``
@@ -383,6 +421,10 @@ def reprocess_recording(recording_id: str) -> bool:
         pl.pop("stage", None)
         pl.pop("stage_index", None)
         pl["reprocess_at"] = timezone.now().isoformat()
+        # A new run, and it must say so: new run_id, next attempt.
+        pl["run_id"] = str(uuid.uuid4())
+        pl["attempt"] = int(pl.get("attempt") or 1) + 1
+        pl["started_at"] = timezone.now().isoformat()
         # Note what the finished run produced BEFORE re-running it. The
         # module never deletes transcript artifacts (see the docstring), and
         # this snapshot is what makes that promise usable: after a reprocess
@@ -411,13 +453,17 @@ def _finalize(recording: Recording) -> None:
     if recording.status == RecordingStatus.COMPLETED:
         return
     recording.status = RecordingStatus.COMPLETED
+    # The terminal event is the one a host bills on, so it must never go out
+    # without run identity — mint it here too if the run predates run ids
+    # (which is why workflow_state is in update_fields).
+    _ensure_run(recording)
     # Save + terminal emit as one unit. run_stage() already holds the outer
     # transaction.atomic(); this nests as a savepoint (joins the outer txn,
     # events still leave only on outer commit) and keeps the pair atomic even
     # if a future caller invokes _finalize() outside run_stage.
     with mutate_and_emit():
-        recording.save(update_fields=["status", "updated_at"])
-        events.emit_completed(recording)
+        recording.save(update_fields=["status", "workflow_state", "updated_at"])
+        events.emit_completed(recording, **run_identity(recording))
     logger.info("pipeline: recording %s completed", recording.id)
 
 
@@ -439,13 +485,20 @@ def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_
     recording.status = RecordingStatus.ERROR
     if not already_errored:
         _set_last_error(recording, stage, reason, detail)
+    _ensure_run(recording)  # a refund consumer needs to know WHICH run failed
     # Save + terminal DLQ emit as one unit. run_stage() already holds the outer
     # transaction.atomic(); this nests as a savepoint (joins the outer txn,
     # events still leave only on outer commit) and keeps the pair atomic even
     # if a future caller invokes _dlq() outside run_stage.
     with mutate_and_emit():
         recording.save(update_fields=["status", "workflow_state", "updated_at"])
-        events.emit_failed(recording, stage=stage, reason=reason, user_retryable=True)
+        events.emit_failed(
+            recording,
+            stage=stage,
+            reason=reason,
+            user_retryable=True,
+            **run_identity(recording),
+        )
     logger.warning("pipeline: recording %s DLQ at stage %s (%s)", recording.id, stage, reason)
 
 
@@ -454,6 +507,44 @@ def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_
 
 def _pipeline_meta(recording: Recording) -> dict:
     return (recording.workflow_state or {}).get("pipeline") or {}
+
+
+def run_identity(recording: Recording) -> dict:
+    """This recording's current pipeline run as ``{"run_id", "attempt"}``.
+
+    The pair every public run event carries. Read it to correlate a
+    ``recording.completed`` / ``recording.failed`` back to the run that
+    produced it — an invoice line, a credit hold, an audit trail — instead of
+    reaching into ``workflow_state`` and re-deriving the key names.
+
+    Read-only: it never mints. A recording that has not entered the pipeline
+    (or whose run predates run ids and has not moved since) answers
+    ``{"run_id": None, "attempt": 1}``; the driver mints on its next write.
+    """
+    meta = _pipeline_meta(recording)
+    run_id = meta.get("run_id")
+    return {
+        "run_id": str(run_id) if run_id else None,
+        "attempt": int(meta.get("attempt") or 1),
+    }
+
+
+def _ensure_run(recording: Recording) -> dict:
+    """Mint run identity onto *recording* if this run has none, in memory.
+
+    Backfill for runs that started before run ids existed: they are mid-flight
+    with a ``pipeline`` marker but no ``run_id``, and their terminal event
+    still has to be billable. The caller is inside the stage's locked
+    transaction and must include ``workflow_state`` in its ``update_fields``.
+    """
+    state = dict(recording.workflow_state or {})
+    pl = dict(state.get("pipeline") or {})
+    if not pl.get("run_id"):
+        pl["run_id"] = str(uuid.uuid4())
+        pl["attempt"] = int(pl.get("attempt") or 1)
+        state["pipeline"] = pl
+        recording.workflow_state = state
+    return run_identity(recording)
 
 
 def _completed_index(recording: Recording) -> int:
@@ -569,4 +660,5 @@ __all__ = [
     "run_stage",
     "retry_recording",
     "reprocess_recording",
+    "run_identity",
 ]

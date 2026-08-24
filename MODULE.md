@@ -316,9 +316,9 @@ under `schemas/emits/`, validated in tests.
 |---|---|---|---|
 | Action (emit) | `recording.uploaded` | public entry | `schemas/emits/recording.uploaded.json` |
 | Action (emit+consume) | `recording.stage` | internal driver step | `schemas/emits/recording.stage.json` |
-| Action (emit) | `recording.stage_completed` | public, per-stage | `schemas/emits/recording.stage_completed.json` |
-| Action (emit) | `recording.completed` | public terminal | `schemas/emits/recording.completed.json` |
-| Action (emit) | `recording.failed` | public DLQ terminal | `schemas/emits/recording.failed.json` |
+| Action (emit) | `recording.stage_completed` | public, per-stage; carries `run_id` + `attempt` | `schemas/emits/recording.stage_completed.json` |
+| Action (emit) | `recording.completed` | public terminal; carries `run_id` + `attempt` (the metering key) | `schemas/emits/recording.completed.json` |
+| Action (emit) | `recording.failed` | public DLQ terminal; carries `run_id` + `attempt` | `schemas/emits/recording.failed.json` |
 | Action (emit) | `recording.resummarized` | public — a summary was regenerated on request (a host meters/bills on this; `job_id` is the idempotency key) | `schemas/emits/recording.resummarized.json` |
 | Action (consume) | `recording.uploaded` | start the pipeline | — |
 | Action (consume) | `recording.stage` | run stage N (driver) | — |
@@ -346,9 +346,24 @@ under `schemas/emits/`, validated in tests.
   is the explicit **`pipeline.retry_recording(recording_id)`** transition
   (`error → queued`, resumes at the first not-yet-completed stage) — expose
   it from an app-layer endpoint or admin action.
+- **Run identity** — every pipeline run carries a `run_id` (uuid) and a
+  monotonic `attempt`, minted when the run starts and kept in
+  `workflow_state["pipeline"]` beside the cursor. Both travel in
+  `recording.stage_completed` / `recording.completed` / `recording.failed`,
+  and **`pipeline.run_identity(recording)`** reads the pair back. This is
+  what makes a run billable: a recording can be run again
+  (`reprocess_recording`), so without it the terminal event of run 2 is
+  byte-identical to run 1's and a consumer metering post-hoc can only key on
+  `recording:<id>` — its second debit short-circuits on the first run's
+  transaction and every re-run is free. Key on `recording:<id>:<run_id>`.
+  `retry_recording` deliberately keeps the identity: resuming a DLQ'd run is
+  the *same* run, and finishing it must not be billed twice. A run that
+  started before this existed (0.19.0) is backfilled with an id on its next
+  driver write, so no in-flight recording completes without one.
 - **Reprocess** — **`pipeline.reprocess_recording(recording_id)`** re-runs
   the whole pipeline from stage 0 for a **`completed`** recording
-  (`completed → queued`, clears the progress cursor so every stage re-runs;
+  (`completed → queued`, clears the progress cursor so every stage re-runs,
+  mints a new `run_id` and increments `attempt`;
   the counterpart to `retry_recording`'s resume). Forbidden from any other
   status (no-op → `False`). Stages self-guard on persisted artifacts, so a
   host that wants derived data (segments/transcript/summary) regenerated
@@ -606,7 +621,10 @@ These were app-specific in the source origin and are intentionally
   — an app-layer source that creates a `Recording`, downloads to storage,
   and calls `finalize_upload`. Emits into the same pipeline.
 - **Credits / billing** — react to `recording.completed` /
-  `recording.stage_completed` in the billing module.
+  `recording.stage_completed` in the billing module. Key the debit on
+  `recording_id` **+ `run_id`**, never on `recording_id` alone: a recording
+  can be put through the pipeline again (`reprocess_recording`), and an
+  idempotency key per recording makes every re-run free.
 - **Export formats** (SRT/VTT/DOCX/PDF) — app-layer views over the stored
   transcript JSON.
 - **Share links**: NOT app-layer any more, decision *or* route (audit

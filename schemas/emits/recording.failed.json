@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "recording.failed",
-  "description": "A pipeline stage gave up (DLQ terminal).",
+  "description": "A pipeline stage gave up (DLQ terminal). run_id / attempt say WHICH run failed, so a consumer that placed a hold or a charge for that run can release exactly it.",
   "type": "object",
   "additionalProperties": false,
   "required": ["recording_id", "workspace_id", "stage", "reason", "user_retryable"],
@@ -10,6 +10,8 @@
     "workspace_id": {"type": "string"},
     "stage": {"type": "string"},
     "reason": {"type": "string"},
-    "user_retryable": {"type": "boolean"}
+    "user_retryable": {"type": "boolean"},
+    "run_id": {"type": "string"},
+    "attempt": {"type": "integer", "minimum": 1}
   }
 }
