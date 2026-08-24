@@ -14,6 +14,7 @@ from .views import (
     RecordingDetailView,
     RecordingListCreateView,
     RecordingMediaView,
+    RecordingTranscriptView,
     ReprocessRecordingView,
     ResummarizeRecordingView,
     SharedRecordingMediaView,
@@ -36,6 +37,14 @@ urlpatterns = [
     # switch would hide all three behind a request body.
     path("recordings/<uuid:recording_id>/resummarize", ResummarizeRecordingView.as_view(), name="recordings-resummarize"),
     path("recordings/<uuid:recording_id>/media", RecordingMediaView.as_view(), name="recordings-media"),
+    # The owner's own transcript. Before this route, speaker-attributed
+    # segments left the module only through a public share link — an owner
+    # had to publish a recording to read it.
+    path(
+        "recordings/<uuid:recording_id>/transcript",
+        RecordingTranscriptView.as_view(),
+        name="recordings-transcript",
+    ),
     # Public share surface. The link token is a path segment because it IS
     # the credential the route resolves; unlock tokens travel in a header.
     path("shares/<str:link_token>", SharedRecordingView.as_view(), name="recordings-share-detail"),

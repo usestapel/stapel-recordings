@@ -162,6 +162,10 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 | `PURGE_AFTER_DAYS` | `30` | value | Days a soft-deleted recording is kept before the purge opens an erasure (below) |
 | `PURGE_SCHEDULE` | `{"hour": 4, "minute": 20}` | value | Crontab kwargs for the purge's beat entry |
 | `ERASURE_CLIENT` | `…erasure.GDPRErasureClient` | **replace** (dotted path) | Who is asked to OPEN an erasure (never deletes directly) |
+| `POLL_INTERVAL_SECONDS` | `5` | value | The hint a client is given while the pipeline owns the recording (`Retry-After` + `poll_after_seconds`) |
+| `JOB_POLL_INTERVAL_SECONDS` | `10` | value | `Retry-After` on a 202 that accepted background work |
+| `TRANSCRIPT_PAGE_SIZE` | `200` | value | Default page of the owner transcript read |
+| `TRANSCRIPT_MAX_PAGE_SIZE` | `1000` | value | Ceiling a client's `?limit=` is capped to |
 | `S3_*` | — | value | Config for the optional `S3Backend` |
 | `VECTOR` | see `DEFAULT_VECTOR` | **merge** (one nested level, via `vector_config()`) | Tuning block for the opt-in vector layer (below) |
 
@@ -196,6 +200,60 @@ signs sets `STORAGE_SIGNS_GET_URLS = True`.
 The transcribe stage's audio URL for the ASR provider is presigned too
 (`TRANSCRIBE_AUDIO_URL_TTL_SECONDS`, must exceed
 `TRANSCRIBE_TIMEOUT_SECONDS` — W007 warns).
+
+### Reading a transcript — `GET .../recordings/<id>/transcript`
+
+**The owner's transcript is reachable without publishing it.** Until 0.20.0
+speaker-attributed segments left this module through exactly one door — the
+projection inside a public share link — so an owner who wanted to render
+their own transcript had to create a share to themselves.
+`RecordingDTO.transcript_storage_key` was not a second door: it is a raw
+object key, and nothing signs it (the media endpoint signs the *media*
+object).
+
+Authority is the same as every other per-recording read: owner scope
+(`RECORDING_POLICY.visible_queryset`) **and then** `can_read`, so a host that
+narrows the policy narrows this with it, and an unknown / foreign / deleted
+recording is a 404. A recording with no segments yet answers `200` with an
+empty page — "not transcribed yet" is a normal stage, and a 404 there would
+be indistinguishable from "not yours".
+
+The wire shape is `TranscriptSegmentDTO` (`sequence_num`, `start_time`,
+`end_time`, `speaker`, `text`) — **the same DTO the share projection
+carries**, so a transcript renderer is written once and serves both doors.
+`speaker` is already flattened to the name a reader prints: the human
+`display_name` when a voice has been named, the provider's own label
+(`speaker_0`) otherwise.
+
+Pages are anchored on `sequence_num`, ascending (`TranscriptPagination` over
+core's `AnchorPagination`): a transcript is read forward, so `direction=next`
+walks *later* segments, and the anchor is what keeps a page stable while the
+pipeline is still appending to the end. `anchor` / `limit` / `direction` are
+declared in the schema, not merely accepted — an undeclared parameter is one
+that disappears from every generated client.
+
+### Progress — polling, and the module says when
+
+There is no WebSocket here (no consumer, no routing module, no Channels
+dependency), so a client learns that a recording moved by **reading it
+again**. That interval is part of the contract rather than something each
+frontend invents:
+
+- `RecordingDTO.is_processing` / `RecordingDTO.poll_after_seconds` on every
+  recording payload, and a `Retry-After` header carrying the same number —
+  one computation (`dto.poll_after_seconds`) behind both, so they cannot
+  disagree;
+- present **only** while the pipeline owns the next transition
+  (`RecordingStatus.is_processing`: `queued`, `analyzing`, `normalizing`,
+  `transcribing`, `diarizing`, `merging`). `created` / `uploading` wait on the
+  client's own upload and `completed` / `error` / `deleted` are terminal — for
+  those the field is `null` and the header is absent, which is how a client is
+  told to **stop**;
+- `GET .../transcript` carries the same hint, because a client watching a
+  transcript fill in polls the transcript, not the recording;
+- a `202` from `/resummarize` carries `Retry-After:
+  JOB_POLL_INTERVAL_SECONDS` — accepted is not finished, and the receipt says
+  when the result is worth looking for.
 
 ### Audio normalization seam — `NORMALIZER` (`normalize.py`)
 

@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "provides": "Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.",
   "axes": [
     {
@@ -373,7 +373,7 @@
       "intent": "The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever."
     }
   ],
-  "operations_total": 10,
+  "operations_total": 11,
   "requires": [
     {
       "module": "stapel-core",

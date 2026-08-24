@@ -9,6 +9,7 @@ from .dto import (
     RecordingDTO,
     SharedRecordingDTO,
     ShareUnlockDTO,
+    TranscriptSegmentDTO,
     UploadSessionDTO,
 )
 
@@ -62,6 +63,28 @@ class CreateRecordingRequestSerializer(serializers.Serializer):
 
 class FinalizeUploadRequestSerializer(serializers.Serializer):
     file_size_bytes = serializers.IntegerField(required=False, min_value=0)
+
+
+class TranscriptSegmentSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = TranscriptSegmentDTO
+
+
+class TranscriptPageSerializer(serializers.Serializer):
+    """The anchor-paginated envelope one transcript page arrives in.
+
+    Written out rather than left to the paginator's generic schema so the
+    generated client gets a *typed* page: without it ``items`` emits as an
+    untyped list and every consumer re-declares the segment shape by hand,
+    which is how the two ends drift.
+    """
+
+    items = TranscriptSegmentSerializer(many=True)
+    next_anchor = serializers.CharField(allow_null=True)
+    prev_anchor = serializers.CharField(allow_null=True)
+    has_next = serializers.BooleanField()
+    has_prev = serializers.BooleanField()
+    count = serializers.IntegerField()
 
 
 class SharedRecordingSerializer(StapelDataclassSerializer):

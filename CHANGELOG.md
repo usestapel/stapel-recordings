@@ -6,6 +6,81 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-08-24
+
+### Added — the owner can read their own transcript
+
+**The finding:** speaker-attributed segments left this module through exactly
+one door — `SharedRecordingDTO.segments`, the projection behind a **public
+share link**. An owner who wanted to render their own transcript had to
+publish it to the internet first. `RecordingDTO.transcript_storage_key` was
+not a second door: it is a raw object key and nothing signs it (the media
+endpoint signs the *media* object). So the module shipped a transcription
+pipeline whose output its own owner could not read, and "player with
+transcript" was un-buildable for anyone but an anonymous visitor.
+
+- **`GET /recordings/api/v1/recordings/{id}/transcript`** — owner-facing,
+  paginated. Owner scope **and then** the object policy's `can_read`, so a
+  host that narrows `RECORDING_POLICY` narrows this with it and the
+  transcript is not a side channel around the verb the detail and media
+  endpoints ask; an unknown / foreign / deleted recording is `404`.
+- **Same DTO as the share path.** `SharedSegmentDTO` is renamed
+  **`TranscriptSegmentDTO`** (same five fields) and both doors now project
+  through one mapper, `dto.segment_to_dto` — a transcript renderer is written
+  once. This is the release's only breaking change, and it is a rename of a
+  schema component, not a change of shape.
+- **Anchored on `sequence_num`, ascending** (`TranscriptPagination` over
+  core's `AnchorPagination`): a transcript is read forward, so
+  `direction=next` walks later segments, and the anchor keeps a page stable
+  while the pipeline is still appending. `anchor` / `limit` / `direction` are
+  **declared** in the emitted schema — an undeclared query parameter is one
+  that disappears from every generated client. Page size and ceiling are
+  settings (`TRANSCRIPT_PAGE_SIZE` 200, `TRANSCRIPT_MAX_PAGE_SIZE` 1000).
+- A recording with no segments yet answers `200` with an empty page. "Not
+  transcribed yet" is a normal stage; a `404` there is indistinguishable from
+  "not yours".
+
+### Added — progress says when to ask again, and when to stop
+
+This module serves no WebSocket (no consumer, no routing module, no Channels
+dependency), so a client learns that a recording moved by reading it again.
+Nothing in the response said whether that was worth doing — two frontend
+hooks documented themselves as polling and shipped no interval, because there
+was no number to ship. There is now:
+
+- **`RecordingDTO.is_processing` / `RecordingDTO.poll_after_seconds`** on
+  every recording payload, plus a **`Retry-After`** header carrying the same
+  number. One computation (`dto.poll_after_seconds`) behind both, so the body
+  and the header cannot disagree.
+- Present **only** while the pipeline owns the next transition — the new
+  `RecordingStatus.is_processing` (`queued`, `analyzing`, `normalizing`,
+  `transcribing`, `diarizing`, `merging`). `created` / `uploading` wait on the
+  client's own upload; `completed` / `error` / `deleted` are terminal. For
+  those the field is `null` and the header is absent, and **that absence is
+  the "stop asking"** — a client polling a failed recording forever is the
+  defect this shape exists to prevent.
+- `GET .../transcript` carries the same hint (a client watching a transcript
+  fill in polls the transcript, not the recording), and the `202` from
+  `/resummarize` carries `Retry-After: JOB_POLL_INTERVAL_SECONDS` — accepted
+  is not finished.
+- New settings: `POLL_INTERVAL_SECONDS` (5), `JOB_POLL_INTERVAL_SECONDS` (10).
+
+### Fixed — re-summary of a recording with no language failed to submit
+
+`_summarize_payload` fell back to `UnifiedTranscript.language` when the
+recording had none of its own — but that attribute is a `LanguageMeta`
+struct (routed / detected / path), not a language tag, and a task payload has
+to be JSON. So `POST /resummarize` raised on exactly the case the fallback
+was written for (`language_mode="auto"`, nothing detected yet). It now reads
+`routed` / `detected` off the struct and always yields a string. Found while
+testing the 202's `Retry-After`; every existing test happened to run the
+pipeline first, which sets `recording.language` and hid it.
+
+### Changed
+
+- Every response that carries a recording goes through one helper, so no
+  recording-bearing endpoint can ship without the polling hint.
+
 ## [0.19.0] — 2026-08-24
 
 ### Added — every pipeline run says which run it is (`run_id` / `attempt`)

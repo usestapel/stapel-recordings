@@ -7,7 +7,18 @@ from typing import Optional
 
 @dataclass
 class RecordingDTO:
-    """A recording as seen by the API."""
+    """A recording as seen by the API.
+
+    ``is_processing`` / ``poll_after_seconds`` are the module's answer to
+    "when do I ask again": this module serves no socket, so a client learns
+    that a recording moved by re-reading it, and the two fields say whether
+    that is worth doing and how soon. ``poll_after_seconds`` is ``None``
+    exactly when ``is_processing`` is false — the status is terminal, or the
+    client itself is holding the next move — which is how the payload says
+    *stop* as explicitly as it says *ask again*. The same number travels as
+    the ``Retry-After`` header for callers that read HTTP rather than the
+    body.
+    """
 
     id: str
     resource_key: str
@@ -24,6 +35,8 @@ class RecordingDTO:
     transcript_storage_key: Optional[str]
     summary: Optional[str]
     created_at: str
+    is_processing: bool
+    poll_after_seconds: Optional[int]
 
 
 @dataclass
@@ -83,8 +96,16 @@ class ShareUnlockDTO:
 
 
 @dataclass
-class SharedSegmentDTO:
-    """One transcript segment as seen through a share link."""
+class TranscriptSegmentDTO:
+    """One speaker-attributed transcript segment.
+
+    ONE shape for both readers — the owner's paginated transcript read and
+    the projection inside a share link — because they are the same thing
+    seen from two doors, and a client that renders a transcript must not
+    have to write it twice. What differs between the doors is *whether* the
+    segments are reachable at all (the share needs the ``transcript``
+    grant), never their shape.
+    """
 
     sequence_num: int
     start_time: float
@@ -113,13 +134,46 @@ class SharedRecordingDTO:
     permissions: list[str]
     summary: Optional[str]
     media_url: Optional[str]
-    segments: list[SharedSegmentDTO]
+    segments: list[TranscriptSegmentDTO]
 
+
+def poll_after_seconds(status) -> Optional[int]:
+    """How long a client should wait before re-reading a recording, or ``None``.
+
+    ``None`` is an answer, not a missing one: it means nothing will change by
+    asking again (see :meth:`~stapel_recordings.models.RecordingStatus.is_processing`).
+    Single source for the payload field and the ``Retry-After`` header, so the
+    two can never say different numbers.
+    """
+    from .conf import recordings_settings
+    from .models import RecordingStatus
+
+    if not RecordingStatus.is_processing(status):
+        return None
+    return int(recordings_settings.POLL_INTERVAL_SECONDS)
+
+
+def segment_to_dto(segment) -> TranscriptSegmentDTO:
+    """One ``Segment`` row → the wire shape, for either reader.
+
+    The speaker is flattened to the name a reader can print: the human
+    ``display_name`` when someone has named the voice, else the provider's
+    own label (``speaker_0``). Callers should ``select_related("speaker")``.
+    """
+    speaker = segment.speaker
+    return TranscriptSegmentDTO(
+        sequence_num=segment.sequence_num,
+        start_time=segment.start_time,
+        end_time=segment.end_time,
+        speaker=(speaker.display_name or speaker.label) if speaker else None,
+        text=segment.text,
+    )
 
 
 def recording_to_dto(recording) -> RecordingDTO:
     from .resources import resource_key
 
+    poll_after = poll_after_seconds(recording.status)
     return RecordingDTO(
         id=str(recording.id),
         resource_key=resource_key(recording),
@@ -136,6 +190,8 @@ def recording_to_dto(recording) -> RecordingDTO:
         transcript_storage_key=recording.transcript_storage_key,
         summary=recording.summary,
         created_at=recording.created_at.isoformat(),
+        is_processing=poll_after is not None,
+        poll_after_seconds=poll_after,
     )
 
 
@@ -160,16 +216,10 @@ def shared_recording_to_dto(access) -> SharedRecordingDTO:
     from .conf import recordings_settings
 
     recording = access.recording
-    segments: list[SharedSegmentDTO] = []
+    segments: list[TranscriptSegmentDTO] = []
     if access.has(shares.PERM_TRANSCRIPT):
         segments = [
-            SharedSegmentDTO(
-                sequence_num=s.sequence_num,
-                start_time=s.start_time,
-                end_time=s.end_time,
-                speaker=(s.speaker.display_name or s.speaker.label) if s.speaker else None,
-                text=s.text,
-            )
+            segment_to_dto(s)
             for s in recording.segments.select_related("speaker").all()
         ]
 

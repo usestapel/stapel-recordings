@@ -207,6 +207,33 @@ DEFAULTS = {
         # permission. Short: the URL leaves the trust boundary.
         "SHARE_MEDIA_URL_TTL_SECONDS": 5 * 60,
 
+        # ── Processing progress: polling, because there is no socket ──
+        # This module serves no WebSocket, so a client learns that a
+        # recording moved by READING it again. That makes the poll interval
+        # part of the contract rather than a guess each frontend makes: it
+        # travels back on every recording payload
+        # (``RecordingDTO.poll_after_seconds``) and as a ``Retry-After``
+        # header, but ONLY while the pipeline owns the next transition
+        # (``RecordingStatus.is_processing``) — a terminal or
+        # client-owned status carries neither, which is how a client is
+        # told to stop.
+        # Seconds. Raise it on a deployment whose stages are long (a
+        # 40-minute meeting) to cut the request count; lower it for a
+        # visible progress UI on short dictaphone clips.
+        "POLL_INTERVAL_SECONDS": 5,
+        # Seconds for the ``Retry-After`` on a 202 that accepted background
+        # work (re-summary). Longer than the poll interval: nothing can have
+        # finished in the moment between accepting the job and the first
+        # re-read.
+        "JOB_POLL_INTERVAL_SECONDS": 10,
+        # Page size / ceiling for the owner transcript read
+        # (GET /recordings/{id}/transcript). A transcript of a long meeting
+        # is thousands of segments; the endpoint is anchored on
+        # ``sequence_num`` so a page is stable while the pipeline is still
+        # appending.
+        "TRANSCRIPT_PAGE_SIZE": 200,
+        "TRANSCRIPT_MAX_PAGE_SIZE": 1000,
+
         # ── Authorized media delivery (media.py, audit STORE-01) ──────
         # TTL of the presigned GET issued to an authorized OWNER request.
         # Short by construction: the URL is a bearer credential for the

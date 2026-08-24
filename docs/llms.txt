@@ -1,8 +1,8 @@
-# stapel-recordings 0.19.0
+# stapel-recordings 0.20.0
 
 Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
 
-Contract: axes 1 · surface 40 · extension points 7 · operations 10 · error codes 59.
+Contract: axes 1 · surface 40 · extension points 7 · operations 11 · error codes 59.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -141,7 +141,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - stapel-auth (optional) — every endpoint requires an authenticated user (IsAuthenticated); stapel-auth is the shelf's session issuer — any stapel-core-compatible JWT issuer satisfies the check
 - stapel-core (required) — comm bus (recording.stage pipeline driving, llm.transcribe / llm.summarize calls), JWT authentication, GDPR provider registry, AppSettings config layer
 
-## HTTP operations (10) — call by operationId, never by a typed path
+## HTTP operations (11) — call by operationId, never by a typed path
 Paths are relative to `/recordings/api/v1/`.
 ### Recordings
 - POST /recordings — recordings_api_v1_recordings_create
@@ -151,6 +151,7 @@ Paths are relative to `/recordings/api/v1/`.
 - POST /recordings/{recording_id}/reprocess — recordings_api_v1_recordings_reprocess_create
 - POST /recordings/{recording_id}/resummarize — recordings_api_v1_recordings_resummarize_create
 - GET /recordings/{recording_id} — recordings_api_v1_recordings_retrieve
+- GET /recordings/{recording_id}/transcript — recordings_api_v1_recordings_transcript_retrieve
 - GET /shares/{link_token}/media — recordings_api_v1_shares_media_retrieve
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create

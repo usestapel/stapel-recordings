@@ -308,6 +308,73 @@
         }
       }
     },
+    "/recordings/api/v1/recordings/{recording_id}/transcript": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_transcript_retrieve",
+        "description": "Read the OWNER's own speaker-attributed transcript.\n\nThe gap this closes: segments used to leave this module through exactly\none door — ``SharedRecordingDTO.segments`` on a public share link — so an\nowner could read their transcript only by publishing it to the internet\nfirst. ``RecordingDTO.transcript_storage_key`` was not an alternative: it\nis a raw object key, and nothing signs it (the media endpoint signs the\n*media* object, not the transcript).\n\nSame authority as every other per-recording read: owner-scoped through\n``_owned_qs`` and then the object policy's ``can_read``, so an unknown,\nforeign or deleted recording is a ``404`` and a widened\n``RECORDING_POLICY`` widens this with it. Same wire shape as the share\npath — :class:`~stapel_recordings.dto.TranscriptSegmentDTO` — so a\ntranscript renderer is written once and serves both doors.\n\nPaginated, anchored on ``sequence_num`` (:class:`TranscriptPagination`):\na meeting-length transcript is thousands of segments, and the anchor is\nwhat keeps a page stable while the pipeline is still appending to the end.\n\nA recording that has no segments yet answers ``200`` with an empty page,\nnot an error — \"not transcribed yet\" is a stage of a normal lifecycle,\nand while the pipeline is mid-flight the response carries the same\n``Retry-After`` the recording read does, so the client is told when to\ncome back rather than left to guess.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "anchor",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "sequence_num to page from, exclusive. Omit for the first page; pass the previous page's next_anchor to continue."
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "center",
+                "next",
+                "prev"
+              ],
+              "default": "next"
+            },
+            "description": "next = later segments (the reading direction), prev = earlier, center = the window around the anchor."
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Segments per page (default TRANSCRIPT_PAGE_SIZE, capped at TRANSCRIPT_MAX_PAGE_SIZE)."
+          },
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptPage"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
     "/recordings/api/v1/shares/{link_token}": {
       "get": {
         "operationId": "recordings_api_v1_shares_retrieve",
@@ -556,7 +623,7 @@
       },
       "RecordingDTO": {
         "type": "object",
-        "description": "A recording as seen by the API.",
+        "description": "A recording as seen by the API.\n\n``is_processing`` / ``poll_after_seconds`` are the module's answer to\n\"when do I ask again\": this module serves no socket, so a client learns\nthat a recording moved by re-reading it, and the two fields say whether\nthat is worth doing and how soon. ``poll_after_seconds`` is ``None``\nexactly when ``is_processing`` is false — the status is terminal, or the\nclient itself is holding the next move — which is how the payload says\n*stop* as explicitly as it says *ask again*. The same number travels as\nthe ``Retry-After`` header for callers that read HTTP rather than the\nbody.",
         "properties": {
           "id": {
             "type": "string"
@@ -608,13 +675,22 @@
           },
           "created_at": {
             "type": "string"
+          },
+          "is_processing": {
+            "type": "boolean"
+          },
+          "poll_after_seconds": {
+            "type": "integer",
+            "nullable": true
           }
         },
         "required": [
           "created_at",
           "duration_seconds",
           "id",
+          "is_processing",
           "language",
+          "poll_after_seconds",
           "provider_used",
           "resource_key",
           "segments_count",
@@ -696,7 +772,7 @@
           "segments": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/SharedSegmentDTO"
+              "$ref": "#/components/schemas/TranscriptSegmentDTO"
             }
           }
         },
@@ -713,9 +789,46 @@
           "title"
         ]
       },
-      "SharedSegmentDTO": {
+      "TranscriptPage": {
         "type": "object",
-        "description": "One transcript segment as seen through a share link.",
+        "description": "The anchor-paginated envelope one transcript page arrives in.\n\nWritten out rather than left to the paginator's generic schema so the\ngenerated client gets a *typed* page: without it ``items`` emits as an\nuntyped list and every consumer re-declares the segment shape by hand,\nwhich is how the two ends drift.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptSegmentDTO"
+            }
+          },
+          "next_anchor": {
+            "type": "string",
+            "nullable": true
+          },
+          "prev_anchor": {
+            "type": "string",
+            "nullable": true
+          },
+          "has_next": {
+            "type": "boolean"
+          },
+          "has_prev": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "has_next",
+          "has_prev",
+          "items",
+          "next_anchor",
+          "prev_anchor"
+        ]
+      },
+      "TranscriptSegmentDTO": {
+        "type": "object",
+        "description": "One speaker-attributed transcript segment.\n\nONE shape for both readers — the owner's paginated transcript read and\nthe projection inside a share link — because they are the same thing\nseen from two doors, and a client that renders a transcript must not\nhave to write it twice. What differs between the doors is *whether* the\nsegments are reachable at all (the share needs the ``transcript``\ngrant), never their shape.",
         "properties": {
           "sequence_num": {
             "type": "integer"

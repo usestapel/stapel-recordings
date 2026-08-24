@@ -43,12 +43,26 @@ never by a URL a client can construct against the bucket. The endpoint
 authorizes first (object policy / share grant), then mints a short-lived
 presigned GET through :mod:`stapel_recordings.media`. If the storage backend
 cannot produce an expiring URL, the answer is 503, not a permanent one.
+
+Progress: polling, and the module says so
+-----------------------------------------
+This module serves no WebSocket — there is no consumer, no routing module and
+no Channels dependency — so a client learns that a recording moved by reading
+it again. Rather than leave every frontend to invent an interval (and to
+discover by experiment which statuses ever change), the answer travels in the
+response: ``RecordingDTO.poll_after_seconds`` plus a ``Retry-After`` header,
+present only while the pipeline owns the next transition
+(:meth:`~stapel_recordings.models.RecordingStatus.is_processing`) and absent
+on a terminal or client-owned status — which is how a client is told to stop.
+Both come from :func:`~stapel_recordings.dto.poll_after_seconds`, so the body
+and the header cannot disagree.
 """
 from django.http import HttpResponseRedirect
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse
+from stapel_core.django.api.pagination import AnchorPagination
 from stapel_core.django.api.permissions import IsNotAnonymousUser
 
 from . import media, pipeline, services, shares, stages
@@ -58,7 +72,9 @@ from .dto import (
     ShareUnlockDTO,
     job_to_dto,
     media_grant_to_dto,
+    poll_after_seconds,
     recording_to_dto,
+    segment_to_dto,
     shared_recording_to_dto,
     upload_session_to_dto,
 )
@@ -90,12 +106,70 @@ from .serializers import (
     SharedRecordingSerializer,
     ShareUnlockRequestSerializer,
     ShareUnlockResponseSerializer,
+    TranscriptPageSerializer,
+    TranscriptSegmentSerializer,
 )
 
 #: Header a client presents its unlock token in. A header, not a query
 #: parameter, because query strings end up in access logs and referrers —
 #: and this one is a credential for the whole share.
 SHARE_UNLOCK_HEADER = "X-Share-Unlock-Token"
+
+
+class TranscriptPagination(AnchorPagination):
+    """Transcript pages anchored on ``sequence_num``, in reading order.
+
+    Ascending, not the newest-first default every other listing uses: a
+    transcript is read forward from the start, so ``direction=next`` walks
+    *later* segments. ``sequence_num`` is a gapless total order within one
+    recording, which is what makes a page stable while the pipeline is still
+    appending to the end — an offset would shift under the reader.
+    """
+
+    anchor_field = "sequence_num"
+    ordering = "sequence_num"
+
+    @property
+    def page_size(self):
+        return int(recordings_settings.TRANSCRIPT_PAGE_SIZE)
+
+    @property
+    def max_page_size(self):
+        return int(recordings_settings.TRANSCRIPT_MAX_PAGE_SIZE)
+
+
+#: Query parameters of the anchor paginator, declared for the schema.
+#: These views are plain ``APIView``s, so drf-spectacular never learns about
+#: a paginator they instantiate themselves — undeclared, the whole windowing
+#: dimension silently disappears from every generated client.
+TRANSCRIPT_PAGE_PARAMETERS = [
+    OpenApiParameter(
+        name="anchor",
+        type=int,
+        location=OpenApiParameter.QUERY,
+        required=False,
+        description="sequence_num to page from, exclusive. Omit for the first "
+        "page; pass the previous page's next_anchor to continue.",
+    ),
+    OpenApiParameter(
+        name="limit",
+        type=int,
+        location=OpenApiParameter.QUERY,
+        required=False,
+        description="Segments per page (default TRANSCRIPT_PAGE_SIZE, capped "
+        "at TRANSCRIPT_MAX_PAGE_SIZE).",
+    ),
+    OpenApiParameter(
+        name="direction",
+        type=str,
+        location=OpenApiParameter.QUERY,
+        required=False,
+        enum=["next", "prev", "center"],
+        default="next",
+        description="next = later segments (the reading direction), prev = "
+        "earlier, center = the window around the anchor.",
+    ),
+]
 
 
 class SerializerSeamMixin:
@@ -159,6 +233,30 @@ def _media_response(view, request, recording, *, ttl_seconds=None):
     if _wants_redirect(request):
         return HttpResponseRedirect(grant.url)
     return StapelResponse(view.get_response_serializer_class()(media_grant_to_dto(grant)))
+
+
+def _retry_after(response, seconds):
+    """Stamp ``Retry-After`` when — and only when — asking again will help."""
+    if seconds is not None:
+        response["Retry-After"] = str(int(seconds))
+    return response
+
+
+def _recording_response(view, recording, *, status=200):
+    """Answer with a recording AND with when to come back for it.
+
+    Every response carrying a recording goes through here, so the header and
+    the payload's ``poll_after_seconds`` are one decision made once: a
+    recording the pipeline is working on says "ask again in N", and one that
+    is finished, failed or waiting on the client's own upload says nothing —
+    the absent header IS the "stop asking"."""
+    return _retry_after(
+        StapelResponse(
+            view.get_response_serializer_class()(recording_to_dto(recording)),
+            status=status,
+        ),
+        poll_after_seconds(recording.status),
+    )
 
 
 def _policy_refusal(decision):
@@ -335,7 +433,7 @@ class RecordingDetailView(SerializerSeamMixin, APIView):
         recording = _owned_qs(request).filter(pk=recording_id).first()
         if recording is None:
             return StapelErrorResponse(404, ERR_404_NOT_FOUND)
-        return StapelResponse(self.get_response_serializer_class()(recording_to_dto(recording)))
+        return _recording_response(self, recording)
 
 
 @extend_schema(tags=["Recordings"])
@@ -380,7 +478,7 @@ class FinalizeUploadView(SerializerSeamMixin, APIView):
             # there is no upload to finalize — the client has to upload
             # again, not retry the finalize.
             return StapelErrorResponse(409, ERR_409_INVALID_STATE)
-        return StapelResponse(self.get_response_serializer_class()(recording_to_dto(recording)))
+        return _recording_response(self, recording)
 
 
 @extend_schema(tags=["Recordings"])
@@ -420,7 +518,7 @@ class ReprocessRecordingView(SerializerSeamMixin, APIView):
             # the transition is refused is a non-``completed`` status.
             return StapelErrorResponse(409, ERR_409_INVALID_STATE)
         recording.refresh_from_db()
-        return StapelResponse(self.get_response_serializer_class()(recording_to_dto(recording)))
+        return _recording_response(self, recording)
 
 
 @extend_schema(tags=["Recordings"])
@@ -478,8 +576,64 @@ class ResummarizeRecordingView(SerializerSeamMixin, APIView):
             return StapelErrorResponse(409, ERR_409_NO_TRANSCRIPT)
         except stages.SummarizationUnavailable:
             return StapelErrorResponse(503, ERR_503_SUMMARIZE_UNAVAILABLE)
-        return StapelResponse(
-            self.get_response_serializer_class()(job_to_dto(job)), status=202
+        return _retry_after(
+            StapelResponse(
+                self.get_response_serializer_class()(job_to_dto(job)), status=202
+            ),
+            recordings_settings.JOB_POLL_INTERVAL_SECONDS,
+        )
+
+
+@extend_schema(tags=["Recordings"])
+class RecordingTranscriptView(SerializerSeamMixin, APIView):
+    """Read the OWNER's own speaker-attributed transcript.
+
+    The gap this closes: segments used to leave this module through exactly
+    one door — ``SharedRecordingDTO.segments`` on a public share link — so an
+    owner could read their transcript only by publishing it to the internet
+    first. ``RecordingDTO.transcript_storage_key`` was not an alternative: it
+    is a raw object key, and nothing signs it (the media endpoint signs the
+    *media* object, not the transcript).
+
+    Same authority as every other per-recording read: owner-scoped through
+    ``_owned_qs`` and then the object policy's ``can_read``, so an unknown,
+    foreign or deleted recording is a ``404`` and a widened
+    ``RECORDING_POLICY`` widens this with it. Same wire shape as the share
+    path — :class:`~stapel_recordings.dto.TranscriptSegmentDTO` — so a
+    transcript renderer is written once and serves both doors.
+
+    Paginated, anchored on ``sequence_num`` (:class:`TranscriptPagination`):
+    a meeting-length transcript is thousands of segments, and the anchor is
+    what keeps a page stable while the pipeline is still appending to the end.
+
+    A recording that has no segments yet answers ``200`` with an empty page,
+    not an error — "not transcribed yet" is a stage of a normal lifecycle,
+    and while the pipeline is mid-flight the response carries the same
+    ``Retry-After`` the recording read does, so the client is told when to
+    come back rather than left to guess.
+    """
+
+    permission_classes = [IsNotAnonymousUser]
+    response_serializer_class = TranscriptSegmentSerializer
+    pagination_class = TranscriptPagination
+
+    @extend_schema(
+        parameters=TRANSCRIPT_PAGE_PARAMETERS,
+        responses={200: TranscriptPageSerializer},
+    )
+    def get(self, request, recording_id):  # noqa: R007
+        recording = _owned_qs(request).filter(pk=recording_id).first()
+        if recording is None or not get_policy().can_read(request.user, recording):
+            return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(
+            recording.segments.select_related("speaker"), request
+        )
+        response_cls = self.get_response_serializer_class()
+        items = [response_cls(segment_to_dto(s)).data for s in page]
+        return _retry_after(
+            paginator.get_paginated_response(items),
+            poll_after_seconds(recording.status),
         )
 
 

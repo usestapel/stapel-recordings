@@ -480,10 +480,28 @@ def _summarize_payload(recording, transcript) -> dict:
         "model": recordings_settings.SUMMARIZE_MODEL,
         **identity_payload(recording),
     }
-    language = recording.language or getattr(transcript, "language", "") or ""
-    if language:
-        payload["language"] = language
+    payload_language = _transcript_language(recording, transcript)
+    if payload_language:
+        payload["language"] = payload_language
     return payload
+
+
+def _transcript_language(recording, transcript) -> str:
+    """The language tag to summarize in — always a string, never a struct.
+
+    ``UnifiedTranscript.language`` is a :class:`~stapel_recordings.transcript_schema.LanguageMeta`
+    (routed / detected / path), not a tag. Falling back to it whole put a
+    dataclass into a task payload that has to be JSON, so a recording with no
+    ``language`` of its own failed to submit at all — which is exactly the
+    ``language_mode="auto"`` case the fallback was written for.
+    """
+    meta = getattr(transcript, "language", None)
+    return (
+        recording.language
+        or getattr(meta, "routed", None)
+        or getattr(meta, "detected", None)
+        or ""
+    )
 
 
 # ─── the summary as a derived artifact ─────────────────────────────────

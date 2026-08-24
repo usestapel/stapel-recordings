@@ -54,6 +54,39 @@ class RecordingStatus(models.TextChoices):
     ERROR = "error", "Error"
     DELETED = "deleted", "Deleted"
 
+    @classmethod
+    def is_processing(cls, status) -> bool:
+        """Is the PIPELINE the one that moves this recording next?
+
+        The three-way split a client has to make, named once here instead of
+        being re-derived (differently) by every caller:
+
+          * ``created`` / ``uploading`` wait on the CLIENT — it is holding the
+            upload, and polling its own work tells it nothing;
+          * ``completed`` / ``error`` / ``deleted`` are terminal — nothing
+            further arrives, and a client that keeps asking is asking forever;
+          * everything between is pipeline-owned, and re-reading the recording
+            is the only way a client learns it moved (this module serves no
+            socket).
+
+        Only the third group answers ``True``, and it is what puts a
+        ``Retry-After`` on the read and a ``poll_after_seconds`` in the payload.
+        """
+        return str(status) in PROCESSING_STATUSES
+
+
+#: Statuses :meth:`RecordingStatus.is_processing` answers ``True`` for.
+#: Module-level so a host reading the polling contract can see the set
+#: itself, not just the predicate over it.
+PROCESSING_STATUSES = frozenset({
+    RecordingStatus.QUEUED,
+    RecordingStatus.ANALYZING,
+    RecordingStatus.NORMALIZING,
+    RecordingStatus.TRANSCRIBING,
+    RecordingStatus.DIARIZING,
+    RecordingStatus.MERGING,
+})
+
 
 class JobStatus(models.TextChoices):
     QUEUED = "queued", "Queued"
