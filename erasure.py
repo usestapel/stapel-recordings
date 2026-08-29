@@ -199,9 +199,13 @@ def recordings_for(subject_type: str, subject_key, *, workspace_id=None):
     from .models import Recording
 
     if subject_type == SUBJECT_ACCOUNT:
+        from django.core.exceptions import ValidationError
+
         try:
             return Recording.objects.filter(owner_id=subject_key)
-        except (ValueError, TypeError):
+        except (ValidationError, ValueError, TypeError):
+            # Django raises ValidationError (not ValueError) when a key cannot
+            # be coerced to the owner pk's type, e.g. a malformed UUID.
             pass
     elif subject_type == SUBJECT_WORKSPACE:
         key = _as_uuid(subject_key)

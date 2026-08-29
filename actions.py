@@ -211,6 +211,11 @@ def handle_user_merged(event):
                 or Job.objects.filter(owner_id=from_user_id).exists()
                 or RecordingShare.objects.filter(created_by_id=from_user_id).exists()
             )
+            # The survivor probe is read here, under the same guard, because a
+            # malformed *into* id must not escape as a poison pill either.
+            survivor_exists = get_user_model().objects.filter(
+                pk=into_user_id
+            ).exists()
         except (ValidationError, ValueError, TypeError):
             # A key that cannot address a row here names nothing. Saying so
             # quietly beats a redelivery loop over a malformed payload.
@@ -221,7 +226,7 @@ def handle_user_merged(event):
             # previous delivery already moved everything. Quiet by design —
             # this is also the at-least-once idempotency path.
             return
-        if not get_user_model().objects.filter(pk=into_user_id).exists():
+        if not survivor_exists:
             # The guest HAS rows but the survivor has no row here yet, so
             # nothing can point a FK at them. Raising is this comm layer's
             # retry signal, so the transfer lands once the survivor's user

@@ -6,6 +6,42 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.20.2] — 2026-08-30
+
+### Fixed — a malformed id in an action payload was a poison pill
+
+`ValidationError` is not a `ValueError`. Django answers a key it cannot coerce
+to a column's type — a malformed UUID above all — with
+`django.core.exceptions.ValidationError`, which does **not** subclass
+`ValueError` or `TypeError`. The `user.deleted` / `user.merged` guards here
+caught only `(ValueError, TypeError)`, so a bad id walked straight through
+them, the handler raised, `consume_actions` re-raised to the bus, and the
+event came back forever: a redelivery loop over a payload no retry can repair,
+burning the consumer's retry budget while looking exactly like a downstream
+outage.
+
+The consumed contracts do not save anyone from this. They type an id as
+`{"type": "string"}` — and where they do say `format: uuid`, `jsonschema`
+does not enforce `format` unless a format checker is passed, which the comm
+registry does not do. A malformed id is a well-formed payload.
+
+`recordings_for()` promised in its own docstring to return an empty queryset —
+"never raises" — for a subject key that cannot address a recording, and named
+"a malformed uuid" as the case it covered. Its account branch caught only
+`(ValueError, TypeError)`, so that was exactly the case it did not cover, and
+it took `user.deleted` and `gdpr.erasure.requested` down with it.
+
+`handle_user_merged` had a second door: the *from* id was probed under the
+guard but the survivor probe, `get_user_model().objects.filter(pk=into_user_id)`,
+sat outside it, so a malformed *into* id still escaped whenever the guest
+genuinely owned rows. That read moved inside the guarded block — still before
+the first write.
+
+`MergeTargetNotReady` is untouched: a survivor id that *parses* but has no row
+here still raises, because that one is a real ordering lag.
+
+
+
 ## [0.20.1] — 2026-08-30
 
 ### Fixed — a guest's recordings survived their sign-in, but nobody could find them
