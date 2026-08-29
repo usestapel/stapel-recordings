@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "user.merged",
+  "description": "Consumed from stapel-auth. An anonymous guest account was absorbed into an existing account; the guest row ceases to exist. Recordings reassigns the guest's recordings, jobs and share links to the surviving account, so a visitor who uploaded before signing in keeps them. Contract owned by the emitter.",
+  "type": "object",
+  "required": ["from_user_id", "into_user_id"],
+  "properties": {
+    "from_user_id": { "type": "string" },
+    "into_user_id": { "type": "string" },
+    "reason": { "type": "string" }
+  },
+  "additionalProperties": true
+}

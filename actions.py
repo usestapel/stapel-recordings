@@ -13,6 +13,18 @@ from . import events
 logger = logging.getLogger(__name__)
 
 
+class MergeTargetNotReady(RuntimeError):
+    """A ``user.merged`` arrived before the surviving account exists here.
+
+    Transient, not a bug: the guest has recordings to carry over but there is
+    no local user row to point their FKs at yet. Raising is the comm layer's
+    retry signal — ``deliver()`` wraps a failing handler in
+    ``ActionDeliveryError`` and the outbox redelivers — so the transfer
+    completes once the survivor's user projection lands. An operator seeing
+    this in a redelivery loop is looking at an ordering lag, not a defect.
+    """
+
+
 @on_action(events.ACTION_UPLOADED)
 def handle_uploaded(event):
     """A file landed — start the pipeline driver."""
@@ -147,6 +159,100 @@ def handle_user_deleted(event):
         if correlation_id:
             _receipt(correlation_id, SUBJECT_ACCOUNT, user_id, counts)
     logger.info("recordings erased for deleted user %s: %s", user_id, counts or "nothing")
+
+
+@on_action("user.merged")
+def handle_user_merged(event):
+    """Carry a merged-away account's recordings over to the survivor.
+
+    stapel-auth absorbs an anonymous guest into an existing account and then
+    DELETES the guest row. Every user column this module owns is
+    ``SET_NULL``, so without this handler the guest's recordings are not
+    erased — they are stranded: still on disk, owned by nobody, invisible to
+    the person who made them. Reassignment happens here, in one transaction,
+    before that deletion lands.
+
+    Three columns carry a user here and all three move:
+    ``Recording.owner``, ``Job.owner`` and ``RecordingShare.created_by``.
+    Nothing else in this module names a user — segments, speakers and upload
+    sessions hang off the recording, so they follow it by id.
+
+    Two different "unknown id" situations, and conflating them loses data:
+
+    * the guest owns nothing here (never uploaded, or a previous delivery
+      already moved it all) — a genuine no-op, returned quietly;
+    * the guest owns rows but the survivor has no user row here yet — NOT a
+      no-op. :class:`MergeTargetNotReady` is raised so the event is
+      redelivered, because returning success would let the outbox mark it
+      delivered and strand the recordings for good.
+    """
+    from django.contrib.auth import get_user_model
+    from django.core.exceptions import ValidationError
+    from django.db import transaction
+
+    from .models import Job, Recording, RecordingShare
+
+    payload = event.payload or {}
+    from_user_id = payload.get("from_user_id")
+    into_user_id = payload.get("into_user_id")
+    if not from_user_id or not into_user_id:
+        logger.error("user.merged without from/into user id: %s", event.event_id)
+        return
+    if str(from_user_id) == str(into_user_id):
+        return
+
+    with transaction.atomic():
+        # Every read, and the decision they feed, happens inside the
+        # transaction and before the first write, so the "not yet" path below
+        # can never leave half the rows moved.
+        try:
+            owns_something = (
+                Recording.objects.filter(owner_id=from_user_id).exists()
+                or Job.objects.filter(owner_id=from_user_id).exists()
+                or RecordingShare.objects.filter(created_by_id=from_user_id).exists()
+            )
+        except (ValidationError, ValueError, TypeError):
+            # A key that cannot address a row here names nothing. Saying so
+            # quietly beats a redelivery loop over a malformed payload.
+            logger.warning("user.merged with unusable user ids: %s", event.event_id)
+            return
+        if not owns_something:
+            # Nothing to carry: the guest never reached this service, or a
+            # previous delivery already moved everything. Quiet by design —
+            # this is also the at-least-once idempotency path.
+            return
+        if not get_user_model().objects.filter(pk=into_user_id).exists():
+            # The guest HAS rows but the survivor has no row here yet, so
+            # nothing can point a FK at them. Raising is this comm layer's
+            # retry signal, so the transfer lands once the survivor's user
+            # projection arrives.
+            raise MergeTargetNotReady(
+                f"user.merged {from_user_id} -> {into_user_id}: the surviving "
+                f"account has no user row in stapel-recordings yet; redeliver "
+                f"once its projection has landed"
+            )
+
+        # No user-scoped unique constraint exists in this module (the only
+        # unique column is RecordingShare.link_token_hash, a secret digest),
+        # so a plain reassignment cannot collide.
+        moved_recordings = Recording.objects.filter(owner_id=from_user_id).update(
+            owner_id=into_user_id
+        )
+        moved_jobs = Job.objects.filter(owner_id=from_user_id).update(
+            owner_id=into_user_id
+        )
+        moved_shares = RecordingShare.objects.filter(
+            created_by_id=from_user_id
+        ).update(created_by_id=into_user_id)
+
+    logger.info(
+        "user.merged %s -> %s: %s recordings, %s jobs, %s shares carried over",
+        from_user_id,
+        into_user_id,
+        moved_recordings,
+        moved_jobs,
+        moved_shares,
+    )
 
 
 # ─── Resuming a stage that was awaiting a task ─────────────────────────

@@ -6,6 +6,25 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-08-30
+
+### Fixed — a guest's recordings survived their sign-in, but nobody could find them
+
+stapel-auth folds an anonymous guest into the account it just proved it owns
+and then deletes the guest row, announcing it with `user.merged`. This module
+never subscribed. Its three user columns are all `SET_NULL`, so the recordings
+were not erased — they were stranded: still on disk, owned by nobody, and
+invisible to the person who made them. The only record of where they went
+lived in an event nothing consumed.
+
+`handle_user_merged` carries `Recording.owner`, `Job.owner` and
+`RecordingShare.created_by` onto the survivor in one transaction. Soft-deleted
+recordings move too — a row inside its restore window still belongs to
+somebody. A guest that owns nothing here is a quiet no-op (which is also the
+at-least-once idempotency path); a guest that owns rows while the survivor has
+no user projection here yet raises `MergeTargetNotReady`, so the outbox
+redelivers rather than marking the transfer done and losing it.
+
 ## [0.20.0] — 2026-08-24
 
 ### Added — the owner can read their own transcript
