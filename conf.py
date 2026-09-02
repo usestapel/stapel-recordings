@@ -56,6 +56,20 @@ DEFAULT_VECTOR = {
     "SEARCH_MODEL_FILTER": True,
     # Texts per llm.embed call.
     "BATCH_SIZE": 64,
+    # Optional SECOND bound on a batch: split it once the accumulated text
+    # reaches this many characters (0 = count only, the historical
+    # behaviour). It exists because BATCH_SIZE is the wrong unit for the
+    # limit real embedding servers actually enforce. A text-embeddings
+    # server caps a batch in TOKENS (TEI's `--max-batch-tokens`), so a
+    # batch size tuned for 37-character utterances refuses the same number
+    # of 600-character windows — and refuses it as a dropped connection,
+    # which the embed stage can only read as a transient failure, retry,
+    # and eventually park in the DLQ. Anything that changes the size of the
+    # embedded unit (SEGMENT_SCHEME above, a longer summary chunk) walks
+    # into that, so the bound belongs next to the unit, not in a host's
+    # memory. Set it to roughly `max_batch_tokens * chars_per_token`, with
+    # room to spare.
+    "BATCH_MAX_CHARS": 0,
     # timeout_seconds forwarded to llm.embed.
     "TIMEOUT_SECONDS": 120,
     # Recording summaries are chunked to this many characters before

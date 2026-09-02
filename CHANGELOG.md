@@ -6,6 +6,28 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.21.1] — 2026-09-03
+
+### Added — `VECTOR["BATCH_MAX_CHARS"]`, because BATCH_SIZE is the wrong unit
+
+`BATCH_SIZE` counts texts. A text-embeddings server budgets **tokens**
+(TEI's `--max-batch-tokens`). Those agree only while the embedded unit
+keeps the size it had when someone tuned the count — so a batch size
+chosen for 37-character utterances refuses the same number of
+600-character windows, and refuses it by dropping the connection, which
+the embed stage can only read as a transient failure: retry, retry, DLQ.
+
+That trap is now reachable from a setting this package itself added one
+release ago (`SEGMENT_SCHEME="window"`), so the bound belongs next to the
+unit rather than in a host's memory. `BATCH_MAX_CHARS` closes a batch once
+its texts total that many characters; `0` (the default) is count-only and
+byte-identical to before. A single item over the budget still goes out
+alone — a server that cannot take it should say so, which beats losing it
+here.
+
+Hosts changing `SEGMENT_SCHEME`, `SUMMARY_CHUNK_CHARS`, or the embedder
+should set it to roughly `max_batch_tokens x chars_per_token`.
+
 ## [0.21.0] — 2026-09-03
 
 A launch audit of a live deployment measured the Ask AI retrieval path and

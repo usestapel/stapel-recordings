@@ -42,11 +42,33 @@ def content_hash(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
-def batched(items: list, size: int):
-    """Yield consecutive slices of *items* of at most *size* elements."""
+def batched(items: list, size: int, max_chars: int = 0):
+    """Yield consecutive slices of *items* of at most *size* elements.
+
+    With ``max_chars > 0`` a slice also closes once its texts total that
+    many characters — the count bound alone is the wrong unit for what an
+    embedding server enforces (a token budget per batch), so a batch size
+    tuned for short utterances silently over-fills once the embedded unit
+    gets longer. A single item longer than the budget is still yielded
+    alone rather than dropped; a server that cannot take it will say so,
+    which is a better outcome than losing it here."""
     size = max(1, int(size))
-    for i in range(0, len(items), size):
-        yield items[i:i + size]
+    max_chars = max(0, int(max_chars or 0))
+    if max_chars <= 0:
+        for i in range(0, len(items), size):
+            yield items[i:i + size]
+        return
+    batch: list = []
+    chars = 0
+    for item in items:
+        length = len(item or "")
+        if batch and (len(batch) >= size or chars + length > max_chars):
+            yield batch
+            batch, chars = [], 0
+        batch.append(item)
+        chars += length
+    if batch:
+        yield batch
 
 
 def chunk_text(text: str | None, chunk_chars: int, overlap: int = 0) -> list[str]:
@@ -103,7 +125,9 @@ def embed_texts(
 
     model = str(cfg.get("MODEL") or "")
     vectors: list = []
-    for batch in batched(list(texts), cfg["BATCH_SIZE"]):
+    for batch in batched(
+        list(texts), cfg["BATCH_SIZE"], cfg.get("BATCH_MAX_CHARS", 0)
+    ):
         payload: dict = {
             "texts": list(batch),
             "timeout_seconds": int(cfg["TIMEOUT_SECONDS"]),

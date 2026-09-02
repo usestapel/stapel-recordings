@@ -289,7 +289,9 @@ build params) and `RecordingEmbedding`
 settings by **both** the models and the migration — set them before the
 first migrate; changing `DIM` later is a host migration + re-embed.
 
-**Embed stage**: after `merge`. Batches segment texts (`BATCH_SIZE`) →
+**Embed stage**: after `merge`. Batches segment texts (`BATCH_SIZE`, and
+`BATCH_MAX_CHARS` when set — a server budgets a batch in tokens, so a count
+tuned for short utterances over-fills once the unit gets longer) →
 `call("llm.embed", {"texts", "model"?, "provider"?, "timeout_seconds"})`
 (stapel-agent ≥ 0.4) → upserts rows. Idempotent under the outbox's
 at-least-once delivery: every row stores the sha256 of the embedded text

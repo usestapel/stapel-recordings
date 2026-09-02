@@ -486,3 +486,24 @@ def test_vector_arm_returns_each_segment_once(
     ):
         hits = search_recordings("anything", mode="vector", limit=10)
     assert [h.segment_id for h in hits] == [seg.id]
+
+
+def test_embed_batches_are_bounded_by_characters_too():
+    """BATCH_SIZE counts texts; an embedding server budgets TOKENS.
+
+    Hit twice while building the window index: a batch size tuned for
+    37-character utterances over-fills on 600-character windows, and the
+    server refuses by dropping the connection — which the embed stage can
+    only read as a transient failure, retry, and eventually park."""
+    from stapel_recordings.vector.embedding import batched
+
+    texts = ["x" * 600] * 10
+    # Count-only: the historical behaviour, unchanged.
+    assert [len(b) for b in batched(texts, 16)] == [10]
+    # With a character budget the same list splits to fit it.
+    assert [len(b) for b in batched(texts, 16, 2048)] == [3, 3, 3, 1]
+    assert all(sum(len(t) for t in b) <= 2048 for b in batched(texts, 16, 2048))
+    # The count bound still applies when it binds first.
+    assert [len(b) for b in batched(["x"] * 10, 4, 100_000)] == [4, 4, 2]
+    # One item over the budget goes out alone rather than being dropped.
+    assert [len(b) for b in batched(["y" * 5000, "z"], 16, 2048)] == [1, 1]
