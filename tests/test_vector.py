@@ -134,21 +134,30 @@ class FakeVectorStore:
     """In-memory stand-in for ORMVectorStore (sqlite can't host VectorField)."""
 
     def __init__(self):
-        self.segments: dict = {}   # (segment_id, model) -> (hash, vector)
+        # (segment_id, model, scheme, chunk_index) -> (hash, vector, text, span)
+        self.segments: dict = {}
         self.chunks: dict = {}     # (chunk_index, model) -> (hash, vector)
         self.pruned: list = []
 
-    def segment_hashes(self, recording):
+    def segment_hashes(self, recording, scheme="segment"):
         out: dict = {}
-        for (seg_id, model), (h, _vec) in self.segments.items():
-            out.setdefault(seg_id, set()).add((model, h))
+        for key, row in self.segments.items():
+            seg_id, model, row_scheme = key[0], key[1], key[2]
+            if row_scheme != scheme:
+                continue
+            out.setdefault(seg_id, set()).add((model, row[0]))
         return out
 
     def summary_hashes(self, recording):
         return {(ci, m, h) for (ci, m), (h, _vec) in self.chunks.items()}
 
-    def upsert_segment(self, segment, *, model, content_hash, vector):
-        self.segments[(segment.id, model)] = (content_hash, vector)
+    def upsert_segment(
+        self, segment, *, model, content_hash, vector,
+        scheme="segment", text="", span=1, chunk_index=0,
+    ):
+        self.segments[(segment.id, model, scheme, chunk_index)] = (
+            content_hash, vector, text, span,
+        )
 
     def upsert_summary_chunk(self, recording, *, chunk_index, model, text_hash, vector):
         self.chunks[(chunk_index, model)] = (text_hash, vector)
@@ -290,10 +299,16 @@ def test_embed_stage_embeds_segments(recording_with_segments, stub_embed, enable
     stored = enabled_vector.segments
     assert len(stored) == 3
     # rows keyed by the provider-reported model; vectors are what llm.embed returned
-    assert all(model == "stub-embed-1" for _sid, model in stored)
-    h, vec = stored[(recording_with_segments.segments.get(sequence_num=0).id, "stub-embed-1")]
+    assert all(model == "stub-embed-1" for _sid, model, _sch, _ci in stored)
+    # default scheme: one row per utterance, its own text, span 1
+    assert all(scheme == "segment" for _sid, _m, scheme, _ci in stored)
+    h, vec, text, span = stored[
+        (recording_with_segments.segments.get(sequence_num=0).id,
+         "stub-embed-1", "segment", 0)
+    ]
     assert h == content_hash("alpha bravo")
     assert vec == [11.0, 1.0, 0.0]
+    assert (text, span) == ("", 1)
 
 
 def test_embed_is_idempotent_via_content_hash(recording_with_segments, stub_embed, enabled_vector):

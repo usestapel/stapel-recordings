@@ -63,16 +63,82 @@ DEFAULT_VECTOR = {
     # SUMMARY_CHUNK_OVERLAP characters.
     "SUMMARY_CHUNK_CHARS": 2000,
     "SUMMARY_CHUNK_OVERLAP": 200,
-    # HNSW index parameters for the segment-embedding cosine index (read by
-    # the vector app's migration at migrate time).
-    "HNSW": {"M": 16, "EF_CONSTRUCTION": 64},
-    # Postgres FTS config per recording language (primary subtag, lower
-    # case); anything unmapped falls back to FTS_FALLBACK_CONFIG.
+    # Which embedded unit the vector arm searches: "segment" (one row per
+    # STT utterance — the historical scheme) or "window" (consecutive
+    # utterances grouped into answer-sized passages carrying speaker and
+    # timestamps; see SEGMENT_WINDOW below). Rows are STAMPED with the
+    # scheme that produced them, so both can coexist in the table and the
+    # switch is one setting in either direction — build the new scheme with
+    # `manage.py recordings_reembed --scheme window`, flip this key when
+    # the eval says it is better, flip it back if it is not.
+    "SEGMENT_SCHEME": "segment",
+    # Windowing parameters for the "window" scheme. An STT utterance is a
+    # sentence fragment (median 37 characters on a real deployment) — too
+    # small to contain an answer and too small for an embedding to mean
+    # much. Consecutive utterances of one recording are packed to
+    # TARGET_CHARS and never exceed MAX_CHARS; OVERLAP_CHARS of the
+    # previous window's tail is carried into the next so an answer split
+    # across a boundary survives. Each window is rendered with a
+    # "[mm:ss Speaker]" prefix per utterance, so the retrieved passage
+    # carries who said it and when.
+    "SEGMENT_WINDOW": {
+        "TARGET_CHARS": 600,
+        "MAX_CHARS": 800,
+        "OVERLAP_CHARS": 100,
+    },
+    # HNSW parameters. M / EF_CONSTRUCTION are BUILD-time (read by the
+    # vector app's migration at migrate time). The rest are QUERY-time and
+    # exist because an ANN index scan and a tenant predicate do not
+    # compose: the workspace filter is applied AFTER the index scan, so a
+    # tenant holding a few percent of the corpus loses nearly all of its
+    # candidates to the post-index filter and the vector arm silently
+    # under-returns (measured: 0 rows for a LIMIT 5 query over a workspace
+    # with 234 eligible rows).
+    #
+    # ITERATIVE_SCAN is the real fix and needs pgvector >= 0.8:
+    # "relaxed_order" (the default here) lets the scan resume until the
+    # LIMIT is satisfied, bounded by MAX_SCAN_TUPLES; results come back
+    # slightly out of distance order, which the arm re-sorts. Set
+    # "strict_order" for in-index ordering at some recall cost, or "" to
+    # leave the server's setting alone. On pgvector < 0.8 the setting does
+    # not exist and the arm falls back to widening EF_SEARCH by the
+    # tenant's measured share of the corpus.
+    #
+    # EF_SEARCH 0 = derive it (max of the server default and a small
+    # multiple of the fetch size), capped at EF_SEARCH_MAX. Pin a number to
+    # take manual control.
+    "HNSW": {
+        "M": 16,
+        "EF_CONSTRUCTION": 64,
+        "EF_SEARCH": 0,
+        "EF_SEARCH_MAX": 1000,
+        "ITERATIVE_SCAN": "relaxed_order",
+        "MAX_SCAN_TUPLES": 20000,
+    },
+    # Postgres FTS config per recording language, keyed on the ISO 639-1
+    # subtag. Recording languages are NORMALIZED before this lookup —
+    # regional subtags are dropped and ISO 639-2/3 codes (which is what
+    # speech-to-text providers emit: "rus", "eng", "spa", "zho") are mapped
+    # to their 639-1 equivalent, so a host keys this map on one alphabet
+    # only. Anything still unmapped falls back to FTS_FALLBACK_CONFIG.
     "FTS_CONFIGS": {
         "en": "english", "de": "german", "fr": "french", "es": "spanish",
         "it": "italian", "pt": "portuguese", "nl": "dutch", "ru": "russian",
     },
     "FTS_FALLBACK_CONFIG": "simple",
+    # How the query string becomes a tsquery on the text arm:
+    #   "plain"     — plainto_tsquery: every term must be present (AND).
+    #                 Precise; a question-shaped query usually matches
+    #                 nothing, so the arm contributes nothing to fusion.
+    #   "websearch" — websearch_to_tsquery: quoted phrases and -exclusion,
+    #                 still AND between the remaining terms.
+    #   "any"       — the terms OR'd together, ranked by ts_rank. Recall
+    #                 over precision; ranking, not filtering, decides.
+    # Whatever the shape, the arm now applies a REAL match predicate
+    # (tsvector @@ tsquery) — ts_rank is a ranking function and answers
+    # 1e-20, not 0, for a multi-term query that matches nothing, so it can
+    # never be used as one.
+    "FTS_SEARCH_TYPE": "plain",
     # Hybrid search: reciprocal-rank fusion. score(hit) = Σ over arms of
     # WEIGHT_arm / (RRF_K + rank_arm). ARM_LIMIT caps how many candidates
     # each arm contributes before fusion.

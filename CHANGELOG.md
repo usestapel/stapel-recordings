@@ -6,6 +6,134 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-09-03
+
+A launch audit of a live deployment measured the Ask AI retrieval path and
+found four defects, none of which raised an error, failed a test, or showed
+up on a dashboard. All four are fixed here, and the fifth item is the
+instrument that would have caught them: an offline eval. Measured on that
+deployment's own transcripts (26 labeled RU+EN questions), the mode the
+product actually calls — `hybrid` — goes from **MRR 0.312 / recall@10
+0.769** to **MRR 0.522 / recall@10 0.923**.
+
+### Fixed — the text arm returned the whole corpus for every query
+
+`ts_rank` is a ranking function, not a match predicate, and it does not
+answer 0 for a non-match. PostgreSQL's `calc_rank_and` starts at `-1.0` and
+`calc_rank` clamps a negative result to `1e-20`, so a query of two or more
+terms that matches **nothing** scores `1e-20` — strictly greater than zero —
+on every row in the table. `.filter(rank__gt=0.0)` therefore filtered
+nothing at all: the text arm handed reciprocal-rank fusion a full-length
+ranking of noise, which took ranks 1..N and outranked the vector arm's
+genuine hits. Live symptom: three unrelated questions came back with the
+same five irrelevant segments at the top.
+
+Matching is now `tsvector @@ tsquery` (`.filter(search=sq)`) and `ts_rank`
+only orders what already matched. A larger threshold was not an option: it
+is the same bug with a bigger constant, and it starts discarding real faint
+matches on the way.
+
+`VECTOR["FTS_SEARCH_TYPE"]` is new and shapes the query — `"plain"`
+(default, unchanged semantics: every term required), `"websearch"`, or
+`"any"` (terms OR'd; ranking rather than filtering decides). The default is
+untouched because the eval says so: on the measured corpus `"any"` scores
+better as a standalone arm (MRR 0.283 vs 0.000 for a question-shaped query)
+and worse once fused (hybrid MRR 0.467 vs 0.522).
+
+### Fixed — the vector arm under-returned under a tenant filter
+
+An HNSW index scan knows nothing about `workspace_id`. The predicate runs
+on what the scan already returned, so with the default `hnsw.ef_search` a
+workspace holding a few percent of the corpus has nearly all of its
+candidates thrown away *after* the fact. Measured on the deployment: a
+`LIMIT 5` query over a workspace with **234 eligible rows returned 0**
+(`EXPLAIN`: the HNSW scan stopped at 54 tuples, none of them in the
+workspace). Nothing errored — the arm just quietly retrieved less, which is
+why it survived to production.
+
+The arm now sets pgvector's `hnsw.iterative_scan` for the duration of its
+query (`VECTOR["HNSW"]["ITERATIVE_SCAN"]`, default `relaxed_order`, bounded
+by `MAX_SCAN_TUPLES`), which is the mechanism built for exactly this and
+needs pgvector ≥ 0.8 — the version is read from the catalog, not assumed.
+On older pgvector it falls back to widening `hnsw.ef_search` by the tenant's
+measured share of the corpus. `relaxed_order` returns near-neighbours
+slightly out of order, so the arm re-sorts on the distance it already has.
+Same `EXPLAIN`, after: 5 of 5, the scan continuing to 343 tuples.
+
+### Fixed — 64 of 70 recordings were searched without a stemmer
+
+Speech-to-text reports ISO 639-2/3 (`rus`, `eng`, `spa`, `zho`);
+`VECTOR["FTS_CONFIGS"]` is keyed on ISO 639-1. Nothing reconciled them, so
+Russian was searched as `simple` — no stemming, no stopwords — and the only
+symptom was worse results.
+
+New `stapel_recordings.languages.to_iso639_1` normalizes a tag (regional
+subtag dropped, 639-2/3 mapped) before every config lookup. The table is
+the complete ISO 639-2 set that has a 639-1 equivalent — 204 entries,
+generated (`tools/gen_iso639.py`), including both the bibliographic and
+terminological forms (`ger`/`deu`, `fre`/`fra`, `chi`/`zho`, `dut`/`nld`),
+which is precisely the class of case a hand-written shortlist gets wrong.
+Hosts keep keying `FTS_CONFIGS` on two-letter subtags; nothing to change.
+
+### Fixed — RRF double-counted a key an arm listed twice
+
+Reciprocal-rank fusion is defined over a ranked list of *distinct*
+documents. Summing a repeat is not a rounding error: two appearances at
+ranks 20 and 21 sum to more than a single appearance at rank 1, so one
+duplicated key leapfrogs the entire result. An arm can produce repeats
+honestly — the vector arm keys hits by segment, and one long utterance can
+anchor a dozen windows. A repeat now counts once, at its best rank, and the
+vector arm returns each segment once (nearest wins), since a hit *is* a
+segment id to the fusion, the citation and the host DTO alike.
+
+### Added — a second embedding scheme: answer-sized windows
+
+The embedded unit was one STT utterance. On the measured deployment the
+median such unit is **37 characters** — neither an embedding worth ranking
+nor a passage anyone can answer from. `vector/chunking.py` packs
+consecutive utterances into windows of ~600 characters (never past 800),
+each line prefixed `[mm:ss Speaker]` so the retrieved passage carries who
+said it and when, with whole-utterance overlap across boundaries.
+
+This is a change to what is IN the index, so it is not a cutover.
+`SegmentEmbedding` gains `scheme` / `text` / `span` / `chunk_index`
+(migration `0002`, expand-only; existing rows are stamped `"segment"`,
+which is what they are), the uniqueness key widens to
+`(segment, model, scheme, chunk_index)`, and search reads exactly one
+scheme. So `manage.py recordings_reembed --scheme window` builds the new
+index while the live one keeps serving, and `VECTOR["SEGMENT_SCHEME"]`
+adopts it — or reverts it — as one setting.
+
+**The default stays `"segment"`.** On the measured corpus windows are
+better (hybrid MRR 0.522 → 0.581, recall@5 0.692 → 0.808; English MRR
+0.567 → 0.726, Russian 0.476 → 0.436), but "better on one corpus" is not
+"better for every host", and a library default that silently re-chunks
+everyone's index is not a default. Measure, then flip.
+
+### Added — `manage.py recordings_search_eval`, the number behind all of this
+
+`vector/evaluation.py` + the command score a labeled question set with
+recall@k and MRR. Questions are labeled with `(recording_id, start, end)`
+**time spans**, not row ids: re-chunking the index changes which row
+carries a passage, so an id-labeled set stops measuring the moment the
+thing it exists to measure changes. `--set KEY=VALUE` A/Bs any `VECTOR`
+key for a single run, `--mode` scores arms separately, `--json` makes a
+before/after pair a diff instead of two screenshots. Run it against a
+restored copy of real data — it is one embedding call per question per
+mode, and it belongs on a workstation, not on the box serving users.
+
+### Compatibility
+
+- **Migration required** (`recordings_vector.0002`) — additive, and it
+  applied to a 2 870-row production copy in 50 ms.
+- **Custom `ORMVectorStore` substitutes** must accept the new
+  `scheme` / `text` / `span` / `chunk_index` keywords on `upsert_segment`
+  and the `scheme` argument on `segment_hashes`. This is the breaking
+  change behind the minor bump.
+- The text arm returns far fewer rows than it used to. That is the fix:
+  what it returned before was not results.
+- No new dependency. No reranker was enabled.
+
 ## [0.20.2] — 2026-08-30
 
 ### Fixed — a malformed id in an action payload was a poison pill

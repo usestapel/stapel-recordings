@@ -281,8 +281,9 @@ STAPEL_RECORDINGS = {"VECTOR": {"ENABLED": True, "DIM": 1536, "MODEL": "..." }}
 ```
 
 **Models** (`vector/models.py`): `SegmentEmbedding` (FK `Segment`,
-`VectorField(DIM)`, `model`, `content_hash`, unique per segment+model, HNSW
-cosine index with `VECTOR["HNSW"]` params) and `RecordingEmbedding`
+`VectorField(DIM)`, `model`, `scheme`, `content_hash`, unique per
+segment+model+scheme+chunk_index, HNSW cosine index with `VECTOR["HNSW"]`
+build params) and `RecordingEmbedding`
 (summary chunks: FK `Recording`, `chunk_index`, `text_hash`, `vector`,
 `model`, unique per recording+model+chunk). `DIM`/HNSW are read from
 settings by **both** the models and the migration — set them before the
@@ -299,22 +300,58 @@ The summary is chunked (`SUMMARY_CHUNK_CHARS`/`_OVERLAP`, plain character
 windows — smarter chunking is host know-how) and stale tail chunks are
 pruned. Half-configured state (`ENABLED` without the app) → check W006.
 
+**Embedded unit** (`VECTOR["SEGMENT_SCHEME"]`, `vector/chunking.py`): what
+one row stands for.
+
+- `"segment"` (default) — one STT utterance. Cheap, exact, and often far
+  too small: the median utterance on a real deployment is 37 characters,
+  which is neither an embedding worth ranking nor a passage anyone can
+  answer from.
+- `"window"` — consecutive utterances packed to `SEGMENT_WINDOW`
+  `TARGET_CHARS` (600) and never past `MAX_CHARS` (800), with
+  `OVERLAP_CHARS` of the previous window's whole utterances carried in, and
+  a `[mm:ss Speaker]` prefix per line so the retrieved passage says who
+  spoke and when. Rows are anchored at the run's first segment.
+
+Rows carry the scheme that built them and search reads exactly one, so the
+two coexist: `manage.py recordings_reembed --scheme window` builds the new
+index while the live one keeps serving, and flipping `SEGMENT_SCHEME` (in
+either direction) is what adopts or reverts it. Measure before flipping —
+`manage.py recordings_search_eval` exists for that.
+
 **Search** (`vector/search.py`): `search_recordings(query, *,
 workspace_id=None, recording_ids=None, mode="hybrid"|"text"|"vector",
 limit=20) -> [SearchHit(segment_id, recording_id, score, snippet)]`.
 
-- *text* — postgres FTS over `Segment.text`; the FTS config resolves per
-  recording's `language` via `VECTOR["FTS_CONFIGS"]` (primary subtag),
-  fallback `'simple'`. No stored search column — hosts at scale add their
-  own GIN index / SearchVectorField. Off postgres this mode degrades to
-  `icontains` (score 1.0) so it works everywhere.
+- *text* — postgres FTS over `Segment.text`. Matching is `tsvector @@
+  tsquery` and `ts_rank` only orders what matched: `ts_rank` answers
+  `1e-20`, not `0`, for a multi-term query that matches nothing, so it is
+  not usable as a predicate and no threshold on it ever will be.
+  `VECTOR["FTS_SEARCH_TYPE"]` shapes the query — `"plain"` (default,
+  every term required), `"websearch"` (phrases + `-exclusion`), or
+  `"any"` (terms OR'd, ranking rather than filtering decides). The FTS
+  config resolves per recording's `language` via `VECTOR["FTS_CONFIGS"]`,
+  which is keyed on ISO 639-1 — the language is NORMALIZED first
+  (`stapel_recordings.languages.to_iso639_1`), so the ISO 639-2/3 tags
+  speech-to-text actually emits (`rus`, `eng`, `spa`, `zho`) resolve
+  instead of silently falling back to unstemmed `'simple'`. No stored
+  search column — hosts at scale add their own GIN index /
+  SearchVectorField. Off postgres this mode degrades to `icontains`
+  (score 1.0) so it works everywhere.
 - *vector* — the query goes through `llm.embed`, then cosine distance over
   `SegmentEmbedding` (score = 1 − distance). Candidates are restricted to
   rows whose `model` equals the model that embedded **this query** (the
   name `llm.embed` reports — exactly what the embed stage stamps), because
   two models are two incomparable spaces of the same width: without the
   filter a swapped embedder degrades ranking to noise instead of returning
-  nothing. Rows on an older model simply stop matching — rebuild them with
+  nothing. **Tenant reach**: an HNSW scan does not know about
+  `workspace_id`, so the predicate runs on what the scan already returned
+  and a small tenant loses nearly all of its candidates to the post-index
+  filter. The arm therefore sets `hnsw.iterative_scan` (pgvector ≥ 0.8;
+  `VECTOR["HNSW"]["ITERATIVE_SCAN"]`, bounded by `MAX_SCAN_TUPLES`) for the
+  duration of its query, and on older pgvector widens `hnsw.ef_search` by
+  the tenant's measured share of the corpus instead. Rows on an older model
+  simply stop matching — rebuild them with
   `manage.py recordings_reembed --force` (`--dry-run` lists what is stored
   per model, `--prune-other-models --keep-model <name>` drops the old
   space). `VECTOR["SEARCH_MODEL_FILTER"] = False` opts out, e.g. to keep
@@ -322,8 +359,21 @@ limit=20) -> [SearchHit(segment_id, recording_id, score, snippet)]`.
 - *hybrid* — both arms fetch up to `VECTOR["ARM_LIMIT"]` candidates and are
   fused with **reciprocal-rank fusion**: `score = Σ_arm WEIGHT_arm /
   (RRF_K + rank_arm)` — rank-based, so the arms' incomparable score scales
-  need no calibration. Knobs: `RRF_K` (60), `RRF_WEIGHTS`
-  (`{"text": 1.0, "vector": 1.0}`).
+  need no calibration. A key repeated inside one arm's list counts once,
+  at its best rank — RRF is defined over distinct documents, and summing a
+  repeat lets it leapfrog every genuine hit. Knobs: `RRF_K` (60),
+  `RRF_WEIGHTS` (`{"text": 1.0, "vector": 1.0}`).
+
+**Evaluation** (`vector/evaluation.py`, `manage.py
+recordings_search_eval`): recall@k and MRR over a labeled question set, so
+that "this ranking is better" is a measurement rather than an opinion.
+Questions are labeled with `(recording_id, start, end)` TIME SPANS, not row
+ids — re-chunking the index changes which row carries a passage, and an
+id-labeled set would stop measuring the moment the thing it exists to
+measure changes. `--set KEY=VALUE` A/Bs any `VECTOR` key for one run
+(`--set SEGMENT_SCHEME=window`), `--mode` scores arms separately, `--json`
+makes a before/after pair a diff. Run it against a restored COPY of real
+data — it is one embedding call per question per mode.
 
 **Optional rerank** (`VECTOR["RERANK"]`, default off): one post-ranking
 pass in **every** mode (rerank is provider-agnostic quality — the top

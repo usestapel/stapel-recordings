@@ -17,6 +17,10 @@ previous model.
     python manage.py recordings_reembed --workspace <uuid> \
         --prune-other-models --keep-model Qwen/Qwen3-Embedding-8B
 
+    # build the multi-utterance WINDOW index alongside the live one, then
+    # flip VECTOR["SEGMENT_SCHEME"]="window" once the eval says to
+    python manage.py recordings_reembed --scheme window
+
 Re-embedding is idempotent (rows are keyed by (segment, model) and by the
 sha256 of the embedded text), so a re-run only pays for what is missing;
 an interrupted pass can simply be repeated. Pruning is a plain delete —
@@ -50,6 +54,24 @@ class Command(BaseCommand):
             help="Re-embed texts already stored (needed after an embedder swap)",
         )
         parser.add_argument(
+            "--scheme", default=None,
+            help=(
+                "Embedding scheme to BUILD: 'segment' (one STT utterance per "
+                "row) or 'window' (consecutive utterances packed into "
+                "answer-sized passages). Default: VECTOR['SEGMENT_SCHEME'], "
+                "i.e. whichever one search is currently reading. Building the "
+                "other one leaves the live one untouched."
+            ),
+        )
+        parser.add_argument(
+            "--prune-scheme", default=None,
+            help=(
+                "Delete every row of this scheme in scope before embedding "
+                "(a re-window that packs fewer windows than the last one "
+                "leaves orphan anchors behind)"
+            ),
+        )
+        parser.add_argument(
             "--prune-other-models", action="store_true",
             help="Delete embedding rows whose model differs from --keep-model",
         )
@@ -81,14 +103,27 @@ class Command(BaseCommand):
         from ...vector.embedding import embed_recording
 
         force = bool(options["force"])
+        scheme = str(options["scheme"] or cfg.get("SEGMENT_SCHEME") or "segment")
+        if options["prune_scheme"]:
+            self._prune_scheme(options, str(options["prune_scheme"]))
         segments = chunks = 0
         for recording in recordings.iterator():
-            counters = embed_recording(recording, force=force)
+            counters = embed_recording(recording, force=force, scheme=scheme)
             segments += counters["segments_embedded"]
             chunks += counters["summary_chunks_embedded"]
         self.stdout.write(
-            f"recordings_reembed: embedded {segments} segment(s), {chunks} summary chunk(s)"
+            f"recordings_reembed: embedded {segments} {scheme} unit(s), "
+            f"{chunks} summary chunk(s)"
         )
+        if scheme != str(cfg.get("SEGMENT_SCHEME") or "segment"):
+            # Building an index nobody reads is a normal thing to do here —
+            # but silently is not.
+            self.stdout.write(
+                f"recordings_reembed: search still reads scheme "
+                f"{cfg.get('SEGMENT_SCHEME')!r} — set "
+                f"STAPEL_RECORDINGS['VECTOR']['SEGMENT_SCHEME'] = {scheme!r} "
+                "to serve what was just built (and back again to undo it)."
+            )
         if not force and not segments and not chunks:
             # The trap this command exists for: with VECTOR["MODEL"]
             # unpinned the hash check cannot see that stored rows belong
@@ -143,20 +178,38 @@ class Command(BaseCommand):
         from ...vector.models import RecordingEmbedding, SegmentEmbedding
 
         seg_filter, rec_filter = self._row_filters(options)
-        for label, model_cls, filters in (
-            ("segment", SegmentEmbedding, seg_filter),
-            ("summary", RecordingEmbedding, rec_filter),
-        ):
-            rows = (
-                model_cls.objects.filter(**filters)
-                .values("model")
-                .annotate(n=Count("id"))
-                .order_by("-n")
+        seg_rows = (
+            SegmentEmbedding.objects.filter(**seg_filter)
+            .values("model", "scheme")
+            .annotate(n=Count("id"))
+            .order_by("-n")
+        )
+        for row in seg_rows:
+            self.stdout.write(
+                f"  segment: {row['n']} row(s) on model "
+                f"{row['model'] or '(unset)'!r}, scheme {row['scheme']!r}"
             )
-            for row in rows:
-                self.stdout.write(
-                    f"  {label}: {row['n']} row(s) on model {row['model'] or '(unset)'!r}"
-                )
+        rec_rows = (
+            RecordingEmbedding.objects.filter(**rec_filter)
+            .values("model")
+            .annotate(n=Count("id"))
+            .order_by("-n")
+        )
+        for row in rec_rows:
+            self.stdout.write(
+                f"  summary: {row['n']} row(s) on model {row['model'] or '(unset)'!r}"
+            )
+
+    def _prune_scheme(self, options, scheme: str) -> None:
+        from ...vector.models import SegmentEmbedding
+
+        seg_filter, _ = self._row_filters(options)
+        deleted, _ = (
+            SegmentEmbedding.objects.filter(**seg_filter, scheme=scheme).delete()
+        )
+        self.stdout.write(
+            f"recordings_reembed: pruned {deleted} row(s) of scheme {scheme!r}"
+        )
 
     def _prune(self, options, keep: str) -> None:
         from ...vector.models import RecordingEmbedding, SegmentEmbedding

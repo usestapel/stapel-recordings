@@ -108,14 +108,26 @@ def reciprocal_rank_fusion(
     ``rankings`` maps arm name -> keys in rank order (best first).
     ``score(key) = Σ_arm weight_arm / (k + rank_arm)`` over the arms that
     ranked the key (1-based rank). Result is sorted by fused score
-    descending, ties broken by key repr for determinism."""
+    descending, ties broken by key repr for determinism.
+
+    A key repeated WITHIN one arm's list counts once, at its best rank.
+    RRF is defined over a ranked list of distinct documents, and summing a
+    repeat is not a small error: two appearances at ranks 20 and 21 sum to
+    more than a single appearance at rank 1, so one duplicated key
+    leapfrogs the whole result. An arm can produce repeats honestly — the
+    vector arm over multi-utterance windows keys hits by their anchor
+    segment, and one long utterance can anchor a dozen windows."""
     weights = weights or {}
     scores: dict = {}
     for arm, keys in rankings.items():
         weight = float(weights.get(arm, 1.0))
         if weight == 0.0:
             continue
+        seen: set = set()
         for rank, key in enumerate(keys, start=1):
+            if key in seen:
+                continue
+            seen.add(key)
             scores[key] = scores.get(key, 0.0) + weight / (float(k) + rank)
     return sorted(scores.items(), key=lambda kv: (-kv[1], str(kv[0])))
 
@@ -374,8 +386,40 @@ def _scoped_segments(workspace_id, recording_ids):
 
 
 def _fts_config(language: str | None, cfg: dict) -> str:
-    primary = (language or "").split("-")[0].strip().lower()
-    return cfg["FTS_CONFIGS"].get(primary, cfg["FTS_FALLBACK_CONFIG"])
+    """The Postgres text-search config for a recording's language tag.
+
+    The tag is normalized first (:func:`..languages.to_iso639_1`): STT
+    providers report ISO 639-2/3 (``rus``, ``eng``, ``spa``) while
+    ``FTS_CONFIGS`` is keyed on ISO 639-1, and an unreconciled mismatch is
+    silent — it just quietly buys ``simple`` (no stemming, no stopwords)
+    for a language Postgres has a real dictionary for."""
+    from ..languages import to_iso639_1
+
+    return cfg["FTS_CONFIGS"].get(
+        to_iso639_1(language), cfg["FTS_FALLBACK_CONFIG"]
+    )
+
+
+def _build_search_query(query: str, config: str, cfg: dict):
+    """The tsquery for *query* under ``FTS_SEARCH_TYPE`` (see conf.py).
+
+    ``"any"`` OR-combines the terms so a question-shaped query can match at
+    all; the other two are Postgres' own ``plainto_tsquery`` /
+    ``websearch_to_tsquery``, both of which AND."""
+    from django.contrib.postgres.search import SearchQuery
+
+    search_type = str(cfg.get("FTS_SEARCH_TYPE") or "plain").lower()
+    if search_type == "websearch":
+        return SearchQuery(query, config=config, search_type="websearch")
+    if search_type == "any":
+        terms = query.split()
+        combined = None
+        for term in terms:
+            one = SearchQuery(term, config=config)
+            combined = one if combined is None else (combined | one)
+        if combined is not None:
+            return combined
+    return SearchQuery(query, config=config)
 
 
 def _text_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHit]:
@@ -393,7 +437,7 @@ def _text_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHit]
             for row in rows
         ]
 
-    from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+    from django.contrib.postgres.search import SearchRank, SearchVector
 
     from stapel_recordings.models import Recording
 
@@ -411,12 +455,22 @@ def _text_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHit]
 
     hits: list[SearchHit] = []
     for config, rec_ids in by_config.items():
-        sq = SearchQuery(query, config=config)
+        sq = _build_search_query(query, config, cfg)
+        vector = SearchVector("text", config=config)
         rows = (
             qs.filter(recording_id__in=rec_ids)
-            .annotate(rank=SearchRank(SearchVector("text", config=config), sq))
-            .filter(rank__gt=0.0)
-            .order_by("-rank")[:limit]
+            .annotate(search=vector, rank=SearchRank(vector, sq))
+            # `tsvector @@ tsquery` — the ONLY thing that decides whether a
+            # row matches. ts_rank is a ranking function, not a predicate:
+            # PostgreSQL's calc_rank_and starts at -1.0 and calc_rank
+            # clamps a negative result to 1e-20, so a query of two or more
+            # terms that matches nothing scores 1e-20 (> 0) on every row in
+            # the table. `rank__gt=0.0` therefore filtered NOTHING and this
+            # arm handed the fusion the entire corpus in accidental order.
+            # A larger threshold would be the same bug with a bigger
+            # constant — it would also start cutting genuine faint matches.
+            .filter(search=sq)
+            .order_by("-rank", "id")[:limit]
         )
         hits.extend(
             SearchHit(row.id, row.recording_id, float(row.rank), make_snippet(row.text, query))
@@ -424,6 +478,148 @@ def _text_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHit]
         )
     hits.sort(key=lambda h: (-h.score, str(h.segment_id)))
     return hits[:limit]
+
+
+def _pgvector_version() -> tuple[int, int]:
+    """``(major, minor)`` of the installed pgvector, ``(0, 0)`` if absent.
+
+    Cached per connection alias: it cannot change under a running process,
+    and the alternative is a catalog round-trip on every search."""
+    from django.db import connection
+
+    cached = getattr(connection, "_stapel_pgvector_version", None)
+    if cached is not None:
+        return cached
+    version = (0, 0)
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+            )
+            row = cur.fetchone()
+        if row and row[0]:
+            parts = str(row[0]).split(".")
+            version = (int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+    except Exception as exc:  # pragma: no cover - catalog unavailable
+        logger.debug("could not read the pgvector version: %s", exc)
+    connection._stapel_pgvector_version = version
+    return version
+
+
+def _tenant_share(qs) -> float:
+    """The scoped candidate set's share of the whole embedding table.
+
+    Only consulted on the pre-0.8 fallback path. The denominator is the
+    planner's own estimate (``pg_class.reltuples``) rather than a
+    ``COUNT(*)`` — this is a scaling factor, not an accounting figure, and
+    it must not cost a full scan of the table to compute."""
+    from django.db import connection
+
+    from .models import SegmentEmbedding
+
+    eligible = qs.count()
+    if eligible <= 0:
+        return 1.0
+    total = 0.0
+    try:
+        with connection.cursor() as cur:
+            cur.execute(
+                "SELECT reltuples FROM pg_class WHERE oid = %s::regclass",
+                [SegmentEmbedding._meta.db_table],
+            )
+            row = cur.fetchone()
+        total = float(row[0]) if row and row[0] and row[0] > 0 else 0.0
+    except Exception as exc:  # pragma: no cover
+        logger.debug("could not estimate the embedding table size: %s", exc)
+    if total <= 0:
+        return 1.0
+    return min(1.0, max(eligible / total, 1e-4))
+
+
+def _scan_settings(cfg: dict, limit: int, scoped: bool, qs) -> dict:
+    """The pgvector GUCs to apply for one vector-arm query.
+
+    An HNSW scan and a tenant predicate do not compose. The index knows
+    nothing about ``workspace_id``, so the predicate runs on what the scan
+    already returned; with the default ``hnsw.ef_search`` a workspace
+    holding a few percent of the corpus has nearly all of its candidates
+    thrown away AFTER the fact, and the arm returns a handful of rows (or
+    none) for a query with hundreds of eligible ones. It does not error —
+    it just quietly retrieves less, which is why this survived to
+    production.
+
+    Two mechanisms, chosen by what the server actually has:
+
+    - **pgvector >= 0.8** — ``hnsw.iterative_scan``: the scan resumes until
+      the LIMIT is satisfied or ``hnsw.max_scan_tuples`` is spent. This is
+      the mechanism built for exactly this problem, and it is bounded.
+    - **older** — widen ``hnsw.ef_search`` by the tenant's measured share
+      of the corpus, capped at ``EF_SEARCH_MAX``. A blunter instrument (a
+      wider scan costs on every query, and a tenant small enough still
+      loses), but strictly better than the default.
+    """
+    hnsw = cfg["HNSW"]
+    ef_max = max(1, int(hnsw.get("EF_SEARCH_MAX") or 1000))
+    pinned = int(hnsw.get("EF_SEARCH") or 0)
+    iterative = str(hnsw.get("ITERATIVE_SCAN") or "").strip().lower()
+    supports_iterative = _pgvector_version() >= (0, 8)
+
+    settings: dict = {}
+    if pinned > 0:
+        ef_search = pinned
+    else:
+        # Enough to fill the fetch window with room to spare; the server
+        # default (40) is the floor.
+        ef_search = max(40, limit * 4)
+        if scoped and not (supports_iterative and iterative):
+            ef_search = int(ef_search / _tenant_share(qs))
+    settings["hnsw.ef_search"] = str(min(ef_max, max(1, ef_search)))
+
+    if supports_iterative and iterative:
+        settings["hnsw.iterative_scan"] = iterative
+        max_tuples = int(hnsw.get("MAX_SCAN_TUPLES") or 0)
+        if max_tuples > 0:
+            settings["hnsw.max_scan_tuples"] = str(max_tuples)
+    return settings
+
+
+class _scan_tuning:
+    """Apply pgvector GUCs for the enclosed query and put them back.
+
+    ``SET LOCAL`` needs a transaction, and inside an existing one its scope
+    is that whole transaction — not this block — so the values are reset
+    explicitly on the way out. A host that runs with ATOMIC_REQUESTS gets
+    the same isolation as one that does not."""
+
+    def __init__(self, settings: dict):
+        self._settings = settings
+        self._atomic = None
+
+    def __enter__(self):
+        if not self._settings:
+            return self
+        from django.db import connection, transaction
+
+        self._atomic = transaction.atomic()
+        self._atomic.__enter__()
+        with connection.cursor() as cur:
+            for key, value in self._settings.items():
+                cur.execute(f"SET LOCAL {key} = %s", [value])
+        return self
+
+    def __exit__(self, *exc):
+        if self._atomic is None:
+            return False
+        from django.db import connection
+
+        try:
+            if exc[0] is None:
+                with connection.cursor() as cur:
+                    for key in self._settings:
+                        cur.execute(f"SET LOCAL {key} = DEFAULT")
+        finally:
+            self._atomic.__exit__(*exc)
+        return False
 
 
 def _vector_arm(
@@ -450,22 +646,49 @@ def _vector_arm(
         # model that just embedded THIS query — the same string the embed
         # stage stamps, since both take it from the llm.embed response.
         qs = qs.filter(model=query_model)
+    # Same argument one level up: a "segment" row and a "window" row are
+    # different UNITS, and their scores are not comparable rankings of the
+    # same thing. The arm searches exactly one scheme — which is what makes
+    # re-embedding under a new scheme a background job and the switch
+    # itself one setting, in either direction.
+    qs = qs.filter(scheme=str(cfg.get("SEGMENT_SCHEME") or "segment"))
+    scoped = False
     if workspace_id is not None:
         qs = qs.filter(segment__recording__workspace_id=workspace_id)
+        scoped = True
     if recording_ids is not None:
         qs = qs.filter(segment__recording_id__in=list(recording_ids))
-    rows = qs.annotate(distance=CosineDistance("vector", query_vector)).order_by(
+        scoped = True
+
+    ranked = qs.annotate(distance=CosineDistance("vector", query_vector)).order_by(
         "distance"
     )[:limit]
-    return [
-        SearchHit(
-            row.segment_id,
-            row.segment.recording_id,
-            1.0 - float(row.distance),
-            make_snippet(row.segment.text, query),
+    with _scan_tuning(_scan_settings(cfg, limit, scoped, qs)):
+        rows = list(ranked)
+    # `relaxed_order` returns near-neighbours slightly out of order; the
+    # distance is on every row, so the arm's own ranking is exact
+    # regardless of what order the index handed them back in.
+    rows.sort(key=lambda r: (float(r.distance), str(r.segment_id)))
+    # One hit per segment. A hit IS a segment id to everything downstream —
+    # the fusion key, the QA citation, the host's own DTO — so two rows
+    # anchored at the same segment are one result, and the nearer wins.
+    # (Windows are anchored at their first utterance; one utterance long
+    # enough to fill several windows anchors all of them.)
+    hits: list[SearchHit] = []
+    seen: set = set()
+    for row in rows:
+        if row.segment_id in seen:
+            continue
+        seen.add(row.segment_id)
+        hits.append(
+            SearchHit(
+                row.segment_id,
+                row.segment.recording_id,
+                1.0 - float(row.distance),
+                make_snippet(row.text or row.segment.text, query),
+            )
         )
-        for row in rows
-    ]
+    return hits
 
 
 __all__ = [

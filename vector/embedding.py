@@ -154,13 +154,15 @@ class ORMVectorStore:
     instantiate behind the EmbedStage gate (or substitute via
     :func:`get_store` in tests)."""
 
-    def segment_hashes(self, recording) -> dict:
-        """``{segment_id: {(model, content_hash), ...}}`` for the recording."""
+    def segment_hashes(self, recording, scheme: str = "segment") -> dict:
+        """``{segment_id: {(model, content_hash), ...}}`` for the recording,
+        within one embedding *scheme* — rows of another scheme are a
+        different unit and never satisfy this one's idempotency check."""
         from .models import SegmentEmbedding
 
         out: dict = {}
         rows = SegmentEmbedding.objects.filter(
-            segment__recording=recording
+            segment__recording=recording, scheme=scheme
         ).values_list("segment_id", "model", "content_hash")
         for seg_id, model, h in rows:
             out.setdefault(seg_id, set()).add((model, h))
@@ -175,14 +177,42 @@ class ORMVectorStore:
             .values_list("chunk_index", "model", "text_hash")
         )
 
-    def upsert_segment(self, segment, *, model: str, content_hash: str, vector) -> None:
+    def upsert_segment(
+        self,
+        segment,
+        *,
+        model: str,
+        content_hash: str,
+        vector,
+        scheme: str = "segment",
+        text: str = "",
+        span: int = 1,
+        chunk_index: int = 0,
+    ) -> None:
         from .models import SegmentEmbedding
 
         SegmentEmbedding.objects.update_or_create(
             segment=segment,
             model=model,
-            defaults={"content_hash": content_hash, "vector": vector},
+            scheme=scheme,
+            chunk_index=chunk_index,
+            defaults={
+                "content_hash": content_hash,
+                "vector": vector,
+                "text": text,
+                "span": span,
+            },
         )
+
+    def prune_segment_scheme(self, recording, *, scheme: str) -> int:
+        """Drop this recording's rows of one scheme (a re-window that packs
+        fewer windows than the last one leaves orphan anchors behind)."""
+        from .models import SegmentEmbedding
+
+        deleted, _ = SegmentEmbedding.objects.filter(
+            segment__recording=recording, scheme=scheme
+        ).delete()
+        return deleted
 
     def upsert_summary_chunk(
         self, recording, *, chunk_index: int, model: str, text_hash: str, vector
@@ -223,8 +253,53 @@ def _hash_known(entries, h: str, cfg_model: str) -> bool:
     )
 
 
-def embed_recording(recording, store=None, *, force: bool = False) -> dict:
-    """Embed all missing segment texts + summary chunks for *recording*.
+def segment_units(recording, cfg: dict, scheme: str) -> list[tuple]:
+    """The ``(anchor_segment, text, span, chunk_index)`` units to embed.
+
+    ``"segment"`` — one unit per non-empty utterance, its own text, span 1
+    (the historical behaviour, byte for byte).
+
+    ``"window"`` — consecutive utterances packed into answer-sized
+    passages by :mod:`.chunking`; the unit's anchor is the run's first
+    segment, its text is the rendered window (speaker + timestamp per
+    line), its span the number of utterances covered.
+    """
+    segments = list(
+        recording.segments.exclude(text="")
+        .select_related("speaker")
+        .order_by("sequence_num")
+    )
+    if scheme != "window":
+        return [(seg, seg.text, 1, 0) for seg in segments]
+
+    from .chunking import windows_from_segments
+
+    window_cfg = cfg["SEGMENT_WINDOW"]
+    by_id = {seg.id: seg for seg in segments}
+    windows = windows_from_segments(
+        segments,
+        target_chars=int(window_cfg["TARGET_CHARS"]),
+        max_chars=int(window_cfg["MAX_CHARS"]),
+        overlap_chars=int(window_cfg["OVERLAP_CHARS"]),
+    )
+    units = []
+    seen_anchor: dict = {}
+    for window in windows:
+        anchor = by_id.get(window.anchor_id)
+        if anchor is None:  # pragma: no cover — anchors come from `segments`
+            continue
+        # Anchors normally advance window by window; they repeat only when
+        # one utterance was long enough to fill several windows on its own.
+        index = seen_anchor.get(anchor.id, 0)
+        seen_anchor[anchor.id] = index + 1
+        units.append((anchor, window.text, len(window.utterance_ids), index))
+    return units
+
+
+def embed_recording(
+    recording, store=None, *, force: bool = False, scheme: str | None = None
+) -> dict:
+    """Embed all missing segment units + summary chunks for *recording*.
 
     Returns counters (``segments_embedded`` / ``summary_chunks_embedded``)
     for logging/tests. Assumes the EmbedStage gate already passed.
@@ -236,34 +311,52 @@ def embed_recording(recording, store=None, *, force: bool = False) -> dict:
     (the model name only arrives in the llm.embed response), so a plain
     re-run would skip everything and leave the new-model space empty.
     The ``recordings_reembed`` management command exposes it as
-    ``--force``; the pipeline stage never sets it."""
+    ``--force``; the pipeline stage never sets it.
+
+    ``scheme`` selects WHAT is embedded — ``"segment"`` (one utterance per
+    row) or ``"window"`` (:mod:`.chunking`). It defaults to
+    ``VECTOR["SEGMENT_SCHEME"]``, i.e. the pipeline keeps whatever scheme
+    search is currently reading, and building the other one ahead of a
+    switch is an explicit argument (``recordings_reembed --scheme``)."""
     from ..conf import vector_config
     from ..stages import identity_payload
 
     cfg = vector_config()
     store = store or get_store()
     cfg_model = str(cfg.get("MODEL") or "")
+    scheme = str(scheme or cfg.get("SEGMENT_SCHEME") or "segment")
     # The recording knows whose it is; the embed batches it fans out to are
     # billable calls, and this is the only place that can say for whom.
     identity = identity_payload(recording)
 
     # ── Segments ──
-    segments = list(recording.segments.exclude(text="").order_by("sequence_num"))
-    known = store.segment_hashes(recording)
+    units = segment_units(recording, cfg, scheme)
+    known = store.segment_hashes(recording, scheme)
     pending = []
-    for seg in segments:
-        h = content_hash(seg.text)
+    for seg, text, span, index in units:
+        h = content_hash(text)
         if not force and _hash_known(known.get(seg.id, ()), h, cfg_model):
             continue  # idempotent: unchanged text already embedded
-        pending.append((seg, h))
+        pending.append((seg, text, span, index, h))
 
     segments_embedded = 0
     if pending:
         model, vectors = embed_texts(
-            [seg.text for seg, _ in pending], cfg, identity=identity
+            [text for _, text, _, _, _ in pending], cfg, identity=identity
         )
-        for (seg, h), vec in zip(pending, vectors):
-            store.upsert_segment(seg, model=model, content_hash=h, vector=vec)
+        for (seg, text, span, index, h), vec in zip(pending, vectors):
+            store.upsert_segment(
+                seg,
+                model=model,
+                content_hash=h,
+                vector=vec,
+                scheme=scheme,
+                # A segment row's text IS Segment.text; storing it again
+                # would be a second copy of the transcript that can drift.
+                text="" if scheme == "segment" else text,
+                span=span,
+                chunk_index=index,
+            )
         segments_embedded = len(pending)
 
     # ── Summary chunks ──
