@@ -1,8 +1,8 @@
-# stapel-recordings 0.21.1
+# stapel-recordings 0.22.0
 
-Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.
+An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 40 · extension points 7 · operations 11 · error codes 59.
+Contract: axes 1 · surface 42 · extension points 7 · operations 12 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -57,6 +57,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - summary_from_result — stapel_recordings.stages.summary_from_result
   Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure.
 ### factory
+- accepted_upload_limit — stapel_recordings.services.accepted_upload_limit
+  The single source of the 413 line: the size this deployment will accept for one upload, which is MAX_CONTAINER_UPLOAD_BYTES while audio-only ingest really runs (the container is transport, deleted once its audio track is out) and MAX_UPLOAD_BYTES otherwise. Read it instead of either setting — it fails safe on its own when a host drops the convert stage or points NORMALIZER at the passthrough, so the accepted size cannot outlive the promise that made it large.
 - create_upload_session — stapel_recordings.services.create_upload_session
   instead of: stapel_recordings.storage.RecordingStorage.presigned_put_url
   Mint a single-PUT presigned upload for a recording — the sanctioned way to hand a client an upload URL, because the UploadSession row it writes carries the TTL, the size ceiling and the storage key that finalize_upload later validates against. A bare presigned_put_url() gives you the URL and none of that.
@@ -119,10 +121,12 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Submit long-running work (transcription, summary) as a task and return control right away: a result comes back only under synchronous dispatch, otherwise StageAwaiting is raised and the stage resumes in Stage.resume on task.completed. Unlike comm.call, a synchronous call would hold the worker for the model's entire runtime and requires guessing a timeout that a queue makes unguessable.
 - unregister_stage — stapel_recordings.stages.unregister_stage
   Undo one register_stage call, leaving whatever it shadowed — a built-in or a STAGES overlay entry — back in place. Distinct from register_stage(name, None), which actively REMOVES the stage from the resolved map.
+- upload_limits — stapel_recordings.services.upload_limits
+  The upload ceilings as the running settings resolve them, plus what will be KEPT of an accepted file: max_upload_bytes (what error.413.recording_too_large enforces — the container ceiling while audio_only_ingest is on, the storage ceiling otherwise), max_stored_bytes, the stored_audio_* profile, stored_bytes_per_hour, the multipart part size and cap, and the extension allowlist. Served by GET /recordings/api/v1/recordings/upload-limits; call this rather than reading STAPEL_RECORDINGS in a host view, so a frontend refuses an oversized file before the first byte, names the real limit, and can say what an hour of recording costs.
 
 ## Extension points — what a product replaces, fork-free
 - NORMALIZER [dotted_path]
-  Swap the audio-normalization step: ffmpeg by default, a passthrough for environments without it, or a custom converter.
+  Swap the audio-extraction step — the one that turns an uploaded container into the mono object this module keeps: ffmpeg by default, a passthrough for environments without it (which means nothing is extracted and the upload is stored whole), or a custom converter.
 - PIPELINE [ordered_list]
   The flagship seam: the processing pipeline is an ordered list of stage names run by a generic driver — reorder, subset (e.g. skip diarization) or insert stages (e.g. PII redaction) purely from settings, no fork.
 - PIPELINE_RESOLVER [dotted_path]
@@ -141,7 +145,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - stapel-auth (optional) — every endpoint requires an authenticated user (IsAuthenticated); stapel-auth is the shelf's session issuer — any stapel-core-compatible JWT issuer satisfies the check
 - stapel-core (required) — comm bus (recording.stage pipeline driving, llm.transcribe / llm.summarize calls), JWT authentication, GDPR provider registry, AppSettings config layer
 
-## HTTP operations (11) — call by operationId, never by a typed path
+## HTTP operations (12) — call by operationId, never by a typed path
 Paths are relative to `/recordings/api/v1/`.
 ### Recordings
 - POST /recordings — recordings_api_v1_recordings_create
@@ -152,11 +156,12 @@ Paths are relative to `/recordings/api/v1/`.
 - POST /recordings/{recording_id}/resummarize — recordings_api_v1_recordings_resummarize_create
 - GET /recordings/{recording_id} — recordings_api_v1_recordings_retrieve
 - GET /recordings/{recording_id}/transcript — recordings_api_v1_recordings_transcript_retrieve
+- GET /recordings/upload-limits — recordings_api_v1_recordings_upload_limits_retrieve
 - GET /shares/{link_token}/media — recordings_api_v1_shares_media_retrieve
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (59) — the StapelError envelope
+## Error codes (61) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -175,6 +180,8 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.400.field.unique [400] fix_input {field}
 - error.400.invalid_ad_id [400] fix_input
 - error.400.recording_invalid_state [400] fix_input
+- error.400.recording_multipart_parts_invalid [400] fix_input {max_parts}
+- error.400.recording_upload_size_invalid [400] fix_input {limit}
 - error.400.validation_error [400] fix_input
 - error.400.verification_failed [400] verify
 - error.400.verification_invalid_factor [400] verify
@@ -203,7 +210,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.409.recording_no_transcript [409] fix_input
 - error.410.gone [410] retry
 - error.413.payload_too_large [413] retry
-- error.413.recording_too_large [413] retry
+- error.413.recording_too_large [413] retry {size,limit}
 - error.415.recording_unsupported_media [415] retry
 - error.415.unsupported_media_type [415] retry
 - error.422.unprocessable_entity [422] wait_and_retry

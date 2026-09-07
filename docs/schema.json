@@ -375,6 +375,32 @@
         }
       }
     },
+    "/recordings/api/v1/recordings/upload-limits": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_upload_limits_retrieve",
+        "description": "The upload ceilings, before the first byte.\n\n``MAX_UPLOAD_BYTES`` (the ``413`` line), the multipart part size and\npart cap, and the extension allowlist (the ``415`` line) — the numbers a\nfrontend needs to refuse a file locally and to phrase the refusal with\nthe real limit. Same door as creating a recording: an account, not a\nguest session.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadLimitsDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
     "/recordings/api/v1/shares/{link_token}": {
       "get": {
         "operationId": "recordings_api_v1_shares_retrieve",
@@ -855,6 +881,57 @@
           "speaker",
           "start_time",
           "text"
+        ]
+      },
+      "UploadLimitsDTO": {
+        "type": "object",
+        "description": "The upload ceilings, and what will be kept, readable before the first\nbyte is sent.\n\n``max_upload_bytes`` is what ``error.413.recording_too_large`` enforces;\n``multipart_part_size`` / ``max_multipart_parts`` bound the multipart\nflow; ``allowed_extensions`` is what ``error.415.recording_unsupported_media``\nenforces. A client that reads this can refuse a file locally and phrase\nthe refusal with the real numbers instead of discovering them from a\nrejected request.\n\nThe ``audio_only_ingest`` / ``stored_audio_*`` half says what the\nservice does with an accepted file: extracts its audio track, downmixes\nto mono, keeps that and nothing else. It is why ``max_upload_bytes`` can\nbe much larger than ``max_stored_bytes`` — and\n``stored_bytes_per_hour`` is what a UI multiplies to tell someone what\nan hour of recording will cost them.",
+        "properties": {
+          "max_upload_bytes": {
+            "type": "integer"
+          },
+          "max_stored_bytes": {
+            "type": "integer"
+          },
+          "audio_only_ingest": {
+            "type": "boolean"
+          },
+          "stored_audio_codec": {
+            "type": "string"
+          },
+          "stored_audio_channels": {
+            "type": "integer"
+          },
+          "stored_audio_sample_rate": {
+            "type": "integer"
+          },
+          "stored_bytes_per_hour": {
+            "type": "integer"
+          },
+          "multipart_part_size": {
+            "type": "integer"
+          },
+          "max_multipart_parts": {
+            "type": "integer"
+          },
+          "allowed_extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "allowed_extensions",
+          "audio_only_ingest",
+          "max_multipart_parts",
+          "max_stored_bytes",
+          "max_upload_bytes",
+          "multipart_part_size",
+          "stored_audio_channels",
+          "stored_audio_codec",
+          "stored_audio_sample_rate",
+          "stored_bytes_per_hour"
         ]
       },
       "UploadSessionDTO": {

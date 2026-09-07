@@ -6,6 +6,194 @@ Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-09-07
+
+This is an audio service, not a video host. Two things made that not quite
+true: a size refusal that left the library as an unhandled exception, and a
+`convert` stage that deleted the uploaded container on a best-effort basis
+while leaving the key that pointed at it. Both are closed here, and the
+storage limits are restated in terms of what is **kept** rather than what is
+**sent**.
+
+**Minor, not patch** (pre-1.0: minor = breaking). The stored object changes
+format, the uploaded container is now guaranteed to disappear along with its
+key, and the media endpoint no longer serves the container back. A host
+upgrading should read *Host adoption* at the end of this entry.
+
+### Fixed — a size refusal is an answer, not a 500
+
+From a host's production log: `POST …/recordings/<id>/multipart` declaring
+4 727 057 010 bytes against a 2 GiB ceiling ended in **HTTP 500**.
+`services.start_multipart_upload` raised `UploadTooLarge`, a plain
+`ValueError` subclass, and it propagated out of the host's DRF view as an
+unhandled exception. Nothing in the host was wrong: the library gave it no
+way to be right short of a `try/except` in every view that touches an
+upload.
+
+Every upload refusal is now a `StapelServiceError` carrying its own status,
+registry key and params, so `stapel_exception_handler` — the handler every
+deployed stapel service already runs — turns it into the standard envelope
+wherever it escapes:
+
+| Raised | HTTP | Key | Params |
+| --- | --- | --- | --- |
+| `UploadTooLarge` | 413 | `error.413.recording_too_large` | `{size, limit}` |
+| `InvalidUploadSize` | 400 | `error.400.recording_upload_size_invalid` | `{limit}` |
+| `InvalidMultipartParts` | 400 | `error.400.recording_multipart_parts_invalid` | `{max_parts}` |
+| `MultipartMisconfigured` | 500 | `error.500.internal` | — |
+| `UnsupportedUploadExtension`, `UnsupportedUploadContent` | 415 | `error.415.recording_unsupported_media` | — |
+| `UploadNotStored` | 409 | `error.409.recording_invalid_state` | — |
+| `UploadContentUncheckable` | 503 | `error.503.recording_upload_unverifiable` | — |
+
+Each keeps its original built-in base (`ValueError` / `RuntimeError`), so a
+worker, a management command or a script that catches those still catches
+these — the HTTP mapping is additive, and nothing outside a view has to know
+about DRF. `InvalidUploadSize` (the new "that is not a size at all": missing
+when required, non-numeric, zero, negative) subclasses `UploadTooLarge` for
+the same reason. `MultipartMisconfigured` is the one that is deliberately
+**not** a 4xx: a part budget that cannot cover the ceiling is the operator's
+mistake, and telling the client to fix its request would be a lie.
+
+The 413's English text now carries `{size}` and `{limit}`, and the ru/es
+catalogs carry the same slots, so the refusal can name the real numbers in
+the language the user reads.
+
+### Added — the limits are readable before the first byte
+
+`GET /recordings/api/v1/recordings/upload-limits` (`services.upload_limits`,
+`UploadLimitsDTO`) serves `max_upload_bytes`, `max_stored_bytes`,
+`audio_only_ingest`, `stored_audio_codec` / `_channels` / `_sample_rate`,
+`stored_bytes_per_hour`, `multipart_part_size`, `max_multipart_parts` and
+`allowed_extensions`. A frontend can refuse an oversized file locally, name
+the real limit, and tell someone what an hour of recording will cost them,
+instead of discovering all three from a rejected request.
+
+### Changed — audio-only ingest is the module's contract
+
+Uploaded containers are transport. The `convert` stage extracts the audio
+track, downmixes to **mono**, stores that one object and **deletes the
+container** — every upload, whatever its size, whether or not it carried
+video. Specifically:
+
+* the source object is deleted **and `file_storage_key` is cleared**. Before
+  this release the delete was best-effort and the key survived it, so the
+  row claimed an object that was gone (or, when the delete failed, kept
+  pointing at a video nobody meant to keep);
+* a delete that fails is now `StageRetryable`, not a log line. The stage's
+  idempotent re-entry runs the purge again. A warning in a log is not a
+  deletion, and the raised container ceiling exists *because* the container
+  goes away;
+* `media.media_storage_key()` returns the extracted audio and, while
+  audio-only ingest is on, **only** that. It used to prefer
+  `file_storage_key`, so a media request before the pipeline reached
+  `convert` answered with the raw video the deployment had already decided
+  not to keep. Nothing in the API hands a container back now;
+* the working copy lives in a temp directory removed in `finally` — success
+  and every failure path, including a normalizer that dies mid-write.
+
+**Stored profile: mono, 16 kHz, Ogg/Opus at 24 kbps** (`AUDIO_CHANNELS`,
+`AUDIO_SAMPLE_RATE`, `AUDIO_CODEC`, `AUDIO_BITRATE_BPS`). That is
+**~10.8 MB/hour**, against ~115 MB/hour for the 16 kHz mono PCM WAV this
+stage wrote before, and against several hundred MB to a few GB per hour for
+the video it is extracted from. Mono is not new — the normalizer has forced
+`-ac 1` since the module's first release — so nothing downstream loses
+channel separation it had: diarization here is the ASR provider separating
+speakers **within** one mixed track, not channel separation. A host whose
+provider does separate by channel sets `AUDIO_CHANNELS = 2` and pays for it
+in bytes. `AUDIO_CODEC = "wav"` restores PCM for a provider that will not
+take Opus.
+
+**Every upload is re-encoded to the profile, including one that arrives as
+audio already.** The alternative — skip the transcode when the source is
+"already fine" — would have to be right about container, codec, channel
+layout and sample rate at once, and it would make the stored bytes depend on
+what the client happened to send, which is exactly the unpredictability the
+profile removes. One generation of Opus at 24 kbps mono costs nothing an ASR
+or a diarizer can see; a stored object whose size nobody can predict costs a
+storage plan.
+
+Keeping originals is a documented exception:
+`STAPEL_RECORDINGS["AUDIO_ONLY_INGEST"] = False`.
+
+### Changed — two ceilings, because they answer two questions
+
+| Setting | Default | Bounds |
+| --- | --- | --- |
+| `MAX_CONTAINER_UPLOAD_BYTES` | 16 GiB | what we **receive** and run through extraction: bandwidth, temp disk, ffmpeg time |
+| `MAX_STORED_BYTES` | 512 MiB | what we **keep**, enforced on the extracted audio (≈47 h at the Opus profile) |
+| `MAX_UPLOAD_BYTES` | 2 GiB (unchanged) | the ceiling when nothing is extracted, where received and stored are the same object |
+
+`services.accepted_upload_limit()` picks between the first and the last, and
+it is the single source of the 413 line and of the upload-limits read. It
+fails safe: drop `convert` from the `PIPELINE`, or point `NORMALIZER` at
+`passthrough_normalize`, and the accepted size falls back to
+`MAX_UPLOAD_BYTES` on its own — a raised ceiling cannot outlive the promise
+that made it large. Extracted audio over `MAX_STORED_BYTES` is
+`StageFatal("stored_audio_too_large")`.
+
+### Added — three system checks, so the environment is not discovered at upload time
+
+* `stapel_recordings.E006` — `NORMALIZER` is `ffmpeg_normalize` but
+  ffmpeg/ffprobe are not on PATH, or the build carries no `libopus` for
+  `AUDIO_CODEC = "opus"` (a normal thing to find in a slim image), or
+  `AUDIO_CODEC` is not one this module can write. All of it was previously
+  discovered as `NormalizeFatal` on a recording someone was waiting for.
+* `stapel_recordings.E007` — `AUDIO_ONLY_INGEST` is on but nothing extracts:
+  no `convert` stage in the `PIPELINE`, or a passthrough normalizer. Without
+  this, the promise inverts silently and every container is stored, at the
+  raised ceiling, forever.
+* `stapel_recordings.E005` — the multipart part budget, now checked against
+  the **accepted** ceiling rather than `MAX_UPLOAD_BYTES`; checking the
+  smaller number would pass a deployment whose every real upload fails.
+
+### Added — `Recording.stored_size_bytes` and a read-only census
+
+`file_size_bytes` measures what was **received**, and with audio-only ingest
+that object stops existing minutes later — so a host sizing a bucket from it
+was reading the size of something that no longer exists.
+`stored_size_bytes` (migration `0006`, nullable, additive) is what is kept,
+written by `convert`.
+
+`python manage.py recordings_audio_census [--measure] [--json] [--workspace]`
+reports how many recordings still hold an uploaded container, how many are
+named as video containers, their total bytes, and what the same recordings
+would occupy as mono audio at the configured profile. **It reads and
+reports; it changes nothing** — no delete, no re-encode, no field written.
+Reclaiming that space is a decision, and a backfill that acts on this census
+would be a separate command in a separate release.
+
+### Fixed — a duplicate finalize after conversion
+
+`_finalize_upload_locked` treated a non-empty `file_storage_key` as "already
+finalized". Now that `convert` clears that key, a late duplicate finalize
+would have re-verified an object that no longer exists and answered 409 for
+an upload that in fact succeeded. It now also accepts the session's
+`finalized_at` as the marker.
+
+### Host adoption
+
+A host on the defaults needs to configure **nothing**, but should know:
+
+1. **ffmpeg must have libopus.** `manage.py check` is now red without it
+   (E006). `ffmpeg -encoders | grep libopus` on the image settles it; the
+   alternative is `AUDIO_CODEC = "wav"` at ~10.7x the stored bytes.
+2. **Raise the accepted ceiling deliberately.** The default
+   `MAX_CONTAINER_UPLOAD_BYTES` is 16 GiB; the reverse proxy in front
+   (nginx `client_max_body_size`) and the multipart part budget have to
+   agree with it — E005 checks the second, nothing here can check the first.
+3. **Existing recordings are not touched.** Rows that already have both a
+   `file_storage_key` and a `normalized_storage_key` keep both objects until
+   `convert` runs for them again; the census names them
+   (`already_extracted`), and their containers are pure waste — nothing has
+   to be re-encoded to reclaim them.
+4. **Media playback changes shape.** A recording that has not reached
+   `convert` yet now answers `409 error.409.recording_media_not_stored`
+   instead of handing back the uploaded container; after `convert` it serves
+   the extracted audio (`.opus`, `audio/ogg`), so a player that assumed
+   `audio/wav` needs to not.
+5. **`@stapel/recordings-react` needs a regen** — a new endpoint and a
+   changed error catalog.
+
 ## [0.21.1] — 2026-09-03
 
 ### Added — `VECTOR["BATCH_MAX_CHARS"]`, because BATCH_SIZE is the wrong unit

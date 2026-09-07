@@ -20,10 +20,14 @@ from .views import (
     SharedRecordingMediaView,
     SharedRecordingView,
     ShareUnlockView,
+    UploadLimitsView,
 )
 
 urlpatterns = [
     path("recordings", RecordingListCreateView.as_view(), name="recordings-list-create"),
+    # Read the ceilings before uploading. A literal segment, listed before
+    # the <uuid> routes it can never collide with.
+    path("recordings/upload-limits", UploadLimitsView.as_view(), name="recordings-upload-limits"),
     path("recordings/<uuid:recording_id>", RecordingDetailView.as_view(), name="recordings-detail"),
     path("recordings/<uuid:recording_id>/finalize", FinalizeUploadView.as_view(), name="recordings-finalize"),
     path("recordings/<uuid:recording_id>/reprocess", ReprocessRecordingView.as_view(), name="recordings-reprocess"),

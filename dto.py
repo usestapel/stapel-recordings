@@ -51,6 +51,37 @@ class UploadSessionDTO:
 
 
 @dataclass
+class UploadLimitsDTO:
+    """The upload ceilings, and what will be kept, readable before the first
+    byte is sent.
+
+    ``max_upload_bytes`` is what ``error.413.recording_too_large`` enforces;
+    ``multipart_part_size`` / ``max_multipart_parts`` bound the multipart
+    flow; ``allowed_extensions`` is what ``error.415.recording_unsupported_media``
+    enforces. A client that reads this can refuse a file locally and phrase
+    the refusal with the real numbers instead of discovering them from a
+    rejected request.
+
+    The ``audio_only_ingest`` / ``stored_audio_*`` half says what the
+    service does with an accepted file: extracts its audio track, downmixes
+    to mono, keeps that and nothing else. It is why ``max_upload_bytes`` can
+    be much larger than ``max_stored_bytes`` — and
+    ``stored_bytes_per_hour`` is what a UI multiplies to tell someone what
+    an hour of recording will cost them."""
+
+    max_upload_bytes: int
+    max_stored_bytes: int
+    audio_only_ingest: bool
+    stored_audio_codec: str
+    stored_audio_channels: int
+    stored_audio_sample_rate: int
+    stored_bytes_per_hour: int
+    multipart_part_size: int
+    max_multipart_parts: int
+    allowed_extensions: list[str]
+
+
+@dataclass
 class CreateRecordingResponse:  # noqa: R004
     recording: RecordingDTO
     upload: UploadSessionDTO
@@ -257,6 +288,12 @@ def media_grant_to_dto(grant) -> MediaURLDTO:
         expires_at=grant.expires_at.isoformat(),
         expires_in=int(grant.ttl_seconds),
     )
+
+
+def upload_limits_to_dto() -> UploadLimitsDTO:
+    from .services import upload_limits
+
+    return UploadLimitsDTO(**upload_limits())
 
 
 def upload_session_to_dto(session) -> UploadSessionDTO:

@@ -162,6 +162,26 @@
     "owner": "stapel_recordings"
   },
   {
+    "code": "error.400.recording_multipart_parts_invalid",
+    "status": 400,
+    "params": [
+      "max_parts"
+    ],
+    "remediation": "fix_input",
+    "en": "Multipart part list is malformed or exceeds {max_parts} parts",
+    "owner": "stapel_recordings"
+  },
+  {
+    "code": "error.400.recording_upload_size_invalid",
+    "status": 400,
+    "params": [
+      "limit"
+    ],
+    "remediation": "fix_input",
+    "en": "Upload size must be a positive number of bytes, at most {limit}",
+    "owner": "stapel_recordings"
+  },
+  {
     "code": "error.400.validation_error",
     "status": 400,
     "params": [],
@@ -388,9 +408,12 @@
   {
     "code": "error.413.recording_too_large",
     "status": 413,
-    "params": [],
+    "params": [
+      "size",
+      "limit"
+    ],
     "remediation": "retry",
-    "en": "Upload exceeds the maximum allowed size",
+    "en": "Upload of {size} bytes exceeds the maximum allowed size of {limit} bytes",
     "owner": "stapel_recordings"
   },
   {

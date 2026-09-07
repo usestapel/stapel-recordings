@@ -1,5 +1,7 @@
 {
   "error.400.recording_invalid_state": "La grabación no está en un estado válido para esta acción",
+  "error.400.recording_multipart_parts_invalid": "La lista de partes de la subida multiparte es incorrecta o supera las {max_parts} partes",
+  "error.400.recording_upload_size_invalid": "El tamaño de la subida debe ser un número positivo de bytes, como máximo {limit}",
   "error.401.share_passcode_required": "Este enlace de acceso requiere un código",
   "error.402.recording_payment_required": "Esta acción requiere saldo disponible",
   "error.403.recording_action_denied": "No tienes permiso para hacer eso con esta grabación",
@@ -10,7 +12,7 @@
   "error.409.recording_invalid_state": "La grabación no está en un estado válido para esta acción",
   "error.409.recording_media_not_stored": "Esta grabación no tiene archivo multimedia",
   "error.409.recording_no_transcript": "Esta grabación todavía no tiene transcripción que resumir",
-  "error.413.recording_too_large": "La subida supera el tamaño máximo permitido",
+  "error.413.recording_too_large": "La subida de {size} bytes supera el tamaño máximo permitido de {limit} bytes",
   "error.415.recording_unsupported_media": "El tipo de archivo subido no es compatible",
   "error.429.share_unlock_throttled": "Demasiados intentos: inténtalo de nuevo más tarde",
   "error.503.recording_media_unavailable": "La entrega de archivos multimedia no está disponible",

@@ -134,7 +134,19 @@ class Recording(models.Model):
     )
 
     duration_seconds = models.FloatField(null=True, blank=True)
+    #: What was RECEIVED — the container's size, measured at finalize. It is
+    #: an ingest number (bandwidth, plan accounting), not a storage number:
+    #: with audio-only ingest the object it describes stops existing minutes
+    #: later.
     file_size_bytes = models.BigIntegerField(null=True, blank=True)
+    #: What is KEPT — the extracted mono audio object, measured by the
+    #: ``convert`` stage. This is the one a storage bill is made of, and
+    #: without it a host reading ``file_size_bytes`` would bill for a 4 GB
+    #: video that was deleted before anyone looked.
+    stored_size_bytes = models.BigIntegerField(null=True, blank=True)
+    #: The uploaded container while it exists. Cleared by ``convert`` the
+    #: moment the container is deleted, so an empty value is the truth
+    #: ("there is no such object"), not a missing one.
     file_storage_key = models.CharField(max_length=512, null=True, blank=True)
     normalized_storage_key = models.CharField(max_length=512, null=True, blank=True)
     transcript_storage_key = models.CharField(max_length=512, null=True, blank=True)

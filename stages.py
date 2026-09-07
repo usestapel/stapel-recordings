@@ -199,25 +199,46 @@ def identity_payload(recording) -> dict:
 
 
 class ConvertStage(Stage):
-    """Normalize the uploaded media to canonical STT input via the
-    NORMALIZER seam; store it, drop the raw original."""
+    """Extract the upload's audio track at the configured profile, store
+    that one object, and delete the container it came from.
+
+    This is where "we are an audio service, not a video host" stops being a
+    sentence in the docs: the working copy of the source lives in a temp
+    directory that ``finally`` removes on success and on every failure
+    path, the object store keeps the extracted mono audio and nothing else,
+    and ``file_storage_key`` is CLEARED, so no later read can hand back a
+    container that is no longer there.
+
+    Purging the source is not best-effort. A delete that fails is
+    :class:`StageRetryable`, and the purge runs again on the idempotent
+    re-entry — a warning in a log is not a deletion, and the container
+    ceiling (``MAX_CONTAINER_UPLOAD_BYTES``, eight times the stored one) was
+    raised on the promise that the container goes away.
+    """
 
     name = "convert"
     status = RecordingStatus.NORMALIZING
 
     def run(self, recording, ctx):
-        from .normalize import NormalizeFatal
+        from .normalize import NormalizeFatal, audio_profile
 
         if recording.normalized_storage_key:
-            return ctx  # idempotent: already converted
+            # Idempotent, but NOT a bare return: a re-drive after a failed
+            # purge is the retry that finally removes the container.
+            self._purge_source(recording)
+            return ctx
         if not recording.file_storage_key:
             raise StageFatal("missing_raw_storage_key")
 
         storage = get_storage()
         normalizer = recordings_settings.NORMALIZER
+        try:
+            profile = audio_profile()
+        except NormalizeFatal as exc:
+            raise StageFatal(exc.reason, exc.detail) from exc
         workdir = tempfile.mkdtemp(prefix="rec-convert-")
         raw_path = os.path.join(workdir, "raw.bin")
-        out_path = os.path.join(workdir, "normalized.wav")
+        out_path = os.path.join(workdir, f"normalized{profile.ext}")
         try:
             try:
                 storage.download_to_file(recording.file_storage_key, raw_path)
@@ -229,26 +250,72 @@ class ConvertStage(Stage):
             except NormalizeFatal as exc:
                 raise StageFatal(exc.reason, exc.detail) from exc
 
-            normalized_key = _key(recording, "audio.normalized.wav")
+            # The stored-object ceiling, enforced on the only object that
+            # will still exist a minute from now. Fatal, not retryable:
+            # re-running produces the same bytes.
+            stored_bytes = os.path.getsize(out_path)
+            max_stored = int(recordings_settings.MAX_STORED_BYTES)
+            if max_stored > 0 and stored_bytes > max_stored:
+                raise StageFatal(
+                    "stored_audio_too_large",
+                    f"{stored_bytes} bytes of extracted audio exceeds "
+                    f"MAX_STORED_BYTES ({max_stored})",
+                )
+
+            normalized_key = _key(recording, f"audio.normalized{profile.ext}")
             if normalized_key == recording.file_storage_key:
                 raise StageFatal("key_collision", normalized_key)
             try:
-                storage.upload_from_file(normalized_key, out_path, content_type="audio/wav")
+                storage.upload_from_file(
+                    normalized_key, out_path, content_type=profile.content_type
+                )
             except Exception as exc:
                 raise StageRetryable("upload_failed", str(exc)) from exc
 
             recording.normalized_storage_key = normalized_key
+            recording.stored_size_bytes = stored_bytes
             if duration:
                 recording.duration_seconds = duration
-            recording.save(update_fields=["normalized_storage_key", "duration_seconds", "updated_at"])
+            recording.save(update_fields=[
+                "normalized_storage_key", "stored_size_bytes",
+                "duration_seconds", "updated_at",
+            ])
 
-            try:
-                storage.delete_object(recording.file_storage_key)
-            except Exception:
-                logger.warning("convert: could not delete raw for %s", recording.id, exc_info=True)
+            self._purge_source(recording)
             return ctx
         finally:
+            # Success, StageFatal, StageRetryable, a killed worker's
+            # SystemExit — the source's working copy does not outlive this
+            # call, and it is the only place on disk it ever existed.
             shutil.rmtree(workdir, ignore_errors=True)
+
+    @staticmethod
+    def _purge_source(recording) -> None:
+        """Delete the uploaded container and forget its key.
+
+        A no-op once the key is gone, so re-entry is free. With
+        ``AUDIO_ONLY_INGEST`` off the upload IS the stored object and there
+        is nothing to purge — that is the documented exception, and the
+        accepted-upload ceiling drops accordingly
+        (``services.accepted_upload_limit``).
+        """
+        from .normalize import audio_only_ingest_active
+
+        key = recording.file_storage_key
+        if not key or key == recording.normalized_storage_key:
+            return
+        if not audio_only_ingest_active():
+            return
+        try:
+            get_storage().delete_object(key)
+        except Exception as exc:
+            logger.warning(
+                "convert: could not delete the source container for %s", recording.id,
+                exc_info=True,
+            )
+            raise StageRetryable("source_purge_failed", str(exc)) from exc
+        recording.file_storage_key = None
+        recording.save(update_fields=["file_storage_key", "updated_at"])
 
 
 def submit_task(kind, payload, *, recording, deadline_seconds=None, max_attempts=3):

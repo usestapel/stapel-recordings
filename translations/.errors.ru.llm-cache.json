@@ -3,6 +3,14 @@
     "hash": "6e2b71d694da1f82",
     "text": "Запись находится в состоянии, в котором это действие невозможно"
   },
+  "error.400.recording_multipart_parts_invalid": {
+    "hash": "829daecf95669221",
+    "text": "Список частей составной загрузки некорректен или превышает {max_parts} частей"
+  },
+  "error.400.recording_upload_size_invalid": {
+    "hash": "cc5f3cbc395e7fdf",
+    "text": "Размер загрузки должен быть положительным числом байт, не более {limit}"
+  },
   "error.401.share_passcode_required": {
     "hash": "6ce9ea3f1b954079",
     "text": "Для этой ссылки требуется код доступа"
@@ -44,8 +52,8 @@
     "text": "У этой записи пока нет расшифровки для краткого пересказа"
   },
   "error.413.recording_too_large": {
-    "hash": "eca0b4b6e8a0895b",
-    "text": "Загрузка превышает максимально допустимый размер"
+    "hash": "f8e714642bbd3e2a",
+    "text": "Загрузка объёмом {size} байт превышает максимально допустимый размер в {limit} байт"
   },
   "error.415.recording_unsupported_media": {
     "hash": "461ca9b8c08ec263",

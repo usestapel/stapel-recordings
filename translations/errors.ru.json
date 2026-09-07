@@ -1,5 +1,7 @@
 {
   "error.400.recording_invalid_state": "Запись находится в состоянии, в котором это действие невозможно",
+  "error.400.recording_multipart_parts_invalid": "Список частей составной загрузки некорректен или превышает {max_parts} частей",
+  "error.400.recording_upload_size_invalid": "Размер загрузки должен быть положительным числом байт, не более {limit}",
   "error.401.share_passcode_required": "Для этой ссылки требуется код доступа",
   "error.402.recording_payment_required": "Для этого действия нужен доступный баланс",
   "error.403.recording_action_denied": "Вам не разрешено выполнять это действие с этой записью",
@@ -10,7 +12,7 @@
   "error.409.recording_invalid_state": "Запись находится в состоянии, в котором это действие невозможно",
   "error.409.recording_media_not_stored": "У этой записи нет медиафайла",
   "error.409.recording_no_transcript": "У этой записи пока нет расшифровки для краткого пересказа",
-  "error.413.recording_too_large": "Загрузка превышает максимально допустимый размер",
+  "error.413.recording_too_large": "Загрузка объёмом {size} байт превышает максимально допустимый размер в {limit} байт",
   "error.415.recording_unsupported_media": "Тип загружаемого файла не поддерживается",
   "error.429.share_unlock_throttled": "Слишком много попыток — повторите позже",
   "error.503.recording_media_unavailable": "Выдача медиа недоступна",

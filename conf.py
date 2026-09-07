@@ -234,6 +234,38 @@ DEFAULTS = {
         "FFPROBE_BIN": "ffprobe",
         "FFMPEG_TIMEOUT_SECONDS": 30 * 60,
 
+        # ── Audio-only ingest: what this module KEEPS ────────────────
+        # This is an audio service. A container is transport: its audio
+        # track is extracted, downmixed to mono and stored, and the
+        # container itself is deleted — always, whatever its size, whether
+        # or not it carried video. Turning this off is a documented
+        # exception for a host that genuinely wants the originals it was
+        # sent; it is not the shape this module is designed around, and
+        # with it off the accepted-upload ceiling drops to what the host is
+        # willing to STORE (see MAX_UPLOAD_BYTES below).
+        "AUDIO_ONLY_INGEST": True,
+        # The stored object's profile. Mono, because these are recordings
+        # of speech and every downstream consumer (STT, diarization,
+        # embeddings) reads a single mixed track — the module has downmixed
+        # to mono since its first release, so this names an existing
+        # invariant rather than introducing one. A host whose provider
+        # separates speakers BY CHANNEL sets AUDIO_CHANNELS = 2 and pays
+        # for it in stored bytes.
+        "AUDIO_CHANNELS": 1,
+        # 16 kHz: the sample rate every speech model this module talks to
+        # works at. Higher rates cost bytes and buy nothing for speech.
+        "AUDIO_SAMPLE_RATE": 16000,
+        # "opus" (Ogg/Opus, the default) or "wav" (16-bit PCM). Opus at
+        # 24 kbps mono is ~10.8 MB per hour against PCM's ~115 MB — the
+        # difference between a storage bill that scales with hours of
+        # speech and one that scales with what a user recorded on. Every
+        # STT provider this module delegates to accepts Ogg/Opus; a host
+        # whose provider does not sets "wav".
+        "AUDIO_CODEC": "opus",
+        # Opus target bitrate. 24 kbps mono is transparent for speech at
+        # 16 kHz; 16 kbps still transcribes, 32 kbps is the ceiling worth
+        # paying for. Ignored for "wav".
+        "AUDIO_BITRATE_BPS": 24000,
         # ── S3/MinIO call timeouts ────────────────────────────────────
         # The bare botocore defaults (connect 60s, read 60s, five retries)
         # turn an unreachable store into near-five-minutes of SILENCE
@@ -251,7 +283,28 @@ DEFAULTS = {
         "UPLOAD_SESSION_TTL_SECONDS": 15 * 60,
         "MULTIPART_SESSION_TTL_SECONDS": 24 * 60 * 60,
         "MULTIPART_PART_SIZE": 10 * 1024 * 1024,
+        # Two ceilings, because with AUDIO_ONLY_INGEST on they answer two
+        # different questions and one number cannot answer both:
+        #
+        #   MAX_CONTAINER_UPLOAD_BYTES — what we are willing to RECEIVE and
+        #     run through extraction. The container is transport; it is
+        #     deleted minutes later, so this bounds bandwidth, temp disk and
+        #     ffmpeg time, not the storage bill. 16 GiB ≈ 8 h of 4 Mbps
+        #     screen-recorded video.
+        #   MAX_STORED_BYTES — what we are willing to KEEP, enforced on the
+        #     extracted audio. 512 MiB ≈ 47 h at the Opus default, which is
+        #     longer than any single recording is; a source that would
+        #     exceed it is a source that should have been split.
+        #   MAX_UPLOAD_BYTES — the ceiling when nothing is extracted
+        #     (AUDIO_ONLY_INGEST off): received and stored are the same
+        #     object, so the smaller, storage-shaped number applies.
+        #
+        # ``services.accepted_upload_limit()`` picks between the first and
+        # the last, and it is that number the 413 and the upload-limits read
+        # both quote. Never read MAX_UPLOAD_BYTES directly for that.
         "MAX_UPLOAD_BYTES": 2 * 1024 * 1024 * 1024,
+        "MAX_CONTAINER_UPLOAD_BYTES": 16 * 1024 * 1024 * 1024,
+        "MAX_STORED_BYTES": 512 * 1024 * 1024,
         # Hard ceiling on how many presigned part URLs one multipart session
         # may mint. MAX_UPLOAD_BYTES already bounds this for sane part
         # sizes; the cap is what keeps a tiny MULTIPART_PART_SIZE (or a
@@ -470,6 +523,10 @@ recordings_settings = AppSettings(
     #     gate, and STORAGE_SIGNS_GET_URLS vouches that a backend mints
     #     EXPIRING URLs — set wrongly, media delivery hands out permanent
     #     ones (both are also the kind of value copied between stands);
+    #   * AUDIO_ONLY_INGEST is the module's stated contract — what it keeps
+    #     of what it is sent. An env var that switches it off turns every
+    #     later upload's container into a stored artifact, at the ceiling
+    #     that was raised on the promise the container would be discarded;
     #   * the two membership/listing switches can only ever be flipped OPEN.
     #
     # They still resolve via STAPEL_RECORDINGS, a flat Django setting, or the
@@ -484,6 +541,7 @@ recordings_settings = AppSettings(
         "RECORDING_POLICY",
         "ERASURE_CLIENT",
         "UPLOAD_CONTENT_POLICY",
+        "AUDIO_ONLY_INGEST",
         "STORAGE_SIGNS_GET_URLS",
         "REQUIRE_WORKSPACE_MEMBERSHIP_ON_CREATE",
         "WORKSPACE_LISTING_MEMBERS_SEE_ALL",

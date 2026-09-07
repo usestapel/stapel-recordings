@@ -1,10 +1,28 @@
-"""Audio normalization seam.
+"""Audio extraction and normalization — the seam that decides what is KEPT.
 
-The ``convert`` stage turns whatever was uploaded into the canonical STT
-input (16 kHz mono PCM WAV) by calling the ``STAPEL_RECORDINGS["NORMALIZER"]``
+This is an audio service. Whatever a client uploads is transport: the
+``convert`` stage extracts its audio track, downmixes it to mono at the
+configured profile, stores that one object and deletes the source. A video
+container is never an artifact — no field, no URL, no way to ask for it
+back — and that holds for a 900 MB screen recording and a 3 MB voice memo
+alike, so a host's storage bill scales with hours of speech instead of with
+what someone happened to record on.
+
+The ``convert`` stage calls the ``STAPEL_RECORDINGS["NORMALIZER"]``
 callable: ``(src_path, dst_path) -> float | None`` (duration seconds, or
 None when unknown). Raise :class:`NormalizeFatal` for unfixable input
 (no audio stream, unreadable) so the driver DLQs instead of retrying.
+
+The stored profile is :func:`audio_profile`, read from settings: mono,
+16 kHz, Ogg/Opus at 24 kbps by default — about 10.8 MB per hour, against
+~115 MB for the same hour as 16 kHz mono PCM WAV and several hundred MB for
+the video it was extracted from. Every upload is re-encoded to it, including
+one that arrives as audio already: a conditional "this one is fine as it is"
+branch would have to be right about container, codec, channel layout and
+sample rate at once, and it would make the stored bytes depend on what the
+client happened to send — which is precisely the unpredictability the
+profile removes. One generation of Opus at 24 kbps mono costs nothing an
+ASR or diarization model can see.
 
 Two implementations ship:
 
@@ -34,12 +52,88 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from dataclasses import dataclass
 from typing import Optional
 
-from .conf import recordings_settings
+from .conf import flag, recordings_settings
 
 TARGET_SAMPLE_RATE = 16000
 TARGET_CHANNELS = 1
+
+#: Stored-audio codecs this module knows how to write and name.
+CODEC_OPUS = "opus"
+CODEC_WAV = "wav"
+CODECS = (CODEC_OPUS, CODEC_WAV)
+
+
+@dataclass(frozen=True)
+class AudioProfile:
+    """What one stored recording is, byte for byte.
+
+    Not just ffmpeg arguments: ``ext`` and ``content_type`` name the object
+    the ``convert`` stage writes, and :attr:`bytes_per_hour` is the number a
+    host sizes a bucket with and the upload-limits read quotes.
+    """
+
+    codec: str
+    channels: int
+    sample_rate: int
+    bitrate_bps: int
+    ext: str
+    content_type: str
+
+    @property
+    def bytes_per_hour(self) -> int:
+        """Stored bytes for one hour of audio at this profile.
+
+        Opus is VBR, so this is its target bitrate — speech averages a
+        little under it. PCM is exact: ``rate × channels × 2 bytes``.
+        """
+        if self.codec == CODEC_WAV:
+            return self.sample_rate * self.channels * 2 * 3600
+        return self.bitrate_bps // 8 * 3600
+
+
+def audio_profile() -> AudioProfile:
+    """The stored-audio profile, read from settings at call time.
+
+    An unknown ``AUDIO_CODEC`` is a :class:`NormalizeFatal` rather than a
+    silent fallback: writing a differently-shaped object than the one the
+    deployment asked for is worse than refusing the conversion, and the
+    ``stapel_recordings.E006`` system check says so at deploy time instead.
+    """
+    codec = str(recordings_settings.AUDIO_CODEC).strip().lower()
+    channels = max(1, int(recordings_settings.AUDIO_CHANNELS))
+    sample_rate = int(recordings_settings.AUDIO_SAMPLE_RATE)
+    bitrate = int(recordings_settings.AUDIO_BITRATE_BPS)
+    if codec == CODEC_OPUS:
+        return AudioProfile(codec, channels, sample_rate, bitrate, ".opus", "audio/ogg")
+    if codec == CODEC_WAV:
+        return AudioProfile(codec, channels, sample_rate, 0, ".wav", "audio/wav")
+    raise NormalizeFatal("unknown_audio_codec", f"AUDIO_CODEC={codec!r} is not one of {CODECS}")
+
+
+def audio_only_ingest_active() -> bool:
+    """True iff this deployment really does keep audio and nothing else.
+
+    Three things have to hold, and a host can switch off any one of them:
+    the policy itself (``AUDIO_ONLY_INGEST``), a ``convert`` stage in the
+    ``PIPELINE`` to run the extraction, and a NORMALIZER that actually
+    transcodes — ``passthrough_normalize`` copies the upload through, so
+    with it the stored object IS the container.
+
+    Read by ``services.accepted_upload_limit`` and by the ``convert`` stage,
+    which is the point: the raised container ceiling exists because the
+    container is discarded, so a deployment that has stopped discarding it
+    must stop accepting the larger file too, without anyone remembering to
+    lower a second setting. ``stapel_recordings.E007`` reports the
+    half-configured state at deploy time.
+    """
+    if not flag("AUDIO_ONLY_INGEST"):
+        return False
+    if recordings_settings.NORMALIZER is passthrough_normalize:
+        return False
+    return "convert" in list(recordings_settings.PIPELINE or [])
 
 
 def _ffmpeg_bin() -> str:
@@ -100,7 +194,11 @@ def ffmpeg_normalize(
     *,
     max_duration_seconds: Optional[float] = None,
 ) -> Optional[float]:
-    """Probe + transcode to 16 kHz mono PCM WAV. Returns duration seconds.
+    """Probe + extract the audio track at :func:`audio_profile`. Returns
+    duration seconds.
+
+    Video is decoded by nothing here (``-vn``) and no stream but audio
+    reaches *dst_path*; the caller deletes the source container.
 
     ``max_duration_seconds`` caps the result's duration (ffmpeg ``-t``).
     Needed for free-tier plans: "first N minutes of any recording" is cut
@@ -130,19 +228,30 @@ def ffmpeg_normalize(
 
 
 def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = None) -> None:
+    profile = audio_profile()
+    # -vn is the whole audio-only promise in one flag: no video stream is
+    # decoded, so none can reach the output object, and the container that
+    # carried it is deleted by the caller.
     cmd = [
         _ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
-        "-i", src, "-vn",
+        "-i", src, "-vn", "-map_metadata", "-1",
     ]
     if max_duration_seconds is not None:
         # After -i: the limit applies to OUTPUT. Before -i it would cap
         # input decode time instead — a different duration for streaming
         # containers.
         cmd += ["-t", f"{max_duration_seconds:.3f}"]
-    cmd += [
-        "-ac", str(TARGET_CHANNELS), "-ar", str(TARGET_SAMPLE_RATE),
-        "-c:a", "pcm_s16le", "-f", "wav", dst,
-    ]
+    cmd += ["-ac", str(profile.channels), "-ar", str(profile.sample_rate)]
+    if profile.codec == CODEC_OPUS:
+        cmd += [
+            "-c:a", "libopus", "-b:a", str(profile.bitrate_bps),
+            # Speech at 16 kHz: VOIP mode spends the bitrate on
+            # intelligibility rather than on music-grade high end, which is
+            # what an ASR and a diarizer read.
+            "-application", "voip", "-vbr", "on", "-f", "ogg", dst,
+        ]
+    else:
+        cmd += ["-c:a", "pcm_s16le", "-f", "wav", dst]
     timeout = _subprocess_timeout()
     try:
         proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
@@ -197,7 +306,13 @@ def _probe_audio(path: str) -> tuple[bool, Optional[float]]:
 
 
 __all__ = [
+    "AudioProfile",
+    "CODECS",
+    "CODEC_OPUS",
+    "CODEC_WAV",
     "NormalizeFatal",
+    "audio_only_ingest_active",
+    "audio_profile",
     "ffmpeg_normalize",
     "passthrough_normalize",
     "probe_duration",

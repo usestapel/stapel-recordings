@@ -37,9 +37,18 @@ from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
+from stapel_core.django.api.errors import ERR_500_INTERNAL, StapelServiceError
 
 from . import events, media_types
 from .conf import recordings_settings
+from .errors import (
+    ERR_400_MULTIPART_PARTS_INVALID,
+    ERR_400_UPLOAD_SIZE_INVALID,
+    ERR_409_INVALID_STATE,
+    ERR_413_TOO_LARGE,
+    ERR_415_UNSUPPORTED_MEDIA,
+    ERR_503_UPLOAD_UNVERIFIABLE,
+)
 from .models import Recording, RecordingStatus, UploadSession
 from .storage import get_storage
 
@@ -50,52 +59,116 @@ logger = logging.getLogger(__name__)
 WORKSPACES_CHECK_MEMBERSHIP = "workspaces.check_membership"
 
 
-class UploadTooLarge(ValueError):
-    """A declared or measured upload size is outside the allowed range."""
+# Every refusal below is a StapelServiceError: it carries its HTTP status,
+# registry key and params, so ``stapel_exception_handler`` turns it into the
+# standard error envelope wherever it escapes a DRF view — a host view that
+# calls this module directly needs no try/except of its own. Each keeps its
+# original built-in base (ValueError / RuntimeError) so existing
+# ``except ValueError`` callers still catch it.
+
+
+class UploadTooLarge(StapelServiceError, ValueError):
+    """A declared or measured upload size exceeds the allowed ceiling.
+
+    HTTP: ``413 error.413.recording_too_large`` with ``{size, limit}``."""
 
     def __init__(self, size, limit):
-        super().__init__(f"upload size {size!r} exceeds limit {limit}")
+        super().__init__(413, ERR_413_TOO_LARGE, params={"size": size, "limit": limit})
+        self.args = (f"upload size {size!r} exceeds limit {limit}",)
         self.size = size
         self.limit = limit
 
 
-class UploadNotStored(ValueError):
+class InvalidUploadSize(UploadTooLarge):
+    """A declared upload size is not a size: missing when required,
+    non-numeric, zero or negative.
+
+    HTTP: ``400 error.400.recording_upload_size_invalid`` with ``{limit}``.
+    A subclass of :class:`UploadTooLarge` so a caller that caught that for
+    every size problem keeps catching this one."""
+
+    def __init__(self, size, limit):
+        StapelServiceError.__init__(
+            self, 400, ERR_400_UPLOAD_SIZE_INVALID, params={"limit": limit}
+        )
+        self.args = (f"upload size {size!r} is not a positive size (limit {limit})",)
+        self.size = size
+        self.limit = limit
+
+
+class UploadNotStored(StapelServiceError, ValueError):
     """Finalize was asked to complete an upload whose object is missing or
-    empty in storage."""
+    empty in storage.
+
+    HTTP: ``409 error.409.recording_invalid_state`` — there is no upload to
+    finalize, so the client uploads again rather than retrying finalize."""
 
     def __init__(self, key: str):
-        super().__init__(f"no stored object for upload key {key!r}")
+        super().__init__(409, ERR_409_INVALID_STATE)
+        self.args = (f"no stored object for upload key {key!r}",)
         self.key = key
 
 
-class InvalidMultipartParts(ValueError):
-    """The caller-supplied multipart part list is malformed or oversized."""
+class InvalidMultipartParts(StapelServiceError, ValueError):
+    """The caller-supplied multipart part list is malformed or oversized.
+
+    HTTP: ``400 error.400.recording_multipart_parts_invalid`` with
+    ``{max_parts}``."""
+
+    def __init__(self, detail: str, *, max_parts: int | None = None):
+        if max_parts is None:
+            max_parts = int(recordings_settings.MAX_MULTIPART_PARTS)
+        super().__init__(400, ERR_400_MULTIPART_PARTS_INVALID, params={"max_parts": max_parts})
+        self.args = (detail,)
+        self.detail = detail
+        self.max_parts = max_parts
 
 
-class UploadContentUncheckable(RuntimeError):
+class MultipartMisconfigured(InvalidMultipartParts):
+    """``MAX_UPLOAD_BYTES / MULTIPART_PART_SIZE`` needs more parts than
+    ``MAX_MULTIPART_PARTS`` allows — the deployment's settings, not the
+    caller's request. Also reported by the ``stapel_recordings.E005``
+    system check, so a checked deployment never reaches this.
+
+    HTTP: ``500 error.500.internal`` — a 4xx would blame the client."""
+
+    def __init__(self, detail: str, *, max_parts: int | None = None):
+        super().__init__(detail, max_parts=max_parts)
+        self.http_status = 500
+        self.error_key = ERR_500_INTERNAL
+        self.error_params = {}
+
+
+class UploadContentUncheckable(StapelServiceError, RuntimeError):
     """``UPLOAD_CONTENT_POLICY`` is on, but the storage backend cannot serve
     the ranged read the gate needs.
 
     A deployment fault, not a caller fault: the upload may well be fine, but
     nothing here can tell. A gate that cannot run refuses — the alternative
-    is that the policy silently does not apply."""
+    is that the policy silently does not apply.
+
+    HTTP: ``503 error.503.recording_upload_unverifiable``."""
 
     def __init__(self, key: str, backend: str, policy: str):
-        super().__init__(
+        super().__init__(503, ERR_503_UPLOAD_UNVERIFIABLE)
+        self.args = (
             f"{backend} cannot serve a ranged read, so UPLOAD_CONTENT_POLICY "
-            f"{policy!r} could not be applied to {key!r}"
+            f"{policy!r} could not be applied to {key!r}",
         )
         self.key = key
         self.backend = backend
         self.policy = policy
 
 
-class UnsupportedUploadExtension(ValueError):
+class UnsupportedUploadExtension(StapelServiceError, ValueError):
     """Raised when a caller-supplied upload filename is missing, has no
-    extension, or one outside ``UPLOAD_EXTENSION_ALLOWLIST``."""
+    extension, or one outside ``UPLOAD_EXTENSION_ALLOWLIST``.
+
+    HTTP: ``415 error.415.recording_unsupported_media``."""
 
     def __init__(self, ext: str):
-        super().__init__(f"unsupported upload extension: {ext!r}")
+        super().__init__(415, ERR_415_UNSUPPORTED_MEDIA)
+        self.args = (f"unsupported upload extension: {ext!r}",)
         self.ext = ext
 
 
@@ -144,23 +217,83 @@ def check_workspace_membership(*, user_id, workspace_id) -> bool:
     return bool(isinstance(result, dict) and result.get("is_member"))
 
 
+def accepted_upload_limit() -> int:
+    """The size ceiling this deployment will accept for one upload.
+
+    Two different numbers, because with audio-only ingest active the thing
+    received and the thing kept are not the same object: the container is
+    transport, deleted minutes after its audio track is extracted, so what
+    bounds it is bandwidth and ffmpeg time
+    (``MAX_CONTAINER_UPLOAD_BYTES``), not the storage bill. Switch the
+    policy off — or drop ``convert`` from the ``PIPELINE``, or point
+    NORMALIZER at the passthrough — and the upload IS the stored object, so
+    the storage-shaped ``MAX_UPLOAD_BYTES`` applies again, without anyone
+    having to remember to lower a second setting.
+
+    The single source for the 413 line: :func:`_checked_declared_size`
+    enforces this number and :func:`upload_limits` publishes it, so a
+    frontend's local refusal and the server's cannot disagree.
+    """
+    from .normalize import audio_only_ingest_active
+
+    if audio_only_ingest_active():
+        return int(recordings_settings.MAX_CONTAINER_UPLOAD_BYTES)
+    return int(recordings_settings.MAX_UPLOAD_BYTES)
+
+
 def _checked_declared_size(declared: int | None, *, required: bool) -> int:
-    """Validate a caller-declared upload size against ``MAX_UPLOAD_BYTES``.
+    """Validate a caller-declared upload size against the accepted ceiling.
 
     Runs before any storage state is created: an oversized request must not
     leave a session row, a multipart upload id or a signed URL behind."""
-    limit = int(recordings_settings.MAX_UPLOAD_BYTES)
+    limit = accepted_upload_limit()
     if declared is None:
         if required:
-            raise UploadTooLarge(declared, limit)
+            raise InvalidUploadSize(declared, limit)
         return limit
     try:
         size = int(declared)
     except (TypeError, ValueError) as exc:
-        raise UploadTooLarge(declared, limit) from exc
-    if size <= 0 or size > limit:
+        raise InvalidUploadSize(declared, limit) from exc
+    if size <= 0:
+        raise InvalidUploadSize(size, limit)
+    if size > limit:
         raise UploadTooLarge(size, limit)
     return size
+
+
+def upload_limits() -> dict:
+    """The upload ceilings a client should know BEFORE it sends a byte.
+
+    The same numbers :func:`_checked_declared_size` and
+    :func:`start_multipart_upload` enforce, read from the live settings —
+    served by ``GET /recordings/api/v1/recordings/upload-limits`` so a
+    frontend can refuse an oversized file locally and phrase the refusal
+    with the real limit.
+
+    It also says what will be KEPT of that file: with ``audio_only_ingest``
+    true the container is transport and the stored object is the mono audio
+    track at ``stored_audio_*``, which is why ``max_upload_bytes`` is the
+    larger of the two ceilings. ``stored_bytes_per_hour`` is the number a
+    UI needs to tell someone what an hour of recording costs them.
+    """
+    from .normalize import audio_only_ingest_active, audio_profile
+
+    profile = audio_profile()
+    return {
+        "max_upload_bytes": accepted_upload_limit(),
+        "max_stored_bytes": int(recordings_settings.MAX_STORED_BYTES),
+        "audio_only_ingest": audio_only_ingest_active(),
+        "stored_audio_codec": profile.codec,
+        "stored_audio_channels": profile.channels,
+        "stored_audio_sample_rate": profile.sample_rate,
+        "stored_bytes_per_hour": profile.bytes_per_hour,
+        "multipart_part_size": int(recordings_settings.MULTIPART_PART_SIZE),
+        "max_multipart_parts": int(recordings_settings.MAX_MULTIPART_PARTS),
+        "allowed_extensions": sorted(
+            e.lower() for e in (recordings_settings.UPLOAD_EXTENSION_ALLOWLIST or [])
+        ),
+    }
 
 
 def _supersede_open_sessions(recording: Recording) -> None:
@@ -240,9 +373,10 @@ def start_multipart_upload(
     num_parts = max(1, (max_size + part_size - 1) // part_size)
     part_cap = int(recordings_settings.MAX_MULTIPART_PARTS)
     if num_parts > part_cap:
-        raise InvalidMultipartParts(
+        raise MultipartMisconfigured(
             f"{num_parts} parts exceeds MAX_MULTIPART_PARTS ({part_cap}) — "
-            "raise MULTIPART_PART_SIZE or lower MAX_UPLOAD_BYTES"
+            "raise MULTIPART_PART_SIZE or lower MAX_UPLOAD_BYTES",
+            max_parts=part_cap,
         )
 
     storage = get_storage()
@@ -290,7 +424,9 @@ def _validated_parts(session: UploadSession, parts: list[dict] | None) -> list[d
     items = list(parts or [])
     cap = int(recordings_settings.MAX_MULTIPART_PARTS)
     if len(items) > cap:
-        raise InvalidMultipartParts(f"{len(items)} parts exceeds MAX_MULTIPART_PARTS ({cap})")
+        raise InvalidMultipartParts(
+            f"{len(items)} parts exceeds MAX_MULTIPART_PARTS ({cap})", max_parts=cap
+        )
     seen = set()
     for item in items:
         if not isinstance(item, dict):
@@ -417,7 +553,13 @@ def _finalize_upload_locked(
     *, session: UploadSession, file_size_bytes: int | None = None, parts: list[dict] | None = None
 ) -> Recording:
     recording = Recording.objects.select_for_update().get(pk=session.recording_id)
-    if recording.file_storage_key:
+    # Two independent "already done" markers, and the session's is the one
+    # that keeps holding after the pipeline has run: with audio-only ingest
+    # the ``convert`` stage deletes the source container and CLEARS
+    # ``file_storage_key``, so a late duplicate finalize would otherwise
+    # find an empty key, re-verify an object that no longer exists, and
+    # answer 409 for an upload that in fact succeeded.
+    if recording.file_storage_key or session.finalized_at:
         return recording  # already finalized
 
     if file_size_bytes is not None and int(file_size_bytes) > int(session.max_size_bytes):
@@ -450,11 +592,15 @@ __all__ = [
     "abort_multipart_upload_session",
     "finalize_upload",
     "validated_upload_ext",
+    "upload_limits",
+    "accepted_upload_limit",
     "UnsupportedUploadExtension",
     "UploadTooLarge",
+    "InvalidUploadSize",
     "UploadNotStored",
     "UploadContentUncheckable",
     "InvalidMultipartParts",
+    "MultipartMisconfigured",
     "check_workspace_membership",
     "WORKSPACES_CHECK_MEMBERSHIP",
 ]

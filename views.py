@@ -61,7 +61,7 @@ from django.http import HttpResponseRedirect
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
-from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse
+from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse, StapelServiceError
 from stapel_core.django.api.pagination import AnchorPagination
 from stapel_core.django.api.permissions import IsNotAnonymousUser
 
@@ -76,6 +76,7 @@ from .dto import (
     recording_to_dto,
     segment_to_dto,
     shared_recording_to_dto,
+    upload_limits_to_dto,
     upload_session_to_dto,
 )
 from .errors import (
@@ -85,14 +86,10 @@ from .errors import (
     ERR_409_INVALID_STATE,
     ERR_409_MEDIA_NOT_STORED,
     ERR_409_NO_TRANSCRIPT,
-    ERR_413_TOO_LARGE,
-    ERR_415_UNSUPPORTED_MEDIA,
     ERR_503_MEDIA_UNAVAILABLE,
     ERR_503_SUMMARIZE_UNAVAILABLE,
-    ERR_503_UPLOAD_UNVERIFIABLE,
     POLICY_DENIAL_CODES,
 )
-from .media_types import UnsupportedUploadContent
 from .models import Recording
 from .policy import as_decision, get_policy
 from .resources import resolve_resource_key
@@ -108,6 +105,7 @@ from .serializers import (
     ShareUnlockResponseSerializer,
     TranscriptPageSerializer,
     TranscriptSegmentSerializer,
+    UploadLimitsSerializer,
 )
 
 #: Header a client presents its unlock token in. A header, not a query
@@ -437,6 +435,24 @@ class RecordingDetailView(SerializerSeamMixin, APIView):
 
 
 @extend_schema(tags=["Recordings"])
+class UploadLimitsView(SerializerSeamMixin, APIView):
+    """The upload ceilings, before the first byte.
+
+    ``MAX_UPLOAD_BYTES`` (the ``413`` line), the multipart part size and
+    part cap, and the extension allowlist (the ``415`` line) — the numbers a
+    frontend needs to refuse a file locally and to phrase the refusal with
+    the real limit. Same door as creating a recording: an account, not a
+    guest session."""
+
+    permission_classes = [IsNotAnonymousUser]
+    response_serializer_class = UploadLimitsSerializer
+
+    @extend_schema(responses={200: UploadLimitsSerializer})
+    def get(self, request):  # noqa: R007
+        return StapelResponse(self.get_response_serializer_class()(upload_limits_to_dto()))
+
+
+@extend_schema(tags=["Recordings"])
 class FinalizeUploadView(SerializerSeamMixin, APIView):
     """Finalize the upload and enqueue the pipeline."""
 
@@ -463,21 +479,13 @@ class FinalizeUploadView(SerializerSeamMixin, APIView):
             recording = services.finalize_upload(
                 session=session, file_size_bytes=req.validated_data.get("file_size_bytes")
             )
-        except services.UploadTooLarge:
-            return StapelErrorResponse(413, ERR_413_TOO_LARGE)
-        except UnsupportedUploadContent:
-            return StapelErrorResponse(415, ERR_415_UNSUPPORTED_MEDIA)
-        except services.UploadContentUncheckable:
-            # The bytes may be fine — nothing here can tell, because the
-            # backend cannot serve a ranged read. That is the deployment's
-            # fault, so it is a 5xx the operator can read, and the upload is
-            # not accepted on the strength of a check that did not run.
-            return StapelErrorResponse(503, ERR_503_UPLOAD_UNVERIFIABLE)
-        except (services.UploadNotStored, services.InvalidMultipartParts):
-            # Nothing (usable) was ever written under the session key, so
-            # there is no upload to finalize — the client has to upload
-            # again, not retry the finalize.
-            return StapelErrorResponse(409, ERR_409_INVALID_STATE)
+        except StapelServiceError as exc:
+            # Every upload refusal carries its own status/key/params
+            # (413 too large, 415 content, 503 uncheckable, 409 nothing
+            # stored, 400 bad part list) — see services.py. Answered here
+            # rather than left to the exception handler only so the view
+            # does not depend on the host having configured one.
+            return StapelErrorResponse(exc.http_status, exc.error_key, exc.error_params)
         return _recording_response(self, recording)
 
 

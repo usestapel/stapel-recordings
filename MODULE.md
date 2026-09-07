@@ -130,7 +130,7 @@ The five built-ins:
 
 | Stage | Status | Does | Delegates to |
 |---|---|---|---|
-| `convert` | `normalizing` | Normalize media to 16 kHz mono WAV (`NORMALIZER` seam), store it, drop the raw | ffmpeg (default) |
+| `convert` | `normalizing` | Extract the upload's audio at the configured profile (mono 16 kHz Opus; `NORMALIZER` seam), store that one object, **delete the container and clear `file_storage_key`** | ffmpeg (default) |
 | `transcribe` | `transcribing` | Call `llm.transcribe`, persist `Speaker`/`Segment` rows | **stapel-agent** |
 | `diarize` | `diarizing` | **No-op by default** (diarization is returned inline by `llm.transcribe`); swap in a real diarizer via the registry | — |
 | `merge` | `merging` | Build + store the unified transcript JSON, then `llm.summarize` | **stapel-agent** |
@@ -148,7 +148,12 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 | `PIPELINE_RESOLVER` | `…pipeline.default_pipeline_resolver` | **replace** (dotted path) | Runtime pipeline source |
 | `STORAGE` | `…storage.DjangoStorageBackend` | **replace** (dotted path) | Object-storage backend |
 | `STORAGE_PREFIX` | `"recordings"` | value | Key prefix |
-| `NORMALIZER` | `…normalize.ffmpeg_normalize` | **replace** (dotted path) | Audio normalization callable |
+| `NORMALIZER` | `…normalize.ffmpeg_normalize` | **replace** (dotted path) | Audio extraction callable |
+| `AUDIO_ONLY_INGEST` | `True` | value (`no_env`) | Keep only the extracted audio; delete the uploaded container. Off = documented exception, and the accepted ceiling drops to `MAX_UPLOAD_BYTES` |
+| `AUDIO_CHANNELS` | `1` | value | Channels of the stored object (2 only for a provider that separates speakers BY CHANNEL) |
+| `AUDIO_SAMPLE_RATE` | `16000` | value | Sample rate of the stored object |
+| `AUDIO_CODEC` | `"opus"` | value | `opus` (~10.8 MB/h) or `wav` (~115 MB/h) |
+| `AUDIO_BITRATE_BPS` | `24000` | value | Opus target bitrate |
 | `MAX_STAGE_RETRIES` | `3` | value | Retries before DLQ |
 | `TRANSCRIBE_TIMEOUT_SECONDS` | `1800` | value | Passed to `llm.transcribe` |
 | `SUMMARIZE_ENABLED` | `True` | value | Toggle the summarize step |
@@ -156,7 +161,9 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 | `UPLOAD_SESSION_TTL_SECONDS` | `900` | value | Single-PUT session TTL |
 | `MULTIPART_SESSION_TTL_SECONDS` | `86400` | value | Multipart session TTL |
 | `MULTIPART_PART_SIZE` | `10 MiB` | value | Multipart part size |
-| `MAX_UPLOAD_BYTES` | `2 GiB` | value | Upload cap |
+| `MAX_CONTAINER_UPLOAD_BYTES` | `16 GiB` | value | What we RECEIVE while extraction runs (the container is discarded) |
+| `MAX_STORED_BYTES` | `512 MiB` | value | What we KEEP — enforced on the extracted audio (`StageFatal("stored_audio_too_large")`) |
+| `MAX_UPLOAD_BYTES` | `2 GiB` | value | The ceiling when nothing is extracted. **Read `services.accepted_upload_limit()`, never this key**: it picks between the two and fails safe to this one when a deployment stops extracting |
 | `STUCK_THRESHOLD_SECONDS` | `2100` | value | Reconcile: age before re-drive. **Must exceed the longest stage duration** (built-ins: `TRANSCRIBE_TIMEOUT_SECONDS`), or reconcile re-drives stages that are still running (checked: W005) |
 | `ABANDONED_UPLOAD_THRESHOLD_SECONDS` | `3600` | value | Reconcile: abandoned-upload age |
 | `PURGE_AFTER_DAYS` | `30` | value | Days a soft-deleted recording is kept before the purge opens an erasure (below) |
@@ -255,12 +262,28 @@ frontend invents:
   JOB_POLL_INTERVAL_SECONDS` — accepted is not finished, and the receipt says
   when the result is worth looking for.
 
-### Audio normalization seam — `NORMALIZER` (`normalize.py`)
+### Audio extraction seam — `NORMALIZER` (`normalize.py`)
 
 `(src_path, dst_path) -> float | None`. Default `ffmpeg_normalize` (needs
-ffmpeg/ffprobe on PATH); `passthrough_normalize` for environments without
-ffmpeg or already-normalized input. Raise `NormalizeFatal` for unfixable
-input.
+ffmpeg/ffprobe on PATH, and `libopus` in the build for the default codec —
+system check `stapel_recordings.E006`); `passthrough_normalize` for
+environments without ffmpeg, which means **nothing is extracted and the
+upload is stored whole** (checks W008 and E007). Raise `NormalizeFatal` for
+unfixable input.
+
+`audio_profile()` is what the stored object IS — codec, channels, sample
+rate, object extension, content type and `bytes_per_hour`, the number the
+upload-limits read publishes and a host sizes a bucket with.
+`audio_only_ingest_active()` is the predicate everything else asks: the
+policy on, a `convert` stage in the `PIPELINE`, and a NORMALIZER that
+actually transcodes. It gates `services.accepted_upload_limit()`,
+`media.media_storage_key()` and the container purge, so those three cannot
+disagree about whether this deployment keeps containers.
+
+`python manage.py recordings_audio_census [--measure] [--json]` — read-only:
+how many recordings still hold an uploaded container, what they weigh, and
+what the same recordings would occupy as mono audio. It changes nothing; a
+backfill that acts on it would be a separate command.
 
 ### Vector/search layer — opt-in app (`vector/`)
 

@@ -90,15 +90,25 @@ def storage_signs_get_urls(storage=None) -> bool:
 def media_storage_key(recording) -> str | None:
     """The object key playback should read, or ``None``.
 
-    The uploaded original first, the pipeline's normalized copy as a
-    fallback: the original is what the owner uploaded and what a share is
-    understood to expose, but a host whose retention drops originals after
-    conversion still has something to play."""
-    return (
-        getattr(recording, "file_storage_key", None)
-        or getattr(recording, "normalized_storage_key", None)
-        or None
-    )
+    The extracted audio, and — while audio-only ingest is on — only ever
+    that. This module stores audio; the container someone uploaded is
+    transport, it is deleted as soon as its audio track is out, and nothing
+    in the API hands it back in the meantime. Serving the source first (the
+    behaviour before 0.22.0) meant a recording that had not reached the
+    ``convert`` stage yet answered a media request with the raw video the
+    deployment had already decided not to keep.
+
+    The fallback to the source key exists for the documented exception:
+    ``AUDIO_ONLY_INGEST = False``, where the upload is the stored object and
+    there is no extracted copy to prefer."""
+    from .normalize import audio_only_ingest_active
+
+    normalized = getattr(recording, "normalized_storage_key", None)
+    if normalized:
+        return normalized
+    if audio_only_ingest_active():
+        return None
+    return getattr(recording, "file_storage_key", None) or None
 
 
 def issue_media_url(recording, *, ttl_seconds: int | None = None) -> MediaGrant:

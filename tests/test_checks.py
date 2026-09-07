@@ -121,3 +121,115 @@ def test_check_ids_are_unique():
 
     duplicates = {i: fns for i, fns in used.items() if len(set(fns)) > 1}
     assert not duplicates, f"one id shared by multiple checks: {duplicates}"
+
+
+# ── audio-only ingest: the tooling and the wiring ────────────────────────
+
+
+def test_ffmpeg_missing_is_an_error(monkeypatch):
+    """ffmpeg's presence is an environment fact, and it used to be
+    discovered at the first upload — as a failed recording someone was
+    waiting for, not as a red deploy."""
+    import shutil
+
+    from stapel_recordings.checks import check_audio_extraction_tooling
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    errors = check_audio_extraction_tooling(None)
+    assert [e.id for e in errors] == [
+        "stapel_recordings.E006", "stapel_recordings.E006",
+    ]
+    assert "ffmpeg" in errors[0].msg
+
+
+def test_an_ffmpeg_without_libopus_is_an_error(monkeypatch):
+    """A slim image with a stripped ffmpeg build fails at exactly the same
+    late moment as a missing binary, and for a reason nothing states."""
+    import shutil
+    import subprocess
+
+    from stapel_recordings.checks import check_audio_extraction_tooling
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    class Proc:
+        stdout = b" V..... libx264\n A..... aac\n"
+        stderr = b""
+        returncode = 0
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: Proc())
+    errors = check_audio_extraction_tooling(None)
+    assert [e.id for e in errors] == ["stapel_recordings.E006"]
+    assert "libopus" in errors[0].msg
+
+
+def test_the_tooling_check_is_silent_without_the_ffmpeg_normalizer(monkeypatch):
+    """A host with its own NORMALIZER shells out to whatever it likes; this
+    check has no opinion about that."""
+    import shutil
+
+    from stapel_recordings.checks import check_audio_extraction_tooling
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with override_settings(
+        STAPEL_RECORDINGS={"NORMALIZER": "stapel_recordings.normalize.passthrough_normalize"}
+    ):
+        assert check_audio_extraction_tooling(None) == []
+
+
+def test_an_unwritable_audio_codec_is_an_error(monkeypatch):
+    import shutil
+
+    from stapel_recordings.checks import check_audio_extraction_tooling
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
+    with override_settings(STAPEL_RECORDINGS={"AUDIO_CODEC": "mp3"}):
+        errors = check_audio_extraction_tooling(None)
+    assert [e.id for e in errors] == ["stapel_recordings.E006"]
+
+
+def test_audio_only_ingest_without_a_convert_stage_is_an_error():
+    """The accepted-upload ceiling is eight times the stored one BECAUSE the
+    container is discarded. Take the discarding away and the promise
+    silently inverts."""
+    from stapel_recordings.checks import check_audio_only_ingest_wiring
+
+    assert check_audio_only_ingest_wiring(None) == []
+    with override_settings(STAPEL_RECORDINGS={"PIPELINE": ["transcribe", "merge"]}):
+        errors = check_audio_only_ingest_wiring(None)
+    assert [e.id for e in errors] == ["stapel_recordings.E007"]
+    assert "convert" in errors[0].msg
+
+
+def test_audio_only_ingest_with_a_passthrough_normalizer_is_an_error():
+    from stapel_recordings.checks import check_audio_only_ingest_wiring
+
+    with override_settings(
+        STAPEL_RECORDINGS={"NORMALIZER": "stapel_recordings.normalize.passthrough_normalize"}
+    ):
+        errors = check_audio_only_ingest_wiring(None)
+    assert [e.id for e in errors] == ["stapel_recordings.E007"]
+
+
+def test_the_wiring_check_is_silent_when_the_policy_is_deliberately_off():
+    """Storing originals is a documented exception, not a misconfiguration —
+    a host that states it should not be nagged."""
+    from stapel_recordings.checks import check_audio_only_ingest_wiring
+
+    with override_settings(STAPEL_RECORDINGS={
+        "AUDIO_ONLY_INGEST": False,
+        "NORMALIZER": "stapel_recordings.normalize.passthrough_normalize",
+    }):
+        assert check_audio_only_ingest_wiring(None) == []
+
+
+def test_the_part_budget_is_checked_against_the_ACCEPTED_ceiling():
+    """Checking MAX_UPLOAD_BYTES would pass a deployment whose every real
+    upload fails: with extraction on, uploads are bounded by the container
+    ceiling, which is eight times larger."""
+    from stapel_recordings.checks import check_multipart_part_budget
+
+    assert check_multipart_part_budget(None) == []
+    with override_settings(STAPEL_RECORDINGS={"MAX_MULTIPART_PARTS": 1000}):
+        errors = check_multipart_part_budget(None)
+    assert [e.id for e in errors] == ["stapel_recordings.E005"]

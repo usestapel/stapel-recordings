@@ -66,8 +66,13 @@ _FIXTURES = Path(
     )
 )
 
-#: Machine translations (origin: llm) of this module's own error keys. All
-#: param-free — edit here + regen when the en text changes.
+#: Machine translations (origin: llm) of this module's own error keys. Edit
+#: here + regen when the en text changes. The three upload-size keys carry
+#: ``{param}`` slots (``size``/``limit``/``max_parts``); every translation
+#: must keep exactly the canon's slots, which
+#: ``test_translations_preserve_placeholders`` enforces — a localized 413
+#: that dropped ``{limit}`` would be a refusal that cannot say what the
+#: limit is, in the one language the user reads.
 _MACHINE_RU = {
     # Recordings.
     "error.404.recording_not_found": "Запись не найдена",
@@ -78,7 +83,12 @@ _MACHINE_RU = {
     "error.403.recording_workspace_forbidden":
         "Вы не являетесь участником этого рабочего пространства",
     "error.413.recording_too_large":
-        "Загрузка превышает максимально допустимый размер",
+        "Загрузка объёмом {size} байт превышает максимально допустимый размер "
+        "в {limit} байт",
+    "error.400.recording_upload_size_invalid":
+        "Размер загрузки должен быть положительным числом байт, не более {limit}",
+    "error.400.recording_multipart_parts_invalid":
+        "Список частей составной загрузки некорректен или превышает {max_parts} частей",
     "error.415.recording_unsupported_media":
         "Тип загружаемого файла не поддерживается",
     "error.503.recording_upload_unverifiable":
@@ -116,7 +126,12 @@ _MACHINE_ES = {
     "error.403.recording_workspace_forbidden":
         "No eres miembro de este espacio de trabajo",
     "error.413.recording_too_large":
-        "La subida supera el tamaño máximo permitido",
+        "La subida de {size} bytes supera el tamaño máximo permitido de {limit} bytes",
+    "error.400.recording_upload_size_invalid":
+        "El tamaño de la subida debe ser un número positivo de bytes, como máximo {limit}",
+    "error.400.recording_multipart_parts_invalid":
+        "La lista de partes de la subida multiparte es incorrecta o supera las "
+        "{max_parts} partes",
     "error.415.recording_unsupported_media":
         "El tipo de archivo subido no es compatible",
     "error.503.recording_upload_unverifiable":

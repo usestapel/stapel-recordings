@@ -29,6 +29,173 @@ def check_storage_backend(app_configs, **kwargs):
 
 
 @checks.register(checks.Tags.compatibility)
+def check_multipart_part_budget(app_configs, **kwargs):
+    """E: a full-size multipart upload must fit in MAX_MULTIPART_PARTS.
+
+    ``ceil(accepted_upload_limit() / MULTIPART_PART_SIZE) <=
+    MAX_MULTIPART_PARTS``, or every upload near the cap fails at start with
+    ``services.MultipartMisconfigured`` — a 500 for the client, and a
+    deployment fault that belongs at ``manage.py check``, not in a log.
+
+    Against the ACCEPTED ceiling, not ``MAX_UPLOAD_BYTES``: with audio-only
+    ingest the accepted one is ``MAX_CONTAINER_UPLOAD_BYTES``, eight times
+    larger, and checking the smaller number would pass a deployment whose
+    every real upload fails."""
+    from .conf import recordings_settings
+    from .services import accepted_upload_limit
+
+    try:
+        max_bytes = accepted_upload_limit()
+        part_size = int(recordings_settings.MULTIPART_PART_SIZE)
+        part_cap = int(recordings_settings.MAX_MULTIPART_PARTS)
+        max_stored = int(recordings_settings.MAX_STORED_BYTES)
+    except (TypeError, ValueError) as exc:
+        return [checks.Error(
+            f"STAPEL_RECORDINGS upload limits must be integers: {exc}",
+            id="stapel_recordings.E005",
+        )]
+    if part_size <= 0 or max_bytes <= 0 or part_cap <= 0 or max_stored <= 0:
+        return [checks.Error(
+            "STAPEL_RECORDINGS['MAX_UPLOAD_BYTES'], ['MAX_CONTAINER_UPLOAD_BYTES'], "
+            "['MAX_STORED_BYTES'], ['MULTIPART_PART_SIZE'] and "
+            "['MAX_MULTIPART_PARTS'] must be positive.",
+            id="stapel_recordings.E005",
+        )]
+    needed = (max_bytes + part_size - 1) // part_size
+    if needed > part_cap:
+        return [checks.Error(
+            f"The accepted upload ceiling ({max_bytes}) needs {needed} parts of "
+            f"MULTIPART_PART_SIZE ({part_size}) but MAX_MULTIPART_PARTS is "
+            f"{part_cap}: raise MULTIPART_PART_SIZE or lower the ceiling.",
+            id="stapel_recordings.E005",
+        )]
+    return []
+
+
+@checks.register(checks.Tags.compatibility)
+def check_audio_extraction_tooling(app_configs, **kwargs):
+    """E: audio extraction is configured, so its tools must be on this host.
+
+    ffmpeg's presence is an environment fact, not a setting, and it used to
+    be discovered the way environment facts always are: at the first upload,
+    as ``NormalizeFatal('ffmpeg_missing')`` on a recording someone was
+    waiting for. Everything the ``convert`` stage needs is knowable at
+    ``manage.py check`` — the two binaries resolve on PATH, and the build
+    carries the encoder ``AUDIO_CODEC`` names (a stripped ffmpeg without
+    libopus is a normal thing to find in a slim container image, and it
+    fails at the same late moment).
+
+    Silent when the deployment does not extract audio at all
+    (``passthrough_normalize``, or a host's own NORMALIZER, which shells out
+    to whatever it likes)."""
+    import shutil
+    import subprocess
+
+    from .conf import recordings_settings
+    from .normalize import CODEC_OPUS, NormalizeFatal, audio_profile, ffmpeg_normalize
+
+    try:
+        if recordings_settings.NORMALIZER is not ffmpeg_normalize:
+            return []
+    except Exception:
+        return []  # W004 already reports an unimportable seam
+
+    try:
+        profile = audio_profile()
+    except NormalizeFatal as exc:
+        return [checks.Error(
+            f"STAPEL_RECORDINGS['AUDIO_CODEC'] is not one this module can "
+            f"write: {exc}",
+            id="stapel_recordings.E006",
+        )]
+
+    errors = []
+    binaries = {
+        "FFMPEG_BIN": str(recordings_settings.FFMPEG_BIN),
+        "FFPROBE_BIN": str(recordings_settings.FFPROBE_BIN),
+    }
+    for setting, name in binaries.items():
+        if shutil.which(name) is None:
+            errors.append(checks.Error(
+                f"STAPEL_RECORDINGS['{setting}'] = {name!r} is not on PATH, but "
+                "NORMALIZER is ffmpeg_normalize — every upload will fail at the "
+                "convert stage. Install ffmpeg in this image, pin an absolute "
+                "path, or set NORMALIZER to a normalizer that does not need it.",
+                id="stapel_recordings.E006",
+            ))
+    if errors or profile.codec != CODEC_OPUS:
+        return errors
+
+    # The binary is there; ask it whether this build can write the codec.
+    try:
+        proc = subprocess.run(
+            [binaries["FFMPEG_BIN"], "-hide_banner", "-loglevel", "error", "-encoders"],
+            capture_output=True,
+            timeout=20,
+        )
+        available = b"libopus" in (proc.stdout or b"")
+    except Exception as exc:
+        return [checks.Error(
+            f"{binaries['FFMPEG_BIN']!r} could not be asked which encoders it "
+            f"has ({exc}); the convert stage runs the same binary.",
+            id="stapel_recordings.E006",
+        )]
+    if not available:
+        return [checks.Error(
+            f"{binaries['FFMPEG_BIN']!r} has no libopus encoder, but "
+            "STAPEL_RECORDINGS['AUDIO_CODEC'] is 'opus'. Use an ffmpeg build "
+            "with libopus, or set AUDIO_CODEC = 'wav' (≈10x the stored bytes).",
+            id="stapel_recordings.E006",
+        )]
+    return []
+
+
+@checks.register(checks.Tags.compatibility)
+def check_audio_only_ingest_wiring(app_configs, **kwargs):
+    """E: ``AUDIO_ONLY_INGEST`` is on, so the extraction must actually run.
+
+    The policy is a promise about what is KEPT, and the accepted-upload
+    ceiling is eight times the stored one *because* of it. Take away the
+    ``convert`` stage or the transcoding normalizer and the promise silently
+    inverts: every container is stored, at the raised ceiling, forever. That
+    is a deployment that has to be stopped at ``check``, not discovered from
+    a storage bill.
+
+    (``services.accepted_upload_limit`` fails safe in the same situation and
+    drops back to ``MAX_UPLOAD_BYTES``. This check is why a host finds out
+    it is in that state.)"""
+    from .conf import flag, recordings_settings
+    from .normalize import passthrough_normalize
+
+    if not flag("AUDIO_ONLY_INGEST"):
+        return []  # the documented exception, stated deliberately
+
+    errors = []
+    if "convert" not in list(recordings_settings.PIPELINE or []):
+        errors.append(checks.Error(
+            "STAPEL_RECORDINGS['AUDIO_ONLY_INGEST'] is on but 'convert' is not "
+            "in PIPELINE — nothing extracts the audio or deletes the uploaded "
+            "container, so every upload is stored whole. Add 'convert' to "
+            "PIPELINE, or set AUDIO_ONLY_INGEST = False and accept that this "
+            "deployment stores what it is sent.",
+            id="stapel_recordings.E007",
+        ))
+    try:
+        normalizer = recordings_settings.NORMALIZER
+    except Exception:
+        return errors  # W004 already reports an unimportable seam
+    if normalizer is passthrough_normalize:
+        errors.append(checks.Error(
+            "STAPEL_RECORDINGS['AUDIO_ONLY_INGEST'] is on but NORMALIZER is "
+            "passthrough_normalize, which copies the upload through unchanged "
+            "— the stored object IS the container, video and all. Use "
+            "ffmpeg_normalize, or set AUDIO_ONLY_INGEST = False.",
+            id="stapel_recordings.E007",
+        ))
+    return errors
+
+
+@checks.register(checks.Tags.compatibility)
 def check_pipeline_stages(app_configs, **kwargs):
     """W: every stage named in PIPELINE should resolve in the registry; the
     NORMALIZER / PIPELINE_RESOLVER seams should be importable and callable."""

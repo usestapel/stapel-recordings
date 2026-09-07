@@ -25,6 +25,10 @@ prefix from at all.
 """
 from __future__ import annotations
 
+from stapel_core.django.api.errors import StapelServiceError
+
+from .errors import ERR_415_UNSUPPORTED_MEDIA
+
 #: Accept anything that is not positively identified as a dangerous
 #: non-media type. The default: closes the executable/archive/markup class
 #: without rejecting exotic-but-valid audio.
@@ -113,12 +117,17 @@ MEDIA = "media"
 DANGEROUS = "dangerous"
 
 
-class UnsupportedUploadContent(ValueError):
+class UnsupportedUploadContent(StapelServiceError, ValueError):
     """The stored object's leading bytes are not acceptable under the
-    configured content policy."""
+    configured content policy.
+
+    A :class:`~stapel_core.django.api.errors.StapelServiceError`: left to
+    propagate out of any DRF view, it answers ``415`` with
+    ``error.415.recording_unsupported_media``."""
 
     def __init__(self, label: str, policy: str):
-        super().__init__(f"upload content rejected: {label} (policy {policy})")
+        super().__init__(415, ERR_415_UNSUPPORTED_MEDIA)
+        self.args = (f"upload content rejected: {label} (policy {policy})",)
         self.label = label
         self.policy = policy
 

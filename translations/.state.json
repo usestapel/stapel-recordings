@@ -4,6 +4,14 @@
       "hash": "6e2b71d694da1f82",
       "origin": "llm"
     },
+    "error.400.recording_multipart_parts_invalid": {
+      "hash": "829daecf95669221",
+      "origin": "llm"
+    },
+    "error.400.recording_upload_size_invalid": {
+      "hash": "cc5f3cbc395e7fdf",
+      "origin": "llm"
+    },
     "error.401.share_passcode_required": {
       "hash": "6ce9ea3f1b954079",
       "origin": "llm"
@@ -45,7 +53,7 @@
       "origin": "llm"
     },
     "error.413.recording_too_large": {
-      "hash": "eca0b4b6e8a0895b",
+      "hash": "f8e714642bbd3e2a",
       "origin": "llm"
     },
     "error.415.recording_unsupported_media": {
@@ -74,6 +82,14 @@
       "hash": "6e2b71d694da1f82",
       "origin": "llm"
     },
+    "error.400.recording_multipart_parts_invalid": {
+      "hash": "829daecf95669221",
+      "origin": "llm"
+    },
+    "error.400.recording_upload_size_invalid": {
+      "hash": "cc5f3cbc395e7fdf",
+      "origin": "llm"
+    },
     "error.401.share_passcode_required": {
       "hash": "6ce9ea3f1b954079",
       "origin": "llm"
@@ -115,7 +131,7 @@
       "origin": "llm"
     },
     "error.413.recording_too_large": {
-      "hash": "eca0b4b6e8a0895b",
+      "hash": "f8e714642bbd3e2a",
       "origin": "llm"
     },
     "error.415.recording_unsupported_media": {

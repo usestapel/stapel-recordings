@@ -10,6 +10,7 @@ from .dto import (
     SharedRecordingDTO,
     ShareUnlockDTO,
     TranscriptSegmentDTO,
+    UploadLimitsDTO,
     UploadSessionDTO,
 )
 
@@ -22,6 +23,11 @@ class RecordingSerializer(StapelDataclassSerializer):
 class UploadSessionSerializer(StapelDataclassSerializer):
     class Meta:
         dataclass = UploadSessionDTO
+
+
+class UploadLimitsSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = UploadLimitsDTO
 
 
 class CreateRecordingResponseSerializer(StapelDataclassSerializer):

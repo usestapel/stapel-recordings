@@ -1,6 +1,6 @@
 {
  "_comment": "Hand-curated layer of docs/capabilities.json (capability-config.md §2 p.3). The emitter (stapel_recordings/_capabilities.py) merges this over the derived axes; an axis present in conf.py DEFAULTS but missing here (or vice versa) is a loud emission error. Keep business_label/summary in business language — they surface in CTO conversations, not in code. `surface_roots` + `surface` are the third section (stapel_tools.surface): the usage surface — the symbols a host or a sibling module is meant to CALL instead of writing its own. The roots are scopes, not lists, so every public module-level function in a rooted file MUST carry an intent line here or emission fails naming it. Deliberately NOT rooted: events.py (the driver emits the lifecycle Actions itself, inside the stage transaction — host code that emits them double-publishes a public event), normalize.py (implementations of the NORMALIZER seam, reached by dotted path, never called) and checks.py (Django check callbacks, invoked by the check framework).",
- "provides": "Recording lifecycle: audio/video upload (presigned single-PUT and multipart), storage, a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings.",
+ "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
  "requires": [
   {
    "module": "stapel-core",
@@ -42,7 +42,7 @@
   {
    "name": "NORMALIZER",
    "kind": "dotted_path",
-   "summary": "Swap the audio-normalization step: ffmpeg by default, a passthrough for environments without it, or a custom converter."
+   "summary": "Swap the audio-extraction step — the one that turns an uploaded container into the mono object this module keeps: ffmpeg by default, a passthrough for environments without it (which means nothing is extracted and the upload is stored whole), or a custom converter."
   },
   {
    "name": "SOURCE_TYPES",
@@ -103,6 +103,14 @@
    "instead_of": [
     "django.core.validators.FileExtensionValidator"
    ]
+  },
+  "accepted_upload_limit": {
+   "kind": "factory",
+   "intent": "The single source of the 413 line: the size this deployment will accept for one upload, which is MAX_CONTAINER_UPLOAD_BYTES while audio-only ingest really runs (the container is transport, deleted once its audio track is out) and MAX_UPLOAD_BYTES otherwise. Read it instead of either setting — it fails safe on its own when a host drops the convert stage or points NORMALIZER at the passthrough, so the accepted size cannot outlive the promise that made it large."
+  },
+  "upload_limits": {
+   "kind": "factory",
+   "intent": "The upload ceilings as the running settings resolve them, plus what will be KEPT of an accepted file: max_upload_bytes (what error.413.recording_too_large enforces — the container ceiling while audio_only_ingest is on, the storage ceiling otherwise), max_stored_bytes, the stored_audio_* profile, stored_bytes_per_hour, the multipart part size and cap, and the extension allowlist. Served by GET /recordings/api/v1/recordings/upload-limits; call this rather than reading STAPEL_RECORDINGS in a host view, so a frontend refuses an oversized file before the first byte, names the real limit, and can say what an hour of recording costs."
   },
   "check_workspace_membership": {
    "kind": "predicate",

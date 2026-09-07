@@ -9,7 +9,13 @@ ERR_404_NOT_FOUND = "error.404.recording_not_found"
 ERR_400_INVALID_STATE = "error.400.recording_invalid_state"
 ERR_403_WORKSPACE_FORBIDDEN = "error.403.recording_workspace_forbidden"
 ERR_409_INVALID_STATE = "error.409.recording_invalid_state"
+# Upload size, judged before any storage state exists. 413 is "this file",
+# and carries the two numbers a client needs to say so in its own words;
+# 400 is "not a size at all" (missing when required, non-numeric, zero or
+# negative) and still carries the limit, so the message never has to guess.
 ERR_413_TOO_LARGE = "error.413.recording_too_large"
+ERR_400_UPLOAD_SIZE_INVALID = "error.400.recording_upload_size_invalid"
+ERR_400_MULTIPART_PARTS_INVALID = "error.400.recording_multipart_parts_invalid"
 ERR_415_UNSUPPORTED_MEDIA = "error.415.recording_unsupported_media"
 # Share links. Unknown / revoked / expired / deleted all answer the same
 # 404: telling them apart tells a probing client which guessed links exist.
@@ -48,7 +54,9 @@ STAPEL_RECORDINGS_ERRORS = {
     ERR_400_INVALID_STATE: "Recording is not in a valid state for this action",
     ERR_403_WORKSPACE_FORBIDDEN: "You are not a member of this workspace",
     ERR_409_INVALID_STATE: "Recording is not in a valid state for this action",
-    ERR_413_TOO_LARGE: "Upload exceeds the maximum allowed size",
+    ERR_413_TOO_LARGE: "Upload of {size} bytes exceeds the maximum allowed size of {limit} bytes",
+    ERR_400_UPLOAD_SIZE_INVALID: "Upload size must be a positive number of bytes, at most {limit}",
+    ERR_400_MULTIPART_PARTS_INVALID: "Multipart part list is malformed or exceeds {max_parts} parts",
     ERR_415_UNSUPPORTED_MEDIA: "Upload file type is not supported",
     ERR_404_SHARE_NOT_FOUND: "Share link not found",
     ERR_401_SHARE_PASSCODE_REQUIRED: "This share link requires a passcode",
@@ -83,6 +91,8 @@ __all__ = [
     "ERR_403_WORKSPACE_FORBIDDEN",
     "ERR_409_INVALID_STATE",
     "ERR_413_TOO_LARGE",
+    "ERR_400_UPLOAD_SIZE_INVALID",
+    "ERR_400_MULTIPART_PARTS_INVALID",
     "ERR_415_UNSUPPORTED_MEDIA",
     "ERR_404_SHARE_NOT_FOUND",
     "ERR_401_SHARE_PASSCODE_REQUIRED",

@@ -33,8 +33,41 @@ for the keys marked `no_env`, which skip the environment step entirely (see
 | UPLOAD_SESSION_TTL_SECONDS | env | single-shot upload session lifetime. | no | 900 |
 | MULTIPART_SESSION_TTL_SECONDS | env | multipart upload session lifetime. | no | 86400 |
 | MULTIPART_PART_SIZE | env | multipart part size (bytes). | no | 10485760 |
-| MAX_UPLOAD_BYTES | env | hard cap on an upload's total size. | no | 2147483648 |
+| MAX_CONTAINER_UPLOAD_BYTES | env | ceiling on what we **receive** while audio-only ingest runs (the container is discarded after extraction, so this bounds bandwidth and ffmpeg time). | no | 17179869184 |
+| MAX_STORED_BYTES | env | ceiling on what we **keep** — enforced on the extracted audio by the convert stage (≈47 h at the Opus profile). | no | 536870912 |
+| MAX_UPLOAD_BYTES | env | ceiling when nothing is extracted (`AUDIO_ONLY_INGEST` off), where received and stored are the same object. | no | 2147483648 |
 | UPLOAD_EXTENSION_ALLOWLIST | env | accepted upload file extensions (lower-case, no dot). | no | mp3, m4a, wav, ogg, … (audio/video) |
+
+`services.accepted_upload_limit()` picks between `MAX_CONTAINER_UPLOAD_BYTES`
+and `MAX_UPLOAD_BYTES` and is the single source of the `413` line and of
+`GET /recordings/api/v1/recordings/upload-limits`. Never read either setting
+directly for that: the helper falls back to the smaller number on its own
+when a deployment stops extracting (no `convert` stage, or a passthrough
+NORMALIZER), so the raised ceiling cannot outlive the promise that the
+container is thrown away. Check `stapel_recordings.E005` refuses a part
+budget that cannot cover the accepted ceiling.
+
+### Audio-only ingest — what is KEPT (source: env)
+
+This module stores audio. A container is transport: its audio track is
+extracted, downmixed to mono and stored, and the container is deleted —
+every upload, whatever its size.
+
+| Key | Source | Purpose | Required | Default |
+|-----|--------|---------|----------|---------|
+| AUDIO_ONLY_INGEST | env | keep only the extracted audio and delete the uploaded container. **Not read from the environment** (`no_env`). Off is a documented exception: the upload becomes the stored object and the accepted ceiling drops to MAX_UPLOAD_BYTES. | no | true |
+| AUDIO_CHANNELS | env | channels of the stored object. Mono unless a host's provider separates speakers BY CHANNEL. | no | 1 |
+| AUDIO_SAMPLE_RATE | env | sample rate of the stored object (Hz). | no | 16000 |
+| AUDIO_CODEC | env | `opus` (Ogg/Opus, ~10.8 MB/hour) or `wav` (16-bit PCM, ~115 MB/hour). | no | opus |
+| AUDIO_BITRATE_BPS | env | Opus target bitrate; ignored for `wav`. | no | 24000 |
+
+Checks: `stapel_recordings.E006` fails the deploy when `NORMALIZER` is
+`ffmpeg_normalize` and ffmpeg/ffprobe are not on PATH, or the build has no
+`libopus` for `AUDIO_CODEC = "opus"`. `stapel_recordings.E007` fails it when
+`AUDIO_ONLY_INGEST` is on but nothing extracts (`convert` missing from
+`PIPELINE`, or a passthrough NORMALIZER). `python manage.py
+recordings_audio_census` reports, read-only, what containers are still
+stored and what they would weigh as mono audio.
 
 ### Transcription / summarization / watchdog (source: env)
 

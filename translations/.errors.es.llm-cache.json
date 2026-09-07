@@ -3,6 +3,14 @@
     "hash": "6e2b71d694da1f82",
     "text": "La grabación no está en un estado válido para esta acción"
   },
+  "error.400.recording_multipart_parts_invalid": {
+    "hash": "829daecf95669221",
+    "text": "La lista de partes de la subida multiparte es incorrecta o supera las {max_parts} partes"
+  },
+  "error.400.recording_upload_size_invalid": {
+    "hash": "cc5f3cbc395e7fdf",
+    "text": "El tamaño de la subida debe ser un número positivo de bytes, como máximo {limit}"
+  },
   "error.401.share_passcode_required": {
     "hash": "6ce9ea3f1b954079",
     "text": "Este enlace de acceso requiere un código"
@@ -44,8 +52,8 @@
     "text": "Esta grabación todavía no tiene transcripción que resumir"
   },
   "error.413.recording_too_large": {
-    "hash": "eca0b4b6e8a0895b",
-    "text": "La subida supera el tamaño máximo permitido"
+    "hash": "f8e714642bbd3e2a",
+    "text": "La subida de {size} bytes supera el tamaño máximo permitido de {limit} bytes"
   },
   "error.415.recording_unsupported_media": {
     "hash": "461ca9b8c08ec263",
