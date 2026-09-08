@@ -62,6 +62,26 @@ def test_guest_cannot_list(guest_client):
     assert guest_client.get("/recordings/api/v1/recordings").status_code == 403
 
 
+def test_the_guest_refusal_is_the_fleet_envelope(guest_client):
+    """The refusal body, not only its status code.
+
+    ``IsNotAnonymousUser`` is a permission class: DRF raises this refusal and
+    no line of ``views.py`` builds the body, so the only seam that dresses it
+    is ``REST_FRAMEWORK["EXCEPTION_HANDLER"]``. Until this harness carried
+    that key DRF's own handler answered ``{"detail": "..."}`` — a shape a
+    frontend reading ``localizable_error`` cannot translate — and every test
+    in this file passed regardless, because a status code is the same either
+    way. ``stapel_core.error_envelope.W001`` reports the settings hole; this
+    asserts the behaviour it costs.
+    """
+    resp = guest_client.get("/recordings/api/v1/recordings")
+
+    assert resp.status_code == 403, resp.content
+    assert "localizable_error" in resp.data, resp.data
+    assert resp.data["localizable_error"].startswith("error."), resp.data
+    assert set(resp.data) >= {"localizable_error", "error", "params"}, resp.data
+
+
 def test_guest_cannot_read_a_recording(guest_client, make_recording):
     recording = make_recording()
     resp = guest_client.get(f"/recordings/api/v1/recordings/{recording.id}")

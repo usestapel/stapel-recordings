@@ -4,8 +4,9 @@ def pytest_configure(config):
         # Single source of truth for this block lives in _codegen_settings.py
         # so the test harness and the contract-emission harness (make
         # contract) can never drift (contract-pipeline.md §3). Tests keep the
-        # bare mount + no production REST_FRAMEWORK, exactly as before the
-        # extraction. The one addition vs. the pre-extraction conftest:
+        # bare mount + no production REST_FRAMEWORK (only the
+        # EXCEPTION_HANDLER key, which every settings module owes the fleet
+        # envelope), exactly as before the extraction. The one addition vs. the pre-extraction conftest:
         # INSTALLED_APPS now also carries drf_spectacular + stapel_core's
         # CommonDjangoConfig (needed for the contract harness's management
         # commands) — verified harmless for the test suite (all pre-existing

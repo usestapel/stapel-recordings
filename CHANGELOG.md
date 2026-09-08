@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.22.1] — 2026-09-08
+
+### Fixed — the refusals no view raises answer the fleet envelope
+
+Patch, no API change, no schema change, no dependency change. One shipped file
+moves: `_codegen_settings.py`, whose `contract=False` branch returned
+`rest_framework = None` and therefore built settings with **no**
+`REST_FRAMEWORK` dict at all — and that branch is what `conftest.py` runs the
+whole suite on.
+
+A settings module that writes its own `REST_FRAMEWORK` must carry
+`EXCEPTION_HANDLER`, or DRF falls back to `rest_framework.views.exception_handler`
+and every refusal **no view code raises** — 401/403 from authenticators and
+permission classes, 404 from `get_object_or_404`, 405/406/415 from dispatch,
+429 from a throttle — answers a bare `{"detail": …}` instead of
+`{localizable_error, error, params, error_language}`.
+`stapel_core.error_envelope.W001` (stapel-core 0.61.1) reports it.
+
+`tests/test_guest_surface.py` is where it showed: five tests fire a guest
+session at `IsNotAnonymousUser`-gated verbs and assert `403` — a status code
+that is identical with or without the handler, so the whole file passed while
+the body was DRF's. `test_the_guest_refusal_is_the_fleet_envelope` now asserts
+the body, and fails on the previous harness with
+`{'detail': 'You do not have permission to perform this action.'}`.
+
+No pre-existing test changed behaviour.
+
+The key is read off `stapel_core.testing.BASE_REST_FRAMEWORK` rather than
+re-typed, and it is the only key set — DRF's own defaults stay where the
+harness had them, so no permission, renderer or authentication behaviour
+changes. The `contract=True` branch is untouched and the emitted contracts are
+byte-identical.
+
 All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
