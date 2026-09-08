@@ -293,7 +293,7 @@ def check_vector_app_requirements(app_configs, **kwargs):
     Django does say so itself (``postgres.E005``), but it says it about a
     model class — which reads like a library bug rather than a missing
     line in the host's INSTALLED_APPS, and it only surfaces when the host
-    boots (`manage.py migrate` refused to run on the ironmemo stand,
+    boots (`manage.py migrate` refused to run on a client stand,
     2026-07-25, after the documented two install steps were followed to
     the letter). This check names the fix in the module's own vocabulary,
     and the install steps in ``vector/__init__.py`` now list the app.

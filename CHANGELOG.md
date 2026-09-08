@@ -1364,7 +1364,7 @@ All four views now carry `IsNotAnonymousUser`; an anonymous session gets
 
 No consumer is affected: nothing in the fleet calls this module's HTTP
 surface under a guest session, and the one product that mounts it
-(meettoday) had already closed its own six recording views the same way.
+(a meeting app) had already closed its own six recording views the same way.
 
 Minor per this project's pre-1.0 rule (minor = breaking): for a deployment
 with `AUTH_ANONYMOUS` on this is a behaviour change on a live surface, and it
@@ -1448,7 +1448,7 @@ shut for *anonymous* rather than for *authenticated*.
   which Django only builds when `django.contrib.postgres` is in
   INSTALLED_APPS — the two-step install doc never said so, so a host that
   followed it to the letter died at container boot with Django's own
-  `postgres.E005` pointed at a model class (ironmemo stand, 2026-07-25).
+  `postgres.E005` pointed at a model class (a client stand, 2026-07-25).
   The check names the fix in this module's vocabulary, the install steps
   in `vector/__init__.py` list both apps, and the postgres test harness
   now installs `django.contrib.postgres` the way a host must — the

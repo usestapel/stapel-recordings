@@ -48,7 +48,7 @@ class Command(BaseCommand):
             # stand). Django reuses the dead handle and EVERY later pass
             # raises "server closed the connection unexpectedly" — the
             # watchdog is then permanently down while looking alive, paging
-            # on each tick (ironmemo stand, 2026-07-26). This is the same
+            # on each tick (a client stand, 2026-07-26). This is the same
             # line Celery/Channels put at the top of their loops.
             close_old_connections()
             try:
