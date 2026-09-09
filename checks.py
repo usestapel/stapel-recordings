@@ -498,3 +498,71 @@ def check_purge_is_scheduled(app_configs, **kwargs):
         ),
         id="stapel_recordings.W010",
     )]
+
+
+#: The stapel-agent release whose ``llm.transcribe`` accepts
+#: ``transcript_put_url`` and answers with ``transcript_ref``. Separate
+#: from MIN_AGENT_VERSION because it gates one optional behaviour, not the
+#: whole delegation.
+MIN_AGENT_VERSION_FOR_TRANSCRIPT_HANDOFF = (0, 22, 0)
+
+
+@checks.register(checks.Tags.compatibility)
+def check_agent_version_for_transcript_handoff(app_configs, **kwargs):
+    """W011: an in-process stapel-agent too old for the transcript handoff.
+
+    With ``TRANSCRIPT_HANDOFF`` on, the transcribe payload carries
+    ``transcript_put_url``. The ``llm.*`` schemas are
+    additionalProperties=false, so an older agent does not ignore it — it
+    rejects the whole call, and every transcription fails.
+
+    Same limits as W009: answerable only where the agent is importable. In
+    a split deployment the floor is a deploy-order fact — upgrade the agent
+    service BEFORE the recordings service — and it lives in the changelog.
+    """
+    from .conf import recordings_settings
+
+    value = recordings_settings.TRANSCRIPT_HANDOFF
+    if isinstance(value, str) and value.lower() == "auto":
+        try:
+            from .storage import get_storage
+
+            enabled = bool(getattr(get_storage(), "signs_put_urls", False))
+        except Exception:
+            return []  # a storage misconfiguration is W00x's to report
+    else:
+        enabled = bool(value)
+    if not enabled:
+        return []
+
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        raw = version("stapel-agent")
+    except PackageNotFoundError:
+        return []  # it runs elsewhere — deploy order is the changelog's job
+
+    try:
+        found = tuple(int(part) for part in raw.split(".")[:3])
+    except ValueError:
+        return []
+
+    if found >= MIN_AGENT_VERSION_FOR_TRANSCRIPT_HANDOFF:
+        return []
+
+    wanted = ".".join(str(n) for n in MIN_AGENT_VERSION_FOR_TRANSCRIPT_HANDOFF)
+    return [checks.Warning(
+        f"stapel-agent {raw} is installed and STAPEL_RECORDINGS"
+        f"['TRANSCRIPT_HANDOFF'] is on, so llm.transcribe payloads carry "
+        f"'transcript_put_url' — a field that only exists from stapel-agent "
+        f"{wanted}. The llm.* schemas set additionalProperties=false, so "
+        f"every transcription fails schema validation.",
+        hint=(
+            f"Upgrade to stapel-agent>={wanted}, or set "
+            "STAPEL_RECORDINGS['TRANSCRIPT_HANDOFF'] = False to keep the "
+            "transcript inline (only safe where no message broker sits "
+            "between the two services — a long meeting's transcript does "
+            "not fit one broker message)."
+        ),
+        id="stapel_recordings.W011",
+    )]

@@ -52,6 +52,7 @@ boot when it can see the agent's version.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -363,10 +364,16 @@ class TranscribeStage(Stage):
     name = "transcribe"
     status = RecordingStatus.TRANSCRIBING
 
-    def run(self, recording, ctx):
-        if recording.segments.exists():
-            return ctx  # idempotent: already transcribed
+    def build_payload(self, recording) -> dict:
+        """The ``llm.transcribe`` payload for *recording*.
 
+        A HOOK, not an implementation detail. Hosts that need one more
+        field (vocabulary biasing is the live example) used to copy this
+        body into a subclass and keep the copy in lockstep by hand — which
+        is how a fix to the module's stage silently misses the host's
+        pipeline. Override or extend this instead; ``run`` and ``resume``
+        stay the module's.
+        """
         storage_key = recording.normalized_storage_key or recording.file_storage_key
         if not storage_key:
             raise StageFatal("no_storage_key")
@@ -377,13 +384,9 @@ class TranscribeStage(Stage):
         # literal: it has to outlive TRANSCRIBE_TIMEOUT_SECONDS (a provider
         # that starts late must still be able to fetch). W007 warns if it
         # does not.
-        audio_url = storage.presigned_get_url(
-            storage_key,
-            expires_seconds=int(recordings_settings.TRANSCRIBE_AUDIO_URL_TTL_SECONDS),
-        )
-
+        ttl = int(recordings_settings.TRANSCRIBE_AUDIO_URL_TTL_SECONDS)
         payload = {
-            "audio_url": audio_url,
+            "audio_url": storage.presigned_get_url(storage_key, expires_seconds=ttl),
             "diarization": bool(recording.diarization_enabled),
             "timeout_seconds": int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
             **identity_payload(recording),
@@ -393,6 +396,32 @@ class TranscribeStage(Stage):
         provider = recording.provider_override
         if provider:
             payload["provider"] = provider
+
+        # THE ANSWER COMES BACK BY REFERENCE TOO. The audio has always
+        # travelled as a URL; the transcript travelled as bulk, and a 2h28m
+        # meeting's transcript is 8.6 MB against a broker that carries 8
+        # (owner's stand, 2026-09-09: two recordings of the same meeting
+        # lost). So the agent is handed a presigned PUT and writes the
+        # transcript into this recording's own prefix, where the pipeline
+        # was going to keep it anyway.
+        #
+        # Asked for whenever the storage backend can sign a PUT — a
+        # deployment fact, read once, never a judgement about this
+        # recording's size. A backend that cannot sign is a backend with no
+        # broker in front of it (see storage.signs_put_urls).
+        if transcript_handoff_enabled():
+            key = _key(recording, "transcript.raw.json")
+            payload["transcript_put_url"] = storage.presigned_put_url(
+                key, expires_seconds=ttl, content_type="application/json"
+            )
+            payload["transcript_key"] = key
+        return payload
+
+    def run(self, recording, ctx):
+        if recording.segments.exists():
+            return ctx  # idempotent: already transcribed
+
+        payload = self.build_payload(recording)
 
         # A TASK, NOT A SYNCHRONOUS CALL. Transcription takes minutes, or
         # arbitrarily longer under busy workers; holding a worker to wait
@@ -420,7 +449,7 @@ class TranscribeStage(Stage):
 
         _persist_transcript(
             recording,
-            result.get("transcript") or {},
+            transcript_from_result(result),
             provider_used=result.get("provider_used"),
             fallback_used=bool(result.get("fallback_used")),
         )
@@ -885,6 +914,67 @@ def _fail_job(job, reason: str, detail=None) -> None:
     job.save(update_fields=["status", "error", "completed_at"])
 
 
+def transcript_handoff_enabled() -> bool:
+    """Whether ``llm.transcribe`` is asked to write the transcript to storage.
+
+    ``TRANSCRIPT_HANDOFF`` is "auto" (default), True or False. "auto" means
+    "whenever the storage backend can actually sign a PUT" — asking for a
+    handoff a backend cannot honour would hand the agent a URL that reads
+    like an upload target and is not one (``DjangoStorageBackend`` returns
+    the SERVED url; see ``storage.signs_put_urls``).
+
+    That is not the size test in disguise. It is read from configuration,
+    the same answer for every recording in the deployment, and the
+    deployments it turns off are exactly the ones with no broker between
+    the two services and therefore no ceiling to hit.
+    """
+    value = recordings_settings.TRANSCRIPT_HANDOFF
+    if isinstance(value, str) and value.lower() == "auto":
+        return bool(getattr(get_storage(), "signs_put_urls", False))
+    return bool(value)
+
+
+def transcript_from_result(result: dict) -> dict:
+    """The transcript dict out of an ``llm.transcribe`` result, either shape.
+
+    ``transcript_ref`` (the agent wrote it to our own bucket) or
+    ``transcript`` (inline). ONE function so that every reader — this
+    module's stage and any host stage that adds a field to the payload —
+    gets both shapes from the same place instead of growing its own branch.
+    """
+    ref = result.get("transcript_ref")
+    if not isinstance(ref, dict):
+        return result.get("transcript") or {}
+
+    key = str(ref.get("key") or "")
+    if not key:
+        raise StageRetryable(
+            "transcript_ref_incomplete",
+            "llm.transcribe answered with a reference carrying no key",
+        )
+    try:
+        data = get_storage().get_bytes(key)
+    except Exception as exc:
+        raise StageRetryable("transcript_fetch_failed", f"{key}: {exc}") from exc
+
+    expected = ref.get("bytes")
+    if isinstance(expected, int) and len(data) != expected:
+        # A short read is the failure this shape could plausibly hide, and
+        # it would surface as a recording missing its last hour rather than
+        # as an error. The producer already counted the bytes; check them.
+        raise StageRetryable(
+            "transcript_truncated",
+            f"{key}: read {len(data)} bytes, the agent wrote {expected}",
+        )
+    try:
+        transcript = json.loads(data.decode("utf-8"))
+    except Exception as exc:
+        raise StageRetryable("transcript_unreadable", f"{key}: {exc}") from exc
+    if not isinstance(transcript, dict):
+        raise StageRetryable("transcript_unreadable", f"{key}: not a JSON object")
+    return transcript
+
+
 def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_used) -> None:
     """Write Speaker/Segment rows from an ``llm.transcribe`` result dict and
     denormalize counters onto the Recording."""
@@ -948,9 +1038,33 @@ def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_
         ])
 
 
+#: The safety net's cut rule, kept numerically identical to
+#: ``stapel_agent.stt.segmentation`` (whose defaults were derived from
+#: 94 608 real word gaps: p95 = 0.60s, p97 = 0.88s). Duplicated rather than
+#: imported because recordings does not depend on the agent — the two talk
+#: over comm — and a transcript that arrives with no utterances must not be
+#: segmented by a different rule than one that arrives with them.
+UTTERANCE_GAP_SECONDS = 0.65
+UTTERANCE_MAX_SECONDS = 30.0
+UTTERANCE_MAX_CHARS = 500
+UTTERANCE_MIN_SECONDS = 1.5
+UTTERANCE_MIN_WORDS = 4
+SENTENCE_ENDINGS = (".", "?", "!", "\u2026", "\u3002", "\uff1f", "\uff01", "\uff0e")
+
+
 def _utterances_from_words(words: list[dict]) -> list[dict]:
-    """Group consecutive same-speaker words into utterance dicts (for
-    providers that ship word-level output only)."""
+    """Group words into utterance dicts on speaker, pause, sentence and size.
+
+    The fallback for a transcript that carries words but no utterances —
+    which is what every provider sends with diarization off. It used to cut
+    on the speaker changing and nothing else, so exactly that case produced
+    ONE utterance covering the whole meeting: on the owner's stand, 24 of 83
+    completed recordings render as a single segment, one of them a ten-minute
+    meeting as a single 8592-character turn.
+
+    A segment is what a timestamp anchors to, so this is also what decides
+    whether a citation can point anywhere inside a long recording.
+    """
     if not words:
         return []
     grouped: list[dict] = []
@@ -961,8 +1075,11 @@ def _utterances_from_words(words: list[dict]) -> list[dict]:
     buf_speaker = words[0].get("speaker")
 
     def flush():
+        text = " ".join(buf_text).strip()
+        if not text:
+            return
         grouped.append({
-            "text": " ".join(buf_text).strip(),
+            "text": text,
             "start": buf_start,
             "end": buf_end,
             "speaker": buf_speaker,
@@ -970,11 +1087,23 @@ def _utterances_from_words(words: list[dict]) -> list[dict]:
         })
 
     for i, w in enumerate(words):
-        if w.get("speaker") != buf_speaker and buf_text:
-            flush()
-            buf_text, buf_idx = [], []
-            buf_start = w.get("start") or 0
-            buf_speaker = w.get("speaker")
+        start = float(w.get("start") or 0)
+        if buf_text:
+            span = float(buf_end) - float(buf_start)
+            chars = sum(len(t) + 1 for t in buf_text)
+            cut = w.get("speaker") != buf_speaker
+            if not cut and (span >= UTTERANCE_MAX_SECONDS or chars >= UTTERANCE_MAX_CHARS):
+                cut = True
+            if not cut and (span >= UTTERANCE_MIN_SECONDS or len(buf_text) >= UTTERANCE_MIN_WORDS):
+                gap = start - float(words[i - 1].get("end") or 0)
+                prev_text = (words[i - 1].get("text") or "").rstrip()
+                if gap >= UTTERANCE_GAP_SECONDS or prev_text.endswith(SENTENCE_ENDINGS):
+                    cut = True
+            if cut:
+                flush()
+                buf_text, buf_idx = [], []
+                buf_start = start
+                buf_speaker = w.get("speaker")
         buf_text.append(w.get("text", ""))
         buf_idx.append(i)
         buf_end = w.get("end") or 0
@@ -1074,6 +1203,8 @@ def _as_stage(name: str, obj) -> Stage:
 
 __all__ = [
     "Stage",
+    "transcript_handoff_enabled",
+    "transcript_from_result",
     "StageError",
     "StageRetryable",
     "StageFatal",

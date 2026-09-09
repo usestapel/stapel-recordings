@@ -22,6 +22,11 @@ class FakeStorage(RecordingStorage):
     # minted with, so a test can read back what the caller asked for.
     signs_get_urls = True
 
+    # And it can take a PUT: the transcribe stage asks for a transcript
+    # handoff only against a backend that signs one, so the fake has to say
+    # yes for the pipeline tests to exercise the production path.
+    signs_put_urls = True
+
     def presigned_put_url(self, key, *, expires_seconds=900, content_type=None):
         return f"memory://put/{key}"
 

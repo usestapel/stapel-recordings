@@ -391,6 +391,28 @@ DEFAULTS = {
         # behind other work) must still be able to fetch. W007 warns if it
         # does not.
         "TRANSCRIBE_AUDIO_URL_TTL_SECONDS": 60 * 60,
+        # Does the transcribe stage hand ``llm.transcribe`` a presigned PUT
+        # and take back a KEY instead of the transcript body?
+        #
+        # "auto" (default) = whenever the storage backend can sign a PUT
+        # (``RecordingStorage.signs_put_urls``). True / False force it.
+        #
+        # The audio has always travelled to the agent as a URL; the answer
+        # travelled as bulk, and a 2h28m meeting's transcript is 8.6 MB
+        # against a broker that carries 8 MiB — measured on a client stand
+        # 2026-09-09, two recordings of one meeting lost. So the reply
+        # travels as a reference into this recording's own prefix.
+        #
+        # "auto" resolves once from configuration, never per recording: a
+        # rule that depended on how big THIS transcript came out would be
+        # the same cliff with a longer fuse. The deployments it leaves off
+        # are the ones whose backend cannot sign — which are the ones with
+        # no broker between the two services, and so no ceiling to hit.
+        #
+        # Needs stapel-agent >= 0.22.0 (the release that accepts
+        # ``transcript_put_url``); older agents REJECT the payload, because
+        # the llm.* schemas are additionalProperties:false. checks.W009.
+        "TRANSCRIPT_HANDOFF": "auto",
 
         # Extra ``Recording.metadata`` keys the HOST reserves for server
         # decisions (a billing waiver, an entitlement stamp). Rejected in

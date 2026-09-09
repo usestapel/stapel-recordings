@@ -51,6 +51,20 @@ class RecordingStorage(ABC):
     #: it is an anonymous bucket with extra steps.
     signs_get_urls: bool = False
 
+    #: Does :meth:`presigned_put_url` return a URL another service can
+    #: actually WRITE to? Same question as ``signs_get_urls``, asked of the
+    #: other direction, and it has its own answer: the Django backend's
+    #: "presigned put" is the SERVED url, which a writer cannot use.
+    #:
+    #: The pipeline reads it to decide whether ``llm.transcribe`` is asked
+    #: to write the transcript to storage and answer with a key instead of
+    #: 8 MB of JSON on the broker (``stages.transcript_handoff_enabled``).
+    #: Declared per backend, defaulted to False, because the honest answer
+    #: for a backend that cannot sign is "no" — and a handoff URL that
+    #: silently is not writable would fail a transcription that had already
+    #: been paid for.
+    signs_put_urls: bool = False
+
     # ── URLs ─────────────────────────────────────────────────────────
     @abstractmethod
     def presigned_put_url(self, key: str, *, expires_seconds: int = 900, content_type: Optional[str] = None) -> str: ...
@@ -132,6 +146,13 @@ class DjangoStorageBackend(RecordingStorage):
     #: ``S3Boto3Storage`` with ``querystring_auth=True``) says so with
     #: ``STAPEL_RECORDINGS["STORAGE_SIGNS_GET_URLS"] = True``.
     signs_get_urls = False
+
+    #: ``presigned_put_url`` below returns ``storage.url(key)`` — a READ
+    #: url. Nothing can PUT to it, so this backend says no and the pipeline
+    #: keeps the transcript inline. Which is right for it: this backend is
+    #: the zero-infrastructure one, and a deployment on it has no broker
+    #: between the services and therefore no message ceiling to hit.
+    signs_put_urls = False
 
     def _storage(self):
         from django.core.files.storage import default_storage
@@ -233,6 +254,10 @@ class S3Backend(RecordingStorage):
     #: the URL carries its own deadline, so the bucket itself can (and
     #: should) stay private.
     signs_get_urls = True
+
+    #: SigV4 signs a PUT the same way it signs a GET, and multipart upload
+    #: already depends on it (``presigned_upload_part_url``).
+    signs_put_urls = True
 
     MULTIPART_PART_SIZE = 10 * 1024 * 1024
 

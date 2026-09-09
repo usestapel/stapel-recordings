@@ -86,10 +86,13 @@ CANONICAL_PREFIX = "/recordings/api/v1/"
 # store_summary + summary_from_result) pushed past THAT one, and to 7000
 # once 0.19.0's run identity (pipeline.run_identity) landed the artifact at
 # 6488/6500 — on the ceiling, where the next intent line would fail the
-# gate for having something to say. Must match
-# the Makefile — if they drift, the gate measures the wrong number.
+# gate for having something to say. And to 8000 once the transcript-handoff
+# surface (transcript_handoff_enabled / transcript_from_result) landed the
+# artifact at 6994/7000 — the same ceiling, hit again. Must match
+# the Makefile — if they drift, the gate measures the wrong number, which
+# is what had happened here: the Makefile said 8000 while this said 7000.
 ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
-LLMS_TXT_BUDGET = "7000"
+LLMS_TXT_BUDGET = "8000"
 
 
 def _emit(out_dir: Path) -> None:

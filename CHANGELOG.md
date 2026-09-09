@@ -1,5 +1,81 @@
 # Changelog
 
+## [0.23.0] — 2026-09-09
+
+### Fixed — a meeting past ~2h28m was dropped at the transcribe stage
+
+`llm.transcribe` answered with the whole transcript inline, and a long
+meeting's transcript does not fit one broker message. Measured on a client
+stand: **8 647 617 bytes against a NATS `max_payload` of 8 388 608**, the
+reply refused, the recording parked in the DLQ at `transcribe`. Twice for
+the same meeting, because the user uploaded it again.
+
+The audio had always travelled to the agent as a presigned GET. The answer
+now travels the same way.
+
+* **`TranscribeStage.build_payload`** mints a presigned PUT for
+  `<prefix>/<workspace>/<recording>/transcript.raw.json` and sends it as
+  `transcript_put_url` + `transcript_key`; `resume` reads the object back
+  through the STORAGE seam. On a real broker at 8 MiB the reply went from
+  8 777 687 bytes to **550**.
+* **`build_payload` is a HOOK.** Hosts that add a field (vocabulary
+  biasing is the live example) used to copy the payload body into a
+  subclass and keep the copy in lockstep by hand — which is how a fix to
+  this stage silently misses a host's pipeline. Override or extend
+  `build_payload`; `run` and `resume` stay the module's.
+* **`transcript_from_result`** turns either answer shape — a reference or
+  an inline transcript — into the transcript dict, in ONE place, so no
+  caller grows a branch. A short read against the reference's byte count
+  is refused as `transcript_truncated` rather than persisted: that is the
+  failure this shape could otherwise hide, and it would surface as a
+  recording missing its last hour.
+* **`TRANSCRIPT_HANDOFF`** — `"auto"` (default), True or False. "auto"
+  asks the storage backend (`RecordingStorage.signs_put_urls`, new, True
+  on `S3Backend`), because a backend that cannot sign a PUT would be
+  handed a URL that reads like an upload target and is not one. Resolved
+  once from configuration, never per recording — a rule that depended on
+  how big a transcript came out would be the same cliff with a longer
+  fuse. The deployments it leaves off are those with no broker between the
+  services, and so no ceiling to hit.
+
+**TWO ARTIFACTS, ONE WRITER EACH.** `transcript.raw.json` is the agent's
+provider-shaped `NormalizedTranscript` (seconds, `words`/`utterances`,
+`raw`) and exists to get the answer off the wire. `transcript_storage_key`
+still points at `transcript.json`, the **UnifiedTranscript** (schema 1.0,
+`start_ms`/`end_ms`, `speaker_id`, QA and engine meta, content hash) that
+`MergeStage` builds from the persisted Segment/Speaker rows and the API
+serves. They are different schemas for different readers, so MergeStage's
+write is **not** redundant and is unchanged.
+
+**Floor: stapel-agent >= 0.22.0.** The `llm.*` schemas are
+`additionalProperties: false`, so an older agent REJECTS a payload carrying
+`transcript_put_url` — `checks.W011` says so at boot where it can see the
+version, and in a split deployment **the agent service must be upgraded
+first**.
+
+### Fixed — a transcript with no speaker labels became ONE segment
+
+`_utterances_from_words` — the fallback that builds segments when
+`llm.transcribe` returns words but no utterances, which is what every
+provider sends with diarization off — cut on the speaker changing and
+nothing else. With no speaker ids the comparison is never true, so the
+whole recording became one segment. On the same stand, **24 of 83
+completed recordings render as a single segment and 7 as none**; one
+ten-minute meeting is a single 8592-character turn.
+
+It now cuts on a **0.65 s** pause, sentence-ending punctuation, and
+unconditionally at **30 s / 500 characters** — the same numbers as
+`stapel_agent.stt.segmentation`, derived from 94 608 real word gaps, and
+asserted equal by a test. Duplicated rather than imported because this
+module does not depend on the agent; a transcript that arrives without
+utterances must not be cut by a different rule than one that arrives with
+them.
+
+A segment is what a timestamp anchors to, so this is also what decides
+whether a citation can point anywhere inside a long recording.
+
+**Existing recordings are not rewritten.**
+
 ## [0.22.1] — 2026-09-08
 
 ### Fixed — the refusals no view raises answer the fleet envelope

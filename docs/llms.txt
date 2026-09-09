@@ -1,8 +1,8 @@
-# stapel-recordings 0.22.1
+# stapel-recordings 0.23.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 42 · extension points 7 · operations 12 · error codes 61.
+Contract: axes 1 · surface 44 · extension points 7 · operations 12 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -56,6 +56,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Turn a gdpr (subject_type, subject_key) pair into the recordings this module owns about that subject — the one place the four subject vocabularies are resolved (owner, workspace, meeting-or-metadata-link, id). Returns an empty queryset for a key that addresses nothing rather than raising, because an owner that cannot find a subject owns nothing about it and a zero-count receipt is the honest answer.
 - summary_from_result — stapel_recordings.stages.summary_from_result
   Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure.
+- transcript_handoff_enabled — stapel_recordings.stages.transcript_handoff_enabled
+  Whether this deployment asks llm.transcribe to WRITE the transcript to storage and answer with a key instead of the body. Reach for it when a host stage builds its own transcribe payload: 'auto' (default) answers from the storage backend's signs_put_urls, so the question is settled by configuration once, never by how big a given transcript came out.
 ### factory
 - accepted_upload_limit — stapel_recordings.services.accepted_upload_limit
   The single source of the 413 line: the size this deployment will accept for one upload, which is MAX_CONTAINER_UPLOAD_BYTES while audio-only ingest really runs (the container is transport, deleted once its audio track is out) and MAX_UPLOAD_BYTES otherwise. Read it instead of either setting — it fails safe on its own when a host drops the convert stage or points NORMALIZER at the passthrough, so the accepted size cannot outlive the promise that made it large.
@@ -119,6 +121,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - submit_task — stapel_recordings.stages.submit_task
   instead of: stapel_core.comm.call
   Submit long-running work (transcription, summary) as a task and return control right away: a result comes back only under synchronous dispatch, otherwise StageAwaiting is raised and the stage resumes in Stage.resume on task.completed. Unlike comm.call, a synchronous call would hold the worker for the model's entire runtime and requires guessing a timeout that a queue makes unguessable.
+- transcript_from_result — stapel_recordings.stages.transcript_from_result
+  The transcript dict out of an llm.transcribe result, whichever shape it came in — a transcript_ref this module fetches from storage, or an inline transcript. Reach for it in any stage that reads a transcribe result, so the two shapes are handled in one place instead of one branch per caller.
 - unregister_stage — stapel_recordings.stages.unregister_stage
   Undo one register_stage call, leaving whatever it shadowed — a built-in or a STAGES overlay entry — back in place. Distinct from register_stage(name, None), which actively REMOVES the stage from the resolved map.
 - upload_limits — stapel_recordings.services.upload_limits

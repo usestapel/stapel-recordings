@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -349,6 +349,18 @@
       "kind": "predicate",
       "path": "stapel_recordings.stages.summary_from_result",
       "intent": "Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure."
+    },
+    {
+      "name": "transcript_from_result",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.transcript_from_result",
+      "intent": "The transcript dict out of an llm.transcribe result, whichever shape it came in — a transcript_ref this module fetches from storage, or an inline transcript. Reach for it in any stage that reads a transcribe result, so the two shapes are handled in one place instead of one branch per caller."
+    },
+    {
+      "name": "transcript_handoff_enabled",
+      "kind": "predicate",
+      "path": "stapel_recordings.stages.transcript_handoff_enabled",
+      "intent": "Whether this deployment asks llm.transcribe to WRITE the transcript to storage and answer with a key instead of the body. Reach for it when a host stage builds its own transcribe payload: 'auto' (default) answers from the storage backend's signs_put_urls, so the question is settled by configuration once, never by how big a given transcript came out."
     },
     {
       "name": "unregister_stage",
