@@ -1,8 +1,8 @@
-# stapel-recordings 0.23.0
+# stapel-recordings 0.23.1
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 44 · extension points 7 · operations 12 · error codes 61.
+Contract: axes 1 · surface 45 · extension points 7 · operations 12 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -79,6 +79,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - get_storage — stapel_recordings.storage.get_storage
   instead of: boto3.client, django.core.files.storage.default_storage
   THE object-store handle for anything that touches recording bytes — the configured RecordingStorage (Django default_storage, the bundled S3/MinIO backend, or the host's own), memoized per resolved class. An export script, a custom stage or an admin action goes through this rather than building its own boto3 client or reaching for default_storage: the STORAGE seam is what makes the bucket, the credentials and the presign policy one decision instead of one per call site.
+- handoff_key — stapel_recordings.stages.handoff_key
+  Where llm.transcribe is asked to write the transcript for a recording. Reach for it wherever that object must be named outside the stage — the erasure sweep uses it to find a handoff left behind by a recording that died between the agent's write and the stage's read, which no field of the row points at.
 - identity_fields — stapel_recordings.stages.identity_fields
   The same attribution block built from raw ids, for callers that have them without a Recording — a live question, a search, a host view that knows its request.user. Absent ids are omitted rather than sent as null, which matters because the llm.* schemas type both as strings and reject unknown or ill-typed properties outright.
 - identity_payload — stapel_recordings.stages.identity_payload

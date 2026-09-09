@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.23.1] — 2026-09-09
+
+### Fixed — the transcript handoff object must not outlive the transcript
+
+0.23.0 has `llm.transcribe` write `transcript.raw.json` into the
+recording's prefix. Nothing deleted it, and **no field of the row points at
+it** — so it was a second verbatim copy of a private meeting that erasure
+could never find and retention could never reach.
+
+* **The stage discards it** once the Segment/Speaker rows are committed. It
+  is a postbox, not an artifact: the transcript's permanent home is those
+  rows and the unified `transcript.json`. A failure before the commit
+  leaves the object for the retry.
+* **`TranscribeStage.resume` is idempotent** — it returns early when
+  segments already exist. `task.completed` is at-least-once, and a
+  redelivery must not try to re-read a handoff the stage has consumed.
+* **Erasure sweeps a leftover** — a recording that died between the agent's
+  write and the stage's read still has one. The key is derived
+  (`stages.handoff_key`) and **probed before deleting**, so a receipt never
+  counts an object that was not there.
+
 ## [0.23.0] — 2026-09-09
 
 ### Fixed — a meeting past ~2h28m was dropped at the transcribe stage

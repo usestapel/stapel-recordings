@@ -237,6 +237,24 @@ def recordings_for(subject_type: str, subject_key, *, workspace_id=None):
     return Recording.objects.none()
 
 
+def _handoff_leftover(storage, row) -> str:
+    """The transcribe handoff key IF one is still lying there, else "".
+
+    Speculative, unlike the three keys the row stores, so it is probed
+    rather than deleted blind: an unconditional delete would count an
+    object that never existed and report an erasure larger than the one
+    that happened. A receipt has to be true.
+    """
+    from . import stages
+
+    try:
+        key = stages.handoff_key(row)
+        exists, _size = storage.head_object(key)
+    except Exception:
+        return ""
+    return key if exists else ""
+
+
 def _count_key(label: str) -> str:
     """``"recordings.UploadSession"`` -> ``"upload_sessions"``."""
     name = label.split(".")[-1]
@@ -286,6 +304,14 @@ def erase(subject_type: str, subject_key, *, workspace_id=None) -> dict[str, int
                 row.file_storage_key,
                 row.normalized_storage_key,
                 row.transcript_storage_key,
+                # The transcribe handoff object. Derived, not stored: it is
+                # a postbox the stage deletes as soon as it has read it, so
+                # it is normally already gone. But a recording that died
+                # between the agent's write and the stage's read still has
+                # one, and it holds the meeting verbatim — no field of the
+                # row points at it, so without this line nothing would ever
+                # find it again.
+                _handoff_leftover(storage, row),
             ):
                 if not key:
                     continue

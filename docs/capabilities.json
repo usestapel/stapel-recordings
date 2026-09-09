@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -270,6 +270,12 @@
       "kind": "factory",
       "path": "stapel_recordings.stages.get_stage",
       "intent": "Resolve one stage name to a ready-to-run Stage instance — the lookup a custom driver, or a stage that delegates to another stage, needs. Lazy on purpose: only the requested handler is imported, so a broken dotted path elsewhere in the STAGES overlay breaks only the pipelines that include that stage instead of every recording at once."
+    },
+    {
+      "name": "handoff_key",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.handoff_key",
+      "intent": "Where llm.transcribe is asked to write the transcript for a recording. Reach for it wherever that object must be named outside the stage — the erasure sweep uses it to find a handoff left behind by a recording that died between the agent's write and the stage's read, which no field of the row points at."
     },
     {
       "name": "identity_fields",

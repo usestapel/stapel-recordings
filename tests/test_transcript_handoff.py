@@ -216,3 +216,100 @@ def test_the_whole_pipeline_runs_through_a_reference(
     # The two artifacts are different files with different schemas, and each
     # has exactly one writer — see the release notes.
     assert seen["payload"]["transcript_key"] != r.transcript_storage_key
+
+
+class TestTheHandoffObjectIsAPostbox:
+    """It holds the meeting verbatim and no field of the row points at it."""
+
+    def test_it_is_deleted_once_the_rows_are_committed(
+        self, monkeypatch, make_recording
+    ):
+        recording = make_recording()
+        key = "recordings/ws/rec/transcript.raw.json"
+
+        class Store(FakeStorage):
+            def __init__(self):
+                super().__init__({key: BODY})
+                self.deleted = []
+
+            def delete_object(self, k):
+                self.deleted.append(k)
+                self.objects.pop(k, None)
+
+        store = Store()
+        monkeypatch.setattr(stages, "get_storage", lambda: store)
+
+        TranscribeStage().resume(recording, {}, {
+            "status": "ok",
+            "transcript_ref": {"key": key, "bytes": len(BODY)},
+            "provider_used": "elevenlabs",
+        })
+
+        assert store.deleted == [key]
+
+    def test_a_failed_persist_leaves_it_for_the_retry(
+        self, monkeypatch, make_recording
+    ):
+        recording = make_recording()
+        key = "k"
+
+        class Store(FakeStorage):
+            def __init__(self):
+                super().__init__({key: BODY})
+                self.deleted = []
+
+            def delete_object(self, k):
+                self.deleted.append(k)
+
+        store = Store()
+        monkeypatch.setattr(stages, "get_storage", lambda: store)
+
+        def _boom(*a, **k):
+            raise RuntimeError("db down")
+
+        monkeypatch.setattr(stages, "_persist_transcript", _boom)
+
+        with pytest.raises(RuntimeError):
+            TranscribeStage().resume(recording, {}, {
+                "status": "ok", "transcript_ref": {"key": key, "bytes": len(BODY)},
+            })
+        assert store.deleted == []
+
+    def test_a_redelivered_completion_does_not_re_read_it(
+        self, monkeypatch, make_recording
+    ):
+        """The object is gone by then; resume must be a no-op, not a retry."""
+        recording = make_recording()
+        key = "k"
+
+        class Store(FakeStorage):
+            def get_bytes(self, k):
+                raise AssertionError("must not read a consumed handoff")
+
+            def delete_object(self, k):
+                pass
+
+        monkeypatch.setattr(stages, "get_storage", lambda: Store())
+        stages._persist_transcript(
+            recording, TRANSCRIPT, provider_used="elevenlabs", fallback_used=False
+        )
+
+        TranscribeStage().resume(recording, {}, {
+            "status": "ok", "transcript_ref": {"key": key, "bytes": len(BODY)},
+        })
+
+    def test_erasure_finds_a_leftover_the_row_does_not_point_at(
+        self, monkeypatch, make_recording
+    ):
+        """A recording that died between the agent's write and our read."""
+        from stapel_recordings.erasure import SUBJECT_WORKSPACE, erase
+        from stapel_recordings.storage import get_storage
+
+        recording = make_recording()
+        key = stages.handoff_key(recording)
+        get_storage().put_bytes(key, BODY, content_type="application/json")
+        assert get_storage().head_object(key)[0] is True
+
+        erase(SUBJECT_WORKSPACE, str(recording.workspace_id))
+
+        assert get_storage().head_object(key)[0] is False

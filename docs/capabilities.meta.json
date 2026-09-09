@@ -355,6 +355,10 @@
     "transcript_from_result": {
       "kind": "factory",
       "intent": "The transcript dict out of an llm.transcribe result, whichever shape it came in — a transcript_ref this module fetches from storage, or an inline transcript. Reach for it in any stage that reads a transcribe result, so the two shapes are handled in one place instead of one branch per caller."
+    },
+    "handoff_key": {
+      "kind": "factory",
+      "intent": "Where llm.transcribe is asked to write the transcript for a recording. Reach for it wherever that object must be named outside the stage — the erasure sweep uses it to find a handoff left behind by a recording that died between the agent's write and the stage's read, which no field of the row points at."
     }
   }
 }

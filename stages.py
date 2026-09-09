@@ -410,7 +410,7 @@ class TranscribeStage(Stage):
         # recording's size. A backend that cannot sign is a backend with no
         # broker in front of it (see storage.signs_put_urls).
         if transcript_handoff_enabled():
-            key = _key(recording, "transcript.raw.json")
+            key = handoff_key(recording)
             payload["transcript_put_url"] = storage.presigned_put_url(
                 key, expires_seconds=ttl, content_type="application/json"
             )
@@ -440,6 +440,11 @@ class TranscribeStage(Stage):
         return self.resume(recording, ctx, result)
 
     def resume(self, recording, ctx, result):
+        # Idempotent, like run(): task.completed is at-least-once, and a
+        # redelivery must not re-read a handoff object this stage has
+        # already consumed and deleted.
+        if recording.segments.exists():
+            return ctx
         if not isinstance(result, dict) or result.get("status") != "ok":
             reason = (
                 (result or {}).get("reason", "transcribe_failed")
@@ -447,12 +452,22 @@ class TranscribeStage(Stage):
             )
             raise StageRetryable("transcribe_failed", str(reason))
 
+        transcript = transcript_from_result(result)
         _persist_transcript(
             recording,
-            transcript_from_result(result),
+            transcript,
             provider_used=result.get("provider_used"),
             fallback_used=bool(result.get("fallback_used")),
         )
+        # A POSTBOX, NOT AN ARTIFACT. transcript.raw.json exists to get the
+        # answer off the wire; the transcript's permanent home is the
+        # Segment rows and the unified transcript.json MergeStage writes.
+        # Leaving it would put a second verbatim copy of a private meeting
+        # in the bucket forever — under no field of the row, so erasure
+        # would never find it and no retention would ever reach it.
+        # Deleted only after the rows are committed, so a failure above
+        # leaves it for the retry.
+        _discard_handoff(recording, result)
         return ctx
 
 
@@ -934,6 +949,33 @@ def transcript_handoff_enabled() -> bool:
     return bool(value)
 
 
+def handoff_key(recording) -> str:
+    """Where ``llm.transcribe`` is asked to write the transcript.
+
+    One function, because two places need the same answer: the payload that
+    asks for it, and the erasure sweep that has to be able to delete it for
+    a recording that never got past this stage.
+    """
+    return _key(recording, "transcript.raw.json")
+
+
+def _discard_handoff(recording, result: dict) -> None:
+    """Drop the handoff object once its contents are persisted."""
+    ref = result.get("transcript_ref")
+    key = str((ref or {}).get("key") or "") if isinstance(ref, dict) else ""
+    if not key:
+        return
+    try:
+        get_storage().delete_object(key)
+    except Exception:
+        # Not the caller's problem — the transcript is in the database. A
+        # leftover is swept by erasure (which derives the same key) and by
+        # the bucket's own retention.
+        logger.warning(
+            "transcribe: could not discard the handoff object %s", key, exc_info=True
+        )
+
+
 def transcript_from_result(result: dict) -> dict:
     """The transcript dict out of an ``llm.transcribe`` result, either shape.
 
@@ -1204,6 +1246,7 @@ def _as_stage(name: str, obj) -> Stage:
 __all__ = [
     "Stage",
     "transcript_handoff_enabled",
+    "handoff_key",
     "transcript_from_result",
     "StageError",
     "StageRetryable",
