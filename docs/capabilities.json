@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -323,6 +323,12 @@
       ]
     },
     {
+      "name": "stage_dedupe_key",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.stage_dedupe_key",
+      "intent": "The identity of one unit of pipeline work — this recording, this stored object, this stage — handed to the Task primitive as its dedupe_key, so a redelivered stage event joins the task already in flight instead of starting a second one. Reach for it when submitting work outside submit_task (a host's own stage): a submission without a dedupe key is a submission a redelivery duplicates, and on a priced stage that duplicate is an invoice."
+    },
+    {
       "name": "start_resummarize",
       "kind": "factory",
       "path": "stapel_recordings.stages.start_resummarize",
@@ -355,6 +361,12 @@
       "kind": "predicate",
       "path": "stapel_recordings.stages.summary_from_result",
       "intent": "Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure."
+    },
+    {
+      "name": "transcribe_attempt_ceiling",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.transcribe_attempt_ceiling",
+      "intent": "The MOST provider calls one recording's transcribe stage can cause: MAX_STAGE_RETRIES x TRANSCRIBE_TASK_MAX_ATTEMPTS. Read it in a host's own check or dashboard before raising either setting — the two retry ladders multiply, and the shipped 3x3 is how one 148-minute recording reached the provider six times."
     },
     {
       "name": "transcript_from_result",

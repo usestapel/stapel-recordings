@@ -1,5 +1,73 @@
 # Changelog
 
+## [0.24.0] — 2026-09-12
+
+### Fixed — one recording, six paid transcriptions, because two retry ladders multiply
+
+Production data from a client stand: ONE 148-minute recording reached
+ElevenLabs **six times** — two tasks × three attempts — and **59.7% of a
+23,736-credit quota went to machine duplication of identical media**.
+Nothing had failed at the provider; the transcription succeeded every
+time. What failed was the reply (an 8.6 MB transcript against a broker
+that carries 8), downstream of the money.
+
+Two defects, one in each ladder, and this module owned both.
+
+**Every stage submission now carries a `dedupe_key`**
+(`<recording_id>:<storage_key>:<stage>`, `stages.stage_dedupe_key`). The
+column has existed in core's task ledger since 0.60.0 and was **empty on
+every row this module ever wrote**, so nothing coalesced the second task
+into the first. Core reuses a task whose key is still PENDING/RUNNING —
+that alone closes the two-tasks half. The storage key is in the key
+because the OBJECT is what gets transcribed: a recording re-converted to
+a new normalized key is genuinely new work.
+
+**The priced call gets ONE task attempt**
+(`TRANSCRIBE_TASK_MAX_ATTEMPTS`, was 3 via `submit_task`'s default). A
+transport retry of a transcription is a second invoice for the first
+transcript: the provider charges for a job it completed even when our
+side never read the answer. A deliberate re-run belongs to the stage —
+and with stapel-agent ≥ 0.24.0 it is free.
+
+**The ceiling is now stated and asserted.** `MAX_STAGE_RETRIES` (3) and
+the task's `max_attempts` (3) MULTIPLY, and nobody had done that
+multiplication: 9 possible, 6 spent. `stages.transcribe_attempt_ceiling()`
+is that product, `tests/test_retry_ceiling.py` holds it at ≤ 3, and every
+attempt after the first is served from the agent's checkpoint at no
+charge.
+
+### Fixed — the agent was not given what it needs to avoid charging twice
+
+`TranscribeStage.build_payload` now sends:
+
+* **`audio_content_hash`** — the agent's checkpoint key (stapel-agent
+  ≥ 0.24.0). `ConvertStage` computes it over the NORMALIZED object while
+  the file is still local (the one moment it is), and stores it in
+  `workflow_state`, not `metadata`: REC-01 — a client PATCH must never be
+  able to write a value a server decision reads, and here that value is
+  the key to a paid transcript. The key is reserved in `metadata` too, so
+  a host that populates it there (still honoured, as the second source)
+  cannot take it from a client either.
+* **`audio_duration_ms`** — how much audio is being SUBMITTED, from
+  `recording.duration_seconds` (ffmpeg measured it during convert). The
+  agent's ledger meters this instead of the transcript's own duration,
+  which several providers derive from the last word's end timestamp — two
+  paid calls in the same incident sat at 0 minutes.
+
+A retry re-derives both identically (the presigned URL changes, the key
+does not), which is what makes the retryable `transcript_handoff_failed`
+path safe: it re-runs the PUT, not the transcription.
+
+### Changed
+
+* `stapel-core>=0.60.0` (was 0.26.0) — `comm.start(dedupe_key=...)`.
+* `submit_task(..., dedupe_key=None, stage=None)` — the key is derived
+  from the stage when not given. Hosts calling `submit_task` from their
+  own stages get one automatically; a host that passed positional
+  arguments is unaffected (all new parameters are keyword-only).
+* New setting `TRANSCRIBE_TASK_MAX_ATTEMPTS` (default 1).
+* New reserved metadata key `audio_content_hash`.
+
 ## [0.23.1] — 2026-09-09
 
 ### Fixed — the transcript handoff object must not outlive the transcript

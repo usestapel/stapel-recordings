@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.23.1"
+version = "0.24.0"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,7 +28,14 @@ dependencies = [
     # level, so an older core is an ImportError at startup, not a missing feature.
     # Floor: 0.26.0 emits docs/errors.json with the `owner` field the
     # committed artifact and its drift gate require.
-    "stapel-core>=0.26.0,<1.0",
+    #
+    # 0.60.0 raises it again, and this one is not a nicety: every stage
+    # submission now passes ``dedupe_key`` to ``comm.start``, which is the
+    # argument that stops a redelivered stage event from buying a second
+    # transcription. An older core raises TypeError on the first
+    # submission — a hard failure at the exact call the fix is about,
+    # which is the right way for a floor to be wrong.
+    "stapel-core>=0.60.0,<1.0",
 ]
 
 [project.urls]

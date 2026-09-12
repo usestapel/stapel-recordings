@@ -56,6 +56,12 @@ LIBRARY_RESERVED_KEYS = frozenset(
         "recovered_error",
         "derived",
         "staleness",
+        # The sha256 of the normalized audio, written by ConvertStage and
+        # handed to llm.transcribe as the agent's checkpoint key. Reserved
+        # because a client that could write it could claim ANOTHER
+        # recording's paid transcript by naming its hash — the same class
+        # of hole as forging a freshness stamp, one table over.
+        "audio_content_hash",
     }
 )
 

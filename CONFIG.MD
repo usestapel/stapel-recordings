@@ -75,6 +75,7 @@ stored and what they would weigh as mono audio.
 |-----|--------|---------|----------|---------|
 | TRANSCRIBE_TIMEOUT_SECONDS | env | per-transcribe-stage timeout. | no | 1800 |
 | MAX_STAGE_RETRIES | env | max retries per pipeline stage. | no | 3 |
+| TRANSCRIBE_TASK_MAX_ATTEMPTS | env | how many times the TASK primitive re-runs a priced transcription. ONE: the call is not idempotent at the transport level, so a transport retry is a second invoice for the first transcript. This setting and MAX_STAGE_RETRIES MULTIPLY — `stages.transcribe_attempt_ceiling()` is that product, and production measured it as six paid calls for one recording. | no | 1 |
 | SUMMARIZE_ENABLED | env | whether the summarize step runs (delegated to stapel-agent). | no | true |
 | SUMMARIZE_MODEL | env | agent model size used for summaries. | no | medium |
 | STUCK_THRESHOLD_SECONDS | env | reconcile watchdog: age at which a running stage is re-emitted (must exceed the longest stage). | no | 2100 |

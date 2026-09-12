@@ -1,8 +1,8 @@
-# stapel-recordings 0.23.1
+# stapel-recordings 0.24.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 45 · extension points 7 · operations 12 · error codes 61.
+Contract: axes 1 · surface 47 · extension points 7 · operations 12 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -111,6 +111,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - run_identity — stapel_recordings.pipeline.run_identity
   instead of: stapel_recordings.models.Recording.workflow_state
   The recording's current pipeline run as {run_id, attempt} — the same pair recording.stage_completed / recording.completed / recording.failed carry. Read it to tie a run to what it cost: an invoice line, a credit hold, an audit trail, or the idempotency key a metering consumer builds (recording_id + run_id — keyed on the recording alone, every reprocess after the first is free). Read-only, and cheaper than re-deriving the workflow_state key names, which are the driver's private cursor layout.
+- stage_dedupe_key — stapel_recordings.stages.stage_dedupe_key
+  The identity of one unit of pipeline work — this recording, this stored object, this stage — handed to the Task primitive as its dedupe_key, so a redelivered stage event joins the task already in flight instead of starting a second one. Reach for it when submitting work outside submit_task (a host's own stage): a submission without a dedupe key is a submission a redelivery duplicates, and on a priced stage that duplicate is an invoice.
 - start_multipart_upload — stapel_recordings.services.start_multipart_upload
   instead of: stapel_recordings.storage.RecordingStorage.create_multipart_upload
   The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects.
@@ -123,6 +125,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - submit_task — stapel_recordings.stages.submit_task
   instead of: stapel_core.comm.call
   Submit long-running work (transcription, summary) as a task and return control right away: a result comes back only under synchronous dispatch, otherwise StageAwaiting is raised and the stage resumes in Stage.resume on task.completed. Unlike comm.call, a synchronous call would hold the worker for the model's entire runtime and requires guessing a timeout that a queue makes unguessable.
+- transcribe_attempt_ceiling — stapel_recordings.stages.transcribe_attempt_ceiling
+  The MOST provider calls one recording's transcribe stage can cause: MAX_STAGE_RETRIES x TRANSCRIBE_TASK_MAX_ATTEMPTS. Read it in a host's own check or dashboard before raising either setting — the two retry ladders multiply, and the shipped 3x3 is how one 148-minute recording reached the provider six times.
 - transcript_from_result — stapel_recordings.stages.transcript_from_result
   The transcript dict out of an llm.transcribe result, whichever shape it came in — a transcript_ref this module fetches from storage, or an inline transcript. Reach for it in any stage that reads a transcribe result, so the two shapes are handled in one place instead of one branch per caller.
 - unregister_stage — stapel_recordings.stages.unregister_stage

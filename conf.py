@@ -472,6 +472,19 @@ DEFAULTS = {
         # ── Transcription / summarization (delegated to stapel-agent) ─
         "TRANSCRIBE_TIMEOUT_SECONDS": 1800,
         "MAX_STAGE_RETRIES": 3,
+        # How many times the TASK primitive itself re-runs a priced
+        # transcription. ONE, because the call is not idempotent at the
+        # transport level: the provider charges for a job it completed
+        # even when our side never read the answer, so a transport retry
+        # is a second invoice for the first transcript. A deliberate
+        # re-run is the stage's to make, and stapel-agent's checkpoint
+        # (>=0.24.0) makes it free.
+        #
+        # This is the number the ceiling is built from — see
+        # stages.transcribe_attempt_ceiling(): the stage ladder and the
+        # task ladder MULTIPLY, and production measured that product as
+        # six paid calls for one recording.
+        "TRANSCRIBE_TASK_MAX_ATTEMPTS": 1,
         "SUMMARIZE_ENABLED": True,
         "SUMMARIZE_MODEL": "medium",
         # How long to WAIT for llm.summarize. Without an explicit argument

@@ -486,7 +486,8 @@ def test_an_awaiting_job_is_completed_by_its_task_result(
     """With a real broker the request returns before the model does; the
     result arrives later on task.completed and finishes the same Job."""
 
-    def _awaiting(kind, payload, *, recording, deadline_seconds=None, max_attempts=3):
+    def _awaiting(kind, payload, *, recording, deadline_seconds=None,
+                  max_attempts=3, dedupe_key=None, stage=None):
         raise stages.StageAwaiting("task-42", kind)
 
     monkeypatch.setattr(stages, "submit_task", _awaiting)

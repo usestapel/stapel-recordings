@@ -160,6 +160,24 @@ def _key(recording, suffix: str) -> str:
     return f"{prefix}/{recording.workspace_id}/{recording.id}/{suffix}"
 
 
+def _file_content_hash(path: str) -> str:
+    """``sha256:<hex>`` of the file at *path*, read in chunks.
+
+    Chunked because this runs on a two-and-a-half-hour meeting's audio and
+    a pipeline worker is not entitled to hold it all in memory to compute
+    64 characters. The prefix names the algorithm, because the value
+    crosses a module boundary (it is handed to ``llm.transcribe``) and a
+    bare hex string is the kind of value that gets silently re-hashed.
+    """
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def identity_fields(user_id=None, workspace_id=None) -> dict:
     """The ``{user_id?, workspace_id?}`` block the ``llm.*`` schemas accept.
 
@@ -277,9 +295,29 @@ class ConvertStage(Stage):
             recording.stored_size_bytes = stored_bytes
             if duration:
                 recording.duration_seconds = duration
+            # The identity of the audio, computed HERE — the one moment
+            # the file is local and already open. Everything downstream
+            # (the agent's checkpoint, which is what makes a retry of a
+            # priced transcription free) keys on this string, and any
+            # other place to compute it would mean downloading the object
+            # again.
+            #
+            # It lives in ``workflow_state``, not ``metadata``: REC-01 —
+            # metadata is the CLIENT's half of this row and a client PATCH
+            # must never be able to write a value a server decision reads.
+            # Here that is not a style rule: the hash IS the agent's
+            # checkpoint key, so a client that could set it could name
+            # another recording's hash and be handed that recording's paid
+            # transcript. (The key is reserved in ``metadata`` as well, so
+            # a host that populates it there — the documented alternative
+            # source below — still cannot take it from a client.)
+            recording.workflow_state = {
+                **(recording.workflow_state or {}),
+                "audio_content_hash": _file_content_hash(out_path),
+            }
             recording.save(update_fields=[
                 "normalized_storage_key", "stored_size_bytes",
-                "duration_seconds", "updated_at",
+                "duration_seconds", "workflow_state", "updated_at",
             ])
 
             self._purge_source(recording)
@@ -319,7 +357,65 @@ class ConvertStage(Stage):
         recording.save(update_fields=["file_storage_key", "updated_at"])
 
 
-def submit_task(kind, payload, *, recording, deadline_seconds=None, max_attempts=3):
+def stage_dedupe_key(recording, stage: str) -> str:
+    """The identity of one unit of work: this recording, this object,
+    this stage.
+
+    ``stapel_core.comm.start`` coalesces on it — while a task with this
+    key is PENDING or RUNNING, a second ``start()`` returns the FIRST
+    task's id and creates nothing. That is the half of the duplicate-spend
+    defect this module owns: production measured ONE 148-minute recording
+    transcribed six times, as TWO tasks of three attempts each, and the
+    column that would have collapsed the two tasks into one existed and
+    was empty on every row ever written.
+
+    The storage key is in the key, not just the recording id, because the
+    OBJECT is what gets transcribed: a recording re-converted to a new
+    normalized key is genuinely new work, and must not be coalesced into
+    the task that is still transcribing the old one.
+
+    Core releases the key at DONE/FAILED — it deduplicates work IN
+    FLIGHT and does not claim to remember forever. Remembering forever is
+    the agent checkpoint's job (a paid answer, stored under its input);
+    these two together are why a retry is now free rather than merely
+    rarer.
+    """
+    storage_key = recording.normalized_storage_key or recording.file_storage_key or ""
+    return f"{recording.id}:{storage_key}:{stage}"
+
+
+def transcribe_attempt_ceiling() -> int:
+    """The MOST provider calls one recording's transcribe stage can cause.
+
+    The two retry ladders MULTIPLY — that is the arithmetic nobody did
+    before production did it for us:
+
+        stage retries (MAX_STAGE_RETRIES)  ×  task attempts (max_attempts)
+
+    3 × 3 was the shipped configuration, and six of those nine were
+    actually spent on one recording. With ``TRANSCRIBE_TASK_MAX_ATTEMPTS``
+    at 1 the product is 3, and every one of those 3 after the first is
+    served from the agent's checkpoint at no charge.
+
+    A checks-time gate reads this (W0xx is not claimed here; the number is
+    asserted in tests/test_retry_ceiling.py), so raising either setting
+    without meaning to raise the ceiling fails loudly.
+    """
+    return int(recordings_settings.MAX_STAGE_RETRIES) * int(
+        recordings_settings.TRANSCRIBE_TASK_MAX_ATTEMPTS
+    )
+
+
+def submit_task(
+    kind,
+    payload,
+    *,
+    recording,
+    deadline_seconds=None,
+    max_attempts=3,
+    dedupe_key=None,
+    stage=None,
+):
     """Submit long-running work as a task and return control immediately.
 
     Returns a result ONLY when the deployment dispatches tasks synchronously
@@ -331,9 +427,17 @@ def submit_task(kind, payload, *, recording, deadline_seconds=None, max_attempts
     ``correlation_id`` is the recording id: resume uses it to find which
     stage to complete. It's also the event partition key, so a recording's
     events stay in order.
+
+    ``dedupe_key`` is derived from *stage* when not given explicitly (see
+    :func:`stage_dedupe_key`) — EVERY submission carries one, because a
+    submission without one is a submission that a redelivered message
+    duplicates.
     """
     from stapel_core.comm import start, status
     from stapel_core.comm.exceptions import CommError
+
+    if dedupe_key is None:
+        dedupe_key = stage_dedupe_key(recording, stage or kind)
 
     try:
         task_id = start(
@@ -342,6 +446,7 @@ def submit_task(kind, payload, *, recording, deadline_seconds=None, max_attempts
             correlation_id=str(recording.id),
             deadline_seconds=deadline_seconds,
             max_attempts=max_attempts,
+            dedupe_key=dedupe_key,
         )
     except CommError as exc:
         # Couldn't even SUBMIT the task — a bus availability issue, not a
@@ -391,6 +496,35 @@ class TranscribeStage(Stage):
             "timeout_seconds": int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
             **identity_payload(recording),
         }
+
+        # THE IDENTITY OF THE MEDIA, and HOW MUCH OF IT THERE IS. Both are
+        # facts this side already owns and the agent cannot cheaply
+        # recover from a presigned URL:
+        #
+        # * the content hash is the agent's checkpoint key (stapel-agent
+        #   >=0.24.0). Without it a retry of this stage — including the
+        #   one that fires when the transcript handoff fails, downstream
+        #   of the money — pays the provider a second time.
+        # * the duration is what the agent's ledger METERS. Several STT
+        #   adapters report the last word's end timestamp instead, so an
+        #   empty transcript meters as zero while the invoice counts it in
+        #   full. ConvertStage measured this file; the agent would have to
+        #   download it again to measure it itself.
+        # Two sources, server-written first: ConvertStage's own hash of the
+        # normalized object, else a host that computed one at ingest and
+        # stored it on the row (the reserved metadata key). Never a third
+        # place, and never computed here — the object is in the bucket by
+        # now and downloading it to hash it would cost the transfer the
+        # hash exists to avoid.
+        content_hash = (recording.workflow_state or {}).get(
+            "audio_content_hash"
+        ) or (recording.metadata or {}).get("audio_content_hash")
+        if content_hash:
+            payload["audio_content_hash"] = str(content_hash)
+        if recording.duration_seconds:
+            payload["audio_duration_ms"] = int(
+                round(float(recording.duration_seconds) * 1000)
+            )
         if recording.language:
             payload["language"] = recording.language
         provider = recording.provider_override
@@ -433,6 +567,15 @@ class TranscribeStage(Stage):
             payload,
             recording=recording,
             deadline_seconds=int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
+            # ONE task attempt for the priced call (see
+            # TRANSCRIBE_TASK_MAX_ATTEMPTS), and a dedupe key so a
+            # redelivered stage event joins the transcription already in
+            # flight instead of starting a second one. Together with
+            # MAX_STAGE_RETRIES this bounds the recording at
+            # transcribe_attempt_ceiling() calls, of which at most the
+            # first is paid for.
+            max_attempts=int(recordings_settings.TRANSCRIBE_TASK_MAX_ATTEMPTS),
+            stage=self.name,
         )
         # Reached only under synchronous dispatch (TASK_DISPATCH="inline" —
         # brokerless monolith, tests, scripts): the task already completed
@@ -520,6 +663,7 @@ class MergeStage(Stage):
             _summarize_payload(recording, transcript),
             recording=recording,
             deadline_seconds=int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
+            stage=self.name,
         )
         return self.resume(recording, ctx, result)
 
@@ -806,6 +950,7 @@ def start_resummarize(recording, *, user=None):
                 _summarize_payload(locked, transcript),
                 recording=locked,
                 deadline_seconds=int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
+                stage="summarize",
             )
         except StageAwaiting as exc:
             # The normal production path: the work is queued, the request
