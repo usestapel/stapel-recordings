@@ -34,6 +34,14 @@ equivalent since 0.17.0 — its ``job_id`` is minted per re-summary — and
   request on a new summary of an unchanged recording, which is the event a
   host meters or bills.
 - ``recording.failed`` (public, terminal / DLQ) — a stage gave up.
+- ``recording.needs_payment`` (public, terminal until paid) — the account
+  cannot pay for the work that is left, so the recording is parked in the
+  ``needs_payment`` status. Deliberately not ``recording.failed``: nothing
+  broke, a refund consumer has nothing to release, and what the host has to
+  do is ask for money and then call ``pipeline.resume_after_payment``. It
+  carries the same run identity as the other run events, and the run is NOT
+  over — the same ``run_id`` finishes after payment, so a metering consumer
+  keyed on it still charges once.
 
 Every name has a JSON schema under ``schemas/emits/`` validated in tests.
 """
@@ -47,6 +55,7 @@ ACTION_STAGE_COMPLETED = "recording.stage_completed"
 ACTION_COMPLETED = "recording.completed"
 ACTION_FAILED = "recording.failed"
 ACTION_RESUMMARIZED = "recording.resummarized"
+ACTION_NEEDS_PAYMENT = "recording.needs_payment"
 
 
 def emit_uploaded(recording) -> None:
@@ -163,6 +172,32 @@ def emit_failed(
     )
 
 
+def emit_needs_payment(
+    recording, *, stage: str, reason: str, run_id=None, attempt=None
+) -> None:
+    """The pipeline stopped because the account cannot pay for the rest.
+
+    ``owner_id`` travels with it because this is the one lifecycle event
+    addressed to a PERSON: the host has to reach whoever owns the recording
+    and ask for money. ``reason`` is the machine-readable code the host's UI
+    branches on (``insufficient_credits``, ``free_minutes_exhausted``); the
+    park's ``detail`` deliberately stays in ``workflow_state`` — it can carry
+    balance internals and this event fans out to every subscriber.
+    """
+    emit(
+        ACTION_NEEDS_PAYMENT,
+        {
+            "recording_id": str(recording.id),
+            "workspace_id": str(recording.workspace_id),
+            "owner_id": str(recording.owner_id) if recording.owner_id else None,
+            "stage": stage,
+            "reason": reason,
+            **_run_fields(run_id, attempt),
+        },
+        key=str(recording.id),
+    )
+
+
 __all__ = [
     "ACTION_UPLOADED",
     "ACTION_STAGE",
@@ -170,10 +205,12 @@ __all__ = [
     "ACTION_COMPLETED",
     "ACTION_FAILED",
     "ACTION_RESUMMARIZED",
+    "ACTION_NEEDS_PAYMENT",
     "emit_uploaded",
     "emit_stage",
     "emit_stage_completed",
     "emit_completed",
     "emit_failed",
     "emit_resummarized",
+    "emit_needs_payment",
 ]

@@ -52,6 +52,11 @@ class RecordingStatus(models.TextChoices):
     MERGING = "merging", "Merging"
     COMPLETED = "completed", "Completed"
     ERROR = "error", "Error"
+    #: The wallet cannot buy the work that is left. A status, not an error:
+    #: nothing broke, and the way out is money, not a retry. Parked here the
+    #: recording keeps its pipeline cursor and its run identity until
+    #: ``pipeline.resume_after_payment`` puts it back in the queue.
+    NEEDS_PAYMENT = "needs_payment", "Needs payment"
     DELETED = "deleted", "Deleted"
 
     @classmethod
@@ -64,7 +69,10 @@ class RecordingStatus(models.TextChoices):
           * ``created`` / ``uploading`` wait on the CLIENT — it is holding the
             upload, and polling its own work tells it nothing;
           * ``completed`` / ``error`` / ``deleted`` are terminal — nothing
-            further arrives, and a client that keeps asking is asking forever;
+            further arrives, and a client that keeps asking is asking forever.
+            ``needs_payment`` is here too: the pipeline has stopped and will
+            not move again on its own, so polling it is polling for a top-up;
+
           * everything between is pipeline-owned, and re-reading the recording
             is the only way a client learns it moved (this module serves no
             socket).

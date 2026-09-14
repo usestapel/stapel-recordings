@@ -1,8 +1,8 @@
-# stapel-recordings 0.24.0
+# stapel-recordings 0.25.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 47 · extension points 7 · operations 12 · error codes 61.
+Contract: axes 1 · surface 48 · extension points 7 · operations 12 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -29,6 +29,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - reprocess_recording — stapel_recordings.pipeline.reprocess_recording
   instead of: stapel_recordings.events.emit_stage
   completed -> queued, running the WHOLE pipeline again from stage 0 — for a finished recording a host wants re-processed after changing the stage list, the transcription provider or a stage's config. It clears the progress cursor (completed / completed_index / carried ctx) that retry_recording deliberately keeps, mints a NEW run_id and increments attempt so the re-run's events are distinguishable from the first run's (a metered consumer keyed on the recording alone bills the re-run as free), and refuses every other source status without side effects. Clearing those metadata keys by hand is the same operation with none of the guards.
+- resume_after_payment — stapel_recordings.pipeline.resume_after_payment
+  instead of: stapel_recordings.events.emit_stage, stapel_recordings.pipeline.retry_recording
+  The ONLY way back from needs_payment: an explicit needs_payment -> queued transition, called from the code that watched the money arrive (a payment webhook, a credit top-up, a plan change). It resumes at the first stage whose name has not completed and KEEPS the run_id, so a consumer metering recording.completed charges once for a run that needed a top-up to finish. Separate from retry_recording on purpose — a retry may be wired to a user-facing button, and this one asserts a balance exists, which only the payment path may claim.
 - resume_resummarize — stapel_recordings.stages.resume_resummarize
   instead of: stapel_recordings.pipeline.resume_stage
   Apply an arriving llm.summarize task result to a standalone re-summary, answering True only when the task belonged to one. Wire it BEFORE pipeline.resume_stage in a task.completed subscriber: a re-summary runs on a finished recording, whose status the pipeline driver treats as terminal, so the driver would silently drop the result. Redelivery-safe — a second delivery finds the job closed and answers False.

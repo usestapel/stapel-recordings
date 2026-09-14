@@ -10,8 +10,9 @@ The provider-facing ``from_normalized`` mapper is dropped because STT now
 lives in stapel-agent — recordings persists Segment rows directly from
 the ``llm.transcribe`` result dict (see ``stages.TranscribeStage``).
 
-Invariants (checked by ``run_qa``): monotonic start/end ms; max end <=
-duration (+tolerance); >=1 speaker when diarization requested.
+Invariants (checked by ``run_qa``): monotonic start/end ms; no silent hole
+longer than :data:`MAX_SEGMENT_GAP_MS` between consecutive segments; max end
+<= duration (+tolerance); >=1 speaker when diarization requested.
 """
 from __future__ import annotations
 
@@ -23,6 +24,12 @@ from stapel_core.hashing import canonical_hash
 
 SCHEMA_VERSION = "1.0"
 PIPELINE_VERSION = "2.0.0"
+
+#: How much silence between two consecutive segments a continuous recording
+#: may contain before ``run_qa`` calls it a hole. Named here, not buried in a
+#: comparison, because it is the number an operator tunes when a deployment's
+#: recordings are genuinely quieter than this.
+MAX_SEGMENT_GAP_MS = 5000
 
 
 # ─── Schema dataclasses ────────────────────────────────────────────────
@@ -204,6 +211,36 @@ def run_qa(
         passed = False
     else:
         checks["monotonicity"] = "PASS"
+
+    # Holes between consecutive segments, in the transcript's own ordering.
+    # A hole means the transcription dropped audio, and it is the one defect
+    # nothing else here can see: the segments around it are monotonic, inside
+    # the duration, and plentiful.
+    #
+    # A TRIMMED OR SPLICED SOURCE would produce the same reading at its seam,
+    # and this schema carries nothing that says so — no offset, no trim
+    # marker, and ``duration_ms`` against the segment span describes only the
+    # TAIL, never an internal seam. The check stays anyway: a host that
+    # splices sources knows it does, while dropped audio has no other witness.
+    if len(segments) >= 2:
+        deltas = [nxt.start_ms - prev.end_ms for prev, nxt in zip(segments, segments[1:])]
+        holes = [
+            (delta, prev.id, nxt.id)
+            for delta, prev, nxt in zip(deltas, segments, segments[1:])
+            if delta > MAX_SEGMENT_GAP_MS
+        ]
+        if holes:
+            delta, before, after = holes[0]
+            checks["gap"] = (
+                f"FAIL: {len(holes)} gap(s) > {MAX_SEGMENT_GAP_MS}ms, "
+                f"first {delta}ms between seg {before} and seg {after}"
+            )
+            passed = False
+        else:
+            # Overlaps are negative deltas, and an overlap is not a gap.
+            checks["gap"] = f"PASS: largest {max(max(deltas), 0)}ms"
+    else:
+        checks["gap"] = "SKIP"
 
     if segments and duration_ms > 0:
         max_end = max(s.end_ms for s in segments)
@@ -406,6 +443,7 @@ def _format_ms(ms: int) -> str:
 __all__ = [
     "SCHEMA_VERSION",
     "PIPELINE_VERSION",
+    "MAX_SEGMENT_GAP_MS",
     "UnifiedTranscript",
     "UnifiedSegment",
     "UnifiedSpeaker",

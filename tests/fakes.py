@@ -146,6 +146,14 @@ def only_record_resolver(recording):
     return ["record"]
 
 
+def unaffordable_normalize(src_path, dst_path):
+    """NORMALIZER seam double standing in for a host's affordability gate —
+    the free-cap / balance check iron-recordings does before transcoding."""
+    from stapel_recordings.normalize import NormalizePaymentRequired
+
+    raise NormalizePaymentRequired("insufficient_credits", "balance 0, needs 47 min")
+
+
 def broken_resolver(recording):
     """PIPELINE_RESOLVER double that fails (missing per-workspace row, DB
     glitch) — used to assert bounded retry -> DLQ instead of a crash loop."""

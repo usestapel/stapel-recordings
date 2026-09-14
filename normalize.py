@@ -11,7 +11,9 @@ what someone happened to record on.
 The ``convert`` stage calls the ``STAPEL_RECORDINGS["NORMALIZER"]``
 callable: ``(src_path, dst_path) -> float | None`` (duration seconds, or
 None when unknown). Raise :class:`NormalizeFatal` for unfixable input
-(no audio stream, unreadable) so the driver DLQs instead of retrying.
+(no audio stream, unreadable) so the driver DLQs instead of retrying, or
+:class:`NormalizePaymentRequired` when the account cannot pay for this
+recording — that one parks it in ``needs_payment`` rather than failing it.
 
 The stored profile is :func:`audio_profile`, read from settings: mono,
 16 kHz, Ogg/Opus at 24 kbps by default — about 10.8 MB per hour, against
@@ -168,6 +170,25 @@ class NormalizeFatal(Exception):
         self.detail = detail
 
 
+class NormalizePaymentRequired(NormalizeFatal):
+    """The wallet cannot buy this recording — park it, don't fail it.
+
+    The normalizer is the one seam that sees the audio before anything has
+    been spent on it: it knows the source duration, the plan's cap and, in a
+    host that wires one, the balance. A host gate ("this account has 3 free
+    minutes left and this is a 47-minute file") therefore has to be able to
+    say *stop, but not broken* through the same
+    ``(src, dst) -> duration`` signature, without a second seam and without
+    the driver importing anything of the host's.
+
+    A subclass of :class:`NormalizeFatal` so an existing handler that only
+    knows the base class still stops the pipeline rather than transcoding
+    minutes nobody paid for. The ``convert`` stage catches THIS first and
+    re-raises ``stages.StageNeedsPayment``, which parks the recording in the
+    ``needs_payment`` status instead of DLQ'ing it.
+    """
+
+
 def passthrough_normalize(src_path: str, dst_path: str) -> Optional[float]:
     """Copy ``src`` to ``dst`` unchanged. Duration is unknown (None)."""
     shutil.copyfile(src_path, dst_path)
@@ -311,6 +332,7 @@ __all__ = [
     "CODEC_OPUS",
     "CODEC_WAV",
     "NormalizeFatal",
+    "NormalizePaymentRequired",
     "audio_only_ingest_active",
     "audio_profile",
     "ffmpeg_normalize",

@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "recording.needs_payment",
+  "description": "The pipeline parked a recording because the account cannot pay for the work that is left. A status, not a failure: nothing broke, no hold has to be released, and the recording resumes on the SAME run_id once pipeline.resume_after_payment is called. reason is the code a UI branches on; the park's detail stays server-side.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["recording_id", "workspace_id", "stage", "reason"],
+  "properties": {
+    "recording_id": {"type": "string"},
+    "workspace_id": {"type": "string"},
+    "owner_id": {"type": ["string", "null"]},
+    "stage": {"type": "string"},
+    "reason": {"type": "string"},
+    "run_id": {"type": "string"},
+    "attempt": {"type": "integer", "minimum": 1}
+  }
+}

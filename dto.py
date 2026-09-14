@@ -18,6 +18,14 @@ class RecordingDTO:
     *stop* as explicitly as it says *ask again*. The same number travels as
     the ``Retry-After`` header for callers that read HTTP rather than the
     body.
+
+    ``needs_payment_reason`` is set exactly when ``status`` is
+    ``needs_payment``: the machine-readable code the park carries
+    (``insufficient_credits``, ``free_minutes_exhausted``), so a client can
+    render "top up to finish this recording" with the right sentence instead
+    of a generic stall. Only the reason crosses the wire — the park's
+    ``detail`` can carry balance internals and stays in ``workflow_state``,
+    which is the same line the error seam draws.
     """
 
     id: str
@@ -37,6 +45,7 @@ class RecordingDTO:
     created_at: str
     is_processing: bool
     poll_after_seconds: Optional[int]
+    needs_payment_reason: Optional[str]
 
 
 @dataclass
@@ -201,6 +210,23 @@ def segment_to_dto(segment) -> TranscriptSegmentDTO:
     )
 
 
+def needs_payment_reason(recording) -> Optional[str]:
+    """Why the recording is parked on an empty wallet, or ``None``.
+
+    Read from the ``needs_payment`` block the pipeline writes, and only while
+    the status still says so: a stale reason left on a recording that has
+    since been paid for and completed would be read as current, which is the
+    failure ``_clear_last_error`` exists to prevent one field over.
+    """
+    from .models import RecordingStatus
+
+    if str(recording.status) != RecordingStatus.NEEDS_PAYMENT:
+        return None
+    block = (recording.workflow_state or {}).get("needs_payment") or {}
+    reason = block.get("reason")
+    return str(reason) if reason else None
+
+
 def recording_to_dto(recording) -> RecordingDTO:
     from .resources import resource_key
 
@@ -223,6 +249,7 @@ def recording_to_dto(recording) -> RecordingDTO:
         created_at=recording.created_at.isoformat(),
         is_processing=poll_after is not None,
         poll_after_seconds=poll_after,
+        needs_payment_reason=needs_payment_reason(recording),
     )
 
 

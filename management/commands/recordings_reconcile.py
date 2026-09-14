@@ -77,9 +77,16 @@ class Command(BaseCommand):
         # hardcoded list of built-in stage statuses) so recordings parked in
         # a *custom* stage status are re-driven too instead of hanging
         # forever.
+        #
+        # needs_payment is on this list: it is parked on an empty wallet, not
+        # stuck. Re-driving it would make the watchdog spend money the account
+        # does not have, every pass, forever — and the driver would only drop
+        # the event anyway (needs_payment is terminal for deliveries). It
+        # leaves this state through pipeline.resume_after_payment alone.
         non_transient = [
             RecordingStatus.CREATED, RecordingStatus.UPLOADING,
-            RecordingStatus.COMPLETED, RecordingStatus.ERROR, RecordingStatus.DELETED,
+            RecordingStatus.COMPLETED, RecordingStatus.ERROR,
+            RecordingStatus.NEEDS_PAYMENT, RecordingStatus.DELETED,
         ]
         cutoff = timezone.now() - timedelta(seconds=int(recordings_settings.STUCK_THRESHOLD_SECONDS))
         qs = (

@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -107,6 +107,16 @@
       "kind": "factory",
       "path": "stapel_recordings.pipeline.resolve_pipeline",
       "intent": "The stage list that will actually run for THIS recording, resolver included — read it whenever you need to show or reason about a pipeline (an admin page, a progress bar, a stage-count estimate). The PIPELINE setting is only the default resolver's answer, and a host that swapped PIPELINE_RESOLVER has made reading it a lie."
+    },
+    {
+      "name": "resume_after_payment",
+      "kind": "gate_function",
+      "path": "stapel_recordings.pipeline.resume_after_payment",
+      "intent": "The ONLY way back from needs_payment: an explicit needs_payment -> queued transition, called from the code that watched the money arrive (a payment webhook, a credit top-up, a plan change). It resumes at the first stage whose name has not completed and KEEPS the run_id, so a consumer metering recording.completed charges once for a run that needed a top-up to finish. Separate from retry_recording on purpose — a retry may be wired to a user-facing button, and this one asserts a balance exists, which only the payment path may claim.",
+      "instead_of": [
+        "stapel_recordings.events.emit_stage",
+        "stapel_recordings.pipeline.retry_recording"
+      ]
     },
     {
       "name": "resume_stage",

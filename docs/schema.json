@@ -649,7 +649,7 @@
       },
       "RecordingDTO": {
         "type": "object",
-        "description": "A recording as seen by the API.\n\n``is_processing`` / ``poll_after_seconds`` are the module's answer to\n\"when do I ask again\": this module serves no socket, so a client learns\nthat a recording moved by re-reading it, and the two fields say whether\nthat is worth doing and how soon. ``poll_after_seconds`` is ``None``\nexactly when ``is_processing`` is false — the status is terminal, or the\nclient itself is holding the next move — which is how the payload says\n*stop* as explicitly as it says *ask again*. The same number travels as\nthe ``Retry-After`` header for callers that read HTTP rather than the\nbody.",
+        "description": "A recording as seen by the API.\n\n``is_processing`` / ``poll_after_seconds`` are the module's answer to\n\"when do I ask again\": this module serves no socket, so a client learns\nthat a recording moved by re-reading it, and the two fields say whether\nthat is worth doing and how soon. ``poll_after_seconds`` is ``None``\nexactly when ``is_processing`` is false — the status is terminal, or the\nclient itself is holding the next move — which is how the payload says\n*stop* as explicitly as it says *ask again*. The same number travels as\nthe ``Retry-After`` header for callers that read HTTP rather than the\nbody.\n\n``needs_payment_reason`` is set exactly when ``status`` is\n``needs_payment``: the machine-readable code the park carries\n(``insufficient_credits``, ``free_minutes_exhausted``), so a client can\nrender \"top up to finish this recording\" with the right sentence instead\nof a generic stall. Only the reason crosses the wire — the park's\n``detail`` can carry balance internals and stays in ``workflow_state``,\nwhich is the same line the error seam draws.",
         "properties": {
           "id": {
             "type": "string"
@@ -708,6 +708,10 @@
           "poll_after_seconds": {
             "type": "integer",
             "nullable": true
+          },
+          "needs_payment_reason": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -716,6 +720,7 @@
           "id",
           "is_processing",
           "language",
+          "needs_payment_reason",
           "poll_after_seconds",
           "provider_used",
           "resource_key",

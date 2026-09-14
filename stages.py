@@ -9,9 +9,13 @@ A stage is a swappable unit of pipeline work with a small contract:
 
 ``run`` does the work (mutating/saving the recording as needed) and returns
 the context dict passed to the next stage. It raises :class:`StageRetryable`
-(transient — the driver counts the attempt and lets reconcile re-drive) or
-:class:`StageFatal` (bad input — straight to DLQ). Stages MUST be idempotent
-(guard on status / persisted keys) because delivery is at-least-once.
+(transient — the driver counts the attempt and lets reconcile re-drive),
+:class:`StageFatal` (bad input — straight to DLQ) or
+:class:`StageNeedsPayment` (the wallet cannot buy this — the recording is
+parked in the ``needs_payment`` STATUS, no failure event goes out, and a
+host resumes it with ``pipeline.resume_after_payment`` once it is paid for).
+Stages MUST be idempotent (guard on status / persisted keys) because
+delivery is at-least-once.
 
 The five built-ins — ``convert``, ``transcribe``, ``diarize``, ``merge``,
 ``embed`` — are registered here. Hosts customize the pipeline three ways,
@@ -82,6 +86,23 @@ class StageRetryable(StageError):
 
 class StageFatal(StageError):
     """Permanent failure — DLQ, no retry."""
+
+
+class StageNeedsPayment(StageError):
+    """The wallet cannot buy the work this stage is about to do.
+
+    Same shape as :class:`StageFatal` (``reason`` + optional ``detail``) and
+    equally terminal for event deliveries, but it is a STATUS, not an error:
+    the driver parks the recording in ``needs_payment``, publishes
+    ``recording.needs_payment`` instead of ``recording.failed``, and keeps
+    the pipeline cursor and the run identity. A retry cannot fix it — money
+    can — so the only way back in is ``pipeline.resume_after_payment``,
+    called by the host once the balance is there.
+
+    ``reason`` is the machine-readable code a UI branches on
+    (``insufficient_credits``, ``free_minutes_exhausted``); ``detail`` is for
+    logs and may carry balance internals, so it does not reach a client.
+    """
 
 
 class StageAwaiting(StageError):
@@ -239,7 +260,7 @@ class ConvertStage(Stage):
     status = RecordingStatus.NORMALIZING
 
     def run(self, recording, ctx):
-        from .normalize import NormalizeFatal, audio_profile
+        from .normalize import NormalizeFatal, NormalizePaymentRequired, audio_profile
 
         if recording.normalized_storage_key:
             # Idempotent, but NOT a bare return: a re-drive after a failed
@@ -253,6 +274,10 @@ class ConvertStage(Stage):
         normalizer = recordings_settings.NORMALIZER
         try:
             profile = audio_profile()
+        # NeedsPayment BEFORE Fatal: it is a subclass, and an `except
+        # NormalizeFatal` reached first would swallow it into a DLQ.
+        except NormalizePaymentRequired as exc:
+            raise StageNeedsPayment(exc.reason, exc.detail) from exc
         except NormalizeFatal as exc:
             raise StageFatal(exc.reason, exc.detail) from exc
         workdir = tempfile.mkdtemp(prefix="rec-convert-")
@@ -266,6 +291,10 @@ class ConvertStage(Stage):
 
             try:
                 duration = normalizer(raw_path, out_path)
+            # The host's affordability gate speaks here: NeedsPayment first,
+            # or the base-class handler below turns "top up" into "failed".
+            except NormalizePaymentRequired as exc:
+                raise StageNeedsPayment(exc.reason, exc.detail) from exc
             except NormalizeFatal as exc:
                 raise StageFatal(exc.reason, exc.detail) from exc
 
@@ -1396,6 +1425,7 @@ __all__ = [
     "StageError",
     "StageRetryable",
     "StageFatal",
+    "StageNeedsPayment",
     "ResummarizeRefused",
     "NoTranscriptToSummarize",
     "SummarizationUnavailable",

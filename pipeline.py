@@ -60,6 +60,17 @@ stage and classifies stage errors into retry vs DLQ. ``error`` is terminal
 for deliveries: a DLQ'd recording is only revived through the explicit
 :func:`retry_recording` transition, never by a redelivered event.
 
+``needs_payment`` is the third terminal parking spot, and it is a STATUS,
+not an error. A stage raising ``StageNeedsPayment`` (a host's affordability
+gate, reached through the normalizer seam or a stage of its own) leaves the
+recording parked with a ``workflow_state["needs_payment"]`` block and one
+public ``recording.needs_payment`` event — no ``recording.failed``, because
+nothing failed and a refund consumer has nothing to refund. It is terminal
+for deliveries for the DLQ's reason plus one: re-driving it would be the
+pipeline spending money the account does not have. The way back is
+:func:`resume_after_payment`, which keeps the run identity — the same run
+finishes, and it is billed once.
+
 The stage list comes from ``PIPELINE_RESOLVER`` (default: the ``PIPELINE``
 setting) — point that seam at a DB/per-workspace source to edit pipelines
 at runtime. Resolver failures are parked as retryable (bounded by
@@ -77,7 +88,7 @@ from stapel_core.comm import mutate_and_emit
 from . import events
 from .conf import recordings_settings
 from .models import Recording, RecordingStatus
-from .stages import StageAwaiting, StageFatal, StageRetryable, get_stage
+from .stages import StageAwaiting, StageFatal, StageNeedsPayment, StageRetryable, get_stage
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +96,17 @@ logger = logging.getLogger(__name__)
 # the pipeline is the explicit retry_recording() transition below. Without
 # this, a broker redelivery could "resurrect" a recording whose
 # recording.failed event already reached consumers (refunds, notifications).
-_TERMINAL = {RecordingStatus.COMPLETED, RecordingStatus.ERROR, RecordingStatus.DELETED}
+#
+# NEEDS_PAYMENT is terminal for the same reason and one more: the recording is
+# parked on an empty wallet, so a redelivery that re-drove it would be the
+# pipeline spending money the account does not have. Its only way out is
+# resume_after_payment().
+_TERMINAL = {
+    RecordingStatus.COMPLETED,
+    RecordingStatus.ERROR,
+    RecordingStatus.NEEDS_PAYMENT,
+    RecordingStatus.DELETED,
+}
 
 
 # ─── Resolver seam ─────────────────────────────────────────────────────
@@ -224,6 +245,11 @@ def run_stage(recording_id: str, stage_index: int) -> None:
                 recording.id, stage_name, exc.task_id, exc.kind,
             )
             return
+        except StageNeedsPayment as exc:
+            _park_for_payment(
+                recording, stage=stage_name, reason=exc.reason, detail=exc.detail
+            )
+            return
         except StageFatal as exc:
             _dlq(recording, stage=stage_name, reason=exc.reason, detail=exc.detail)
             return
@@ -290,6 +316,12 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
         ctx = _pipeline_meta(recording).get("ctx") or {}
         try:
             new_ctx = stage.resume(recording, ctx, result) or {}
+        except StageNeedsPayment as exc:
+            _clear_awaiting(recording)
+            _park_for_payment(
+                recording, stage=stage_name, reason=exc.reason, detail=exc.detail
+            )
+            return
         except StageFatal as exc:
             _dlq(recording, stage=stage_name, reason=exc.reason, detail=exc.detail)
             return
@@ -364,6 +396,58 @@ def retry_recording(recording_id: str) -> bool:
         recording.save(update_fields=["status", "retry_count", "updated_at"])
         events.emit_stage(recording.id, _completed_index(recording) + 1)
     logger.info("pipeline: recording %s requeued for retry", recording_id)
+    return True
+
+
+def resume_after_payment(recording_id: str) -> bool:
+    """Explicit ``needs_payment -> queued`` transition: the account paid, so
+    put the recording back in the queue. Returns True if it was requeued.
+
+    The mirror of :func:`retry_recording`, and separate from it on purpose
+    rather than an argument to it. The two transitions answer to different
+    authorities: a retry is the host saying "try the same thing again", and
+    whoever may click it may click it at any time, because the previous
+    attempt cost nothing that succeeded. This one is the host saying "the
+    balance is now there" — an assertion only the code that watched the money
+    move is allowed to make. Folding it into ``retry_recording`` as a flag
+    would put both behind one call site, and the first caller that passed the
+    flag from a request parameter would have let a client requeue work it
+    never paid for. Separate functions, so an app layer can expose the retry
+    button to users and keep this one to its payment webhook.
+
+    Everything else mirrors a retry: the completed-stage cursor is kept, so
+    the pipeline resumes at the first stage whose name has not completed, and
+    the ``run_id`` is KEPT — the same run is being finished, and a consumer
+    metering ``recording.completed`` must charge for it once, not once per
+    top-up. The ``needs_payment`` block is cleared (moved to
+    ``paid_for``, so the reason stays readable in diagnostics without still
+    posing as current state), and ``retry_count`` is reset because the stage
+    never actually failed.
+
+    Allowed only from ``needs_payment``. Every other status returns False
+    without side effects — including ``error``, which is
+    :func:`retry_recording`'s.
+    """
+    with transaction.atomic():
+        try:
+            recording = Recording.objects.select_for_update().get(pk=recording_id)
+        except Recording.DoesNotExist:
+            logger.warning("resume_after_payment: recording %s not found", recording_id)
+            return False
+        if recording.status != RecordingStatus.NEEDS_PAYMENT:
+            return False
+        state = dict(recording.workflow_state or {})
+        parked = state.pop("needs_payment", None)
+        if parked is not None:
+            state["paid_for"] = {**parked, "paid_at": timezone.now().isoformat()}
+        recording.workflow_state = state
+        recording.status = RecordingStatus.QUEUED
+        recording.retry_count = 0
+        recording.save(
+            update_fields=["status", "retry_count", "workflow_state", "updated_at"]
+        )
+        events.emit_stage(recording.id, _completed_index(recording) + 1)
+    logger.info("pipeline: recording %s requeued after payment", recording_id)
     return True
 
 
@@ -500,6 +584,45 @@ def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_
             **run_identity(recording),
         )
     logger.warning("pipeline: recording %s DLQ at stage %s (%s)", recording.id, stage, reason)
+
+
+def _park_for_payment(recording: Recording, *, stage: str, reason: str, detail=None) -> None:
+    """Park a recording the account cannot pay for. Not a failure.
+
+    The block goes to ``workflow_state["needs_payment"]``, deliberately NOT
+    to ``last_error``: that field is what a UI renders as "something broke",
+    and an empty wallet is not a breakage. Keeping them apart also means a
+    genuine error recorded before the park is still readable next to it.
+
+    The run identity is minted if missing and otherwise untouched — the run
+    is not over, it is waiting, and the same run resumes after payment, so a
+    metering consumer must keep seeing one run_id.
+    """
+    recording.status = RecordingStatus.NEEDS_PAYMENT
+    state = dict(recording.workflow_state or {})
+    state["needs_payment"] = {
+        "stage": stage,
+        "reason": reason,
+        "detail": (str(detail)[:500] if detail else None),
+        "at": timezone.now().isoformat(),
+    }
+    recording.workflow_state = state
+    _ensure_run(recording)
+    # Save + the terminal-ish emit as one unit, like _dlq: run_stage holds the
+    # outer transaction and this nests as a savepoint, so the status and the
+    # event a host bills/notifies on can never disagree.
+    with mutate_and_emit():
+        recording.save(update_fields=["status", "workflow_state", "updated_at"])
+        events.emit_needs_payment(
+            recording,
+            stage=stage,
+            reason=reason,
+            **run_identity(recording),
+        )
+    logger.info(
+        "pipeline: recording %s parked at stage %s — needs payment (%s)",
+        recording.id, stage, reason,
+    )
 
 
 # ─── workflow-state helpers ──────────────────────────────────────────────────
@@ -659,6 +782,7 @@ __all__ = [
     "start_pipeline",
     "run_stage",
     "retry_recording",
+    "resume_after_payment",
     "reprocess_recording",
     "run_identity",
 ]

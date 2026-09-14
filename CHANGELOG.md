@@ -1,5 +1,91 @@
 # Changelog
 
+## [0.25.0] — 2026-09-14
+
+### Added — an empty wallet is a STATUS, not an error
+
+A recording whose owner has no credits left ended in `error` with the
+reason `insufficient_credits`. Everything downstream then treated it as a
+breakage: the UI rendered "processing failed" over a recording that was
+perfectly fine, `recording.failed` told refund and alerting consumers a run
+had died when nothing had been spent, and the only offered way out —
+`retry_recording` — re-ran the same stage into the same empty balance. The
+one thing that would actually move it, money, had no state to arrive into.
+
+`needs_payment` is that state.
+
+* **`RecordingStatus.NEEDS_PAYMENT`** (migration `0007`, choices only). It
+  is NOT in `PROCESSING_STATUSES`: `is_processing` answers False,
+  `poll_after_seconds` and `Retry-After` are absent, and a client is told to
+  stop asking — the next move is a person's, not the pipeline's.
+* **`stages.StageNeedsPayment(reason, detail)`** — the signal, the same
+  shape as `StageFatal`. The driver parks the recording, writes
+  `workflow_state["needs_payment"]` (`stage` / `reason` / `detail` / `at`)
+  and emits **`recording.needs_payment`**. Deliberately its own block, not
+  `last_error`: a UI that reads `last_error` renders an error, and this is
+  not one.
+* **`normalize.NormalizePaymentRequired`** — so a host's affordability gate
+  (iron-recordings' free-cap check) can say "this account cannot buy this
+  recording" through the existing `NORMALIZER` seam,
+  `(src, dst) -> duration`, with no second seam and no host import in the
+  driver. The `convert` stage catches it **before** `NormalizeFatal` — it is
+  a subclass, and the base-class handler reached first would swallow a park
+  into a DLQ.
+* **`pipeline.resume_after_payment(recording_id) -> bool`** — the mirror of
+  `retry_recording`: `needs_payment -> queued`, resuming at the first stage
+  whose name has not completed. It **keeps the `run_id`**, so a consumer
+  metering `recording.completed` charges once for a run that needed a top-up
+  to finish, not once per top-up. The park block moves to `paid_for` rather
+  than vanishing. Every other status returns False with no side effects.
+
+`needs_payment` is terminal for event deliveries, next to `error`: a broker
+redelivery must not resurrect a parked recording, and the reconcile watchdog
+no longer sweeps one as stuck — either would have the pipeline spend money
+the account does not have, on every pass, forever.
+
+**What a host must do.** Raise `StageNeedsPayment` (or
+`NormalizePaymentRequired` from its normalizer) instead of failing the
+stage; subscribe to `recording.needs_payment` (`recording_id`,
+`workspace_id`, `owner_id`, `stage`, `reason`, `run_id`, `attempt`) to ask
+its user for money; call `pipeline.resume_after_payment` from the code that
+sees the payment land — NOT from a user-facing retry button, which is why
+this is a separate transition and not a flag on `retry_recording`. A client
+reads the new status plus `needs_payment_reason` off the recording payload;
+the park's `detail` can carry balance internals and stays server-side, the
+same line the error seam draws.
+
+### Added — transcription that drops audio now leaves a mark
+
+`run_qa` checked that segments were monotonic, inside the duration and
+non-empty. A transcript with a **minute of speech missing out of the
+middle** passed all three: the segments around the hole are monotonic, they
+fit, and there are plenty of them. The only witness to dropped audio is the
+distance between one segment's end and the next one's start, and nothing
+looked at it.
+
+* New check **`gap`** in `qa.checks`, same shape as its siblings:
+  `"SKIP"` (fewer than two segments — nothing to compare),
+  `"PASS: largest <n>ms"`, or
+  `"FAIL: <n> gap(s) > 5000ms, first <n>ms between seg <a> and seg <b>"`,
+  which also drops `qa.passed` to False. Overlapping and back-to-back
+  segments are 0 or negative deltas and are never gaps.
+* The threshold is **`transcript_schema.MAX_SEGMENT_GAP_MS`** (5000),
+  exported, so an operator whose recordings are genuinely quieter than that
+  can see and tune the number instead of finding it inside a comparison.
+
+Caveat, stated because the check cannot state it itself: a **trimmed or
+spliced** source has a legitimate hole at its seam, and this schema carries
+nothing that says it was spliced — no offset, no trim marker, and
+`duration_ms` against the segment span describes only the tail. A host that
+splices sources knows it does; dropped audio has no other witness, so the
+check stays.
+
+### Changed
+
+* `RecordingDTO` gains `needs_payment_reason` (null unless the status is
+  `needs_payment`) — additive, and it clears itself when the recording moves
+  on, so a paid, finished recording never still shows the reason it waited.
+
 ## [0.24.0] — 2026-09-12
 
 ### Fixed — one recording, six paid transcriptions, because two retry ladders multiply
