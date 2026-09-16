@@ -1,5 +1,41 @@
 # Changelog
 
+
+## [0.26.0] — 2026-09-17
+
+### Changed — the admin no longer renders what a meeting was ABOUT
+
+A ModelAdmin with neither `fields` nor `exclude` renders every column on the
+detail page, readonly or not. So "staff may view recordings" silently meant
+"staff may read the AI summary of any customer's meeting", and a fleet that
+wanted to grant its operators status and metadata — enough to answer "did
+this run" — could not: `view_recording` also rendered `summary`, and a
+permission fixture had no way to mean less. The safe answer was not
+expressible, so that deployment granted nothing and its operators got nothing.
+
+`_ReadOnlyAdmin.CONTENT_FIELDS` now names the columns that carry what a
+meeting was about rather than how it was processed, and they are excluded
+from the detail view:
+
+* **Recording** — `summary`, `title`, `metadata`, and the three storage keys
+  (pointers to the audio and the transcript). `title` is the judgement call
+  worth arguing with: metadata by schema, content by privacy — "Acme
+  acquisition, legal review" says what the meeting was about as surely as the
+  summary does. It leaves `list_display` and `search_fields` with it, because
+  printing a title in a results table is the same disclosure by another
+  route, and searching by one is worse.
+* **Segment** — `text`, `original_text`, `words_json`. A segment IS the
+  transcript.
+* **Speaker** — `display_name`. A person who attended the meeting.
+
+What stays is what a pipeline is debugged from: status, durations, provider,
+retries, timings, counts.
+
+**This narrows the admin for existing deployments**, deliberately. A host
+that has actually decided its staff may read customers' meetings subclasses
+and narrows the tuple — a reviewable line in that host, rather than a silent
+consequence of a permission name.
+
 ## [0.25.0] — 2026-09-14
 
 ### Added — an empty wallet is a STATUS, not an error
