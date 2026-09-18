@@ -345,6 +345,19 @@ def erase(subject_type: str, subject_key, *, workspace_id=None) -> dict[str, int
     return counts
 
 
+def erase_subject(subject_type: str, subject_key, workspace_id=None):
+    """``register_gdpr_owner`` entry point — the one callable core drives.
+
+    Returns ``None`` for a subject type this module does not claim: the
+    orchestrator opened no part for it, so a receipt here would answer for
+    somebody else. Everything else is :func:`erase`, unchanged.
+    """
+    if subject_type not in SUBJECT_TYPES:
+        logger.warning("erasure: unclaimed subject type %r ignored", subject_type)
+        return None
+    return erase(subject_type, subject_key, workspace_id=workspace_id)
+
+
 __all__ = [
     "OWNER",
     "SUBJECT_TYPES",
@@ -359,4 +372,5 @@ __all__ = [
     "get_erasure_client",
     "recordings_for",
     "erase",
+    "erase_subject",
 ]

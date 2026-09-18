@@ -134,6 +134,11 @@
         "stapel_recordings.models.Recording.delete"
       ]
     },
+    "erase_subject": {
+      "kind": "gate_function",
+      "intent": "The callable stapel-core drives for this module's gdpr owner registration: erase() for a subject type recordings claims, and None for one it does not, so an erasure the orchestrator opened no part for is never receipted. Wire nothing by hand — apps.ready() already passes it to register_gdpr_owner; reach for erase() directly only when you are deleting outside the protocol.",
+      "instead_of": []
+    },
     "fail_resummarize": {
       "kind": "gate_function",
       "intent": "Close a standalone re-summary whose task failed for good (True when it owned the task). No retry — the Task primitive already spent its attempts — and no recording.resummarized event, so a host metering re-summaries is never billed for a summary that was not produced. Wire it before pipeline.fail_stage in a task.failed subscriber.",

@@ -86,8 +86,12 @@ class TranscriptPageSerializer(serializers.Serializer):
     """
 
     items = TranscriptSegmentSerializer(many=True)
-    next_anchor = serializers.CharField(allow_null=True)
-    prev_anchor = serializers.CharField(allow_null=True)
+    # The anchor IS an integer: TranscriptPagination anchors on
+    # `sequence_num` and the paginator copies the raw field value into the
+    # envelope. Declaring `string` here made every generated client believe a
+    # lie about every transcript longer than one page.
+    next_anchor = serializers.IntegerField(allow_null=True)
+    prev_anchor = serializers.IntegerField(allow_null=True)
     has_next = serializers.BooleanField()
     has_prev = serializers.BooleanField()
     count = serializers.IntegerField()

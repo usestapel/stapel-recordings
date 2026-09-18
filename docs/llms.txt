@@ -1,8 +1,8 @@
-# stapel-recordings 0.26.0
+# stapel-recordings 0.27.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 48 · extension points 7 · operations 12 · error codes 61.
+Contract: axes 1 · surface 49 · extension points 7 · operations 12 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -19,6 +19,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - erase — stapel_recordings.erasure.erase
   instead of: stapel_recordings.models.Recording.delete
   The ONLY code that destroys a recording, for any subject: account, workspace, meeting or recording. Removes the rows, everything cascading from them (speakers, segments, upload sessions, shares, jobs, embeddings) and every storage object they reference through the STORAGE seam, then returns Django's own per-model tally so a gdpr receipt can carry counts instead of a claim. Idempotent by construction — a redelivered erasure removes nothing and still answers. Hand-rolled deletion is how an object survives its row: the keys live on the row you are about to delete.
+- erase_subject — stapel_recordings.erasure.erase_subject
+  The callable stapel-core drives for this module's gdpr owner registration: erase() for a subject type recordings claims, and None for one it does not, so an erasure the orchestrator opened no part for is never receipted. Wire nothing by hand — apps.ready() already passes it to register_gdpr_owner; reach for erase() directly only when you are deleting outside the protocol.
 - fail_resummarize — stapel_recordings.stages.fail_resummarize
   instead of: stapel_recordings.pipeline.fail_stage
   Close a standalone re-summary whose task failed for good (True when it owned the task). No retry — the Task primitive already spent its attempts — and no recording.resummarized event, so a host metering re-summaries is never billed for a summary that was not produced. Wire it before pipeline.fail_stage in a task.failed subscriber.

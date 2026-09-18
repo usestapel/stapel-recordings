@@ -252,16 +252,72 @@ def test_unclaimed_subject_type_is_not_receipted(use_fakes, make_recording, drai
     assert _receipts() == []
 
 
+def test_the_owner_is_registered_with_core_and_not_hand_written():
+    """``apps.ready()`` declares the owner; no copy of the protocol is left.
+
+    Same terms, so ``register_gdpr_owner`` hands back the registration
+    ready() already made instead of subscribing a second time — which makes
+    this both the assertion that ready() ran and the way the tests below
+    reach the handlers.
+    """
+    from stapel_core.gdpr import register_gdpr_owner, registered_gdpr_owners
+
+    import stapel_recordings.actions as actions
+    from stapel_recordings.erasure import OWNER, erase_subject
+
+    assert registered_gdpr_owners()[OWNER] == SUBJECT_TYPES
+    owner = register_gdpr_owner(OWNER, SUBJECT_TYPES, erase_subject)
+    assert owner.erase is erase_subject
+    # The hand-written copy is gone — core builds these handlers now.
+    for gone in ("handle_erasure_requested", "handle_owner_probe", "handle_user_deleted"):
+        assert not hasattr(actions, gone)
+
+
+def test_boot_reports_no_double_answerer_and_no_stranded_section():
+    """``manage.py check`` is silent about this module's GDPR wiring.
+
+    ``gdpr.W012`` is what a library carrying its own copy of the protocol
+    beside a registered provider looks like, and ``gdpr.E011`` is a declared
+    section nothing in the process can answer for. Both are boot-time facts,
+    so they are asserted at boot rather than by running an erasure.
+    """
+    from django.core.checks import run_checks
+
+    messages = [m for m in run_checks() if str(m.id).startswith("stapel_core.gdpr.")]
+    assert messages == []
+
+
+def test_one_erasure_leaves_exactly_one_receipt_per_part(
+    use_fakes, make_recording, user, drain
+):
+    """The provider bridge yields to the registered owner.
+
+    Both wirings are live in this process — ``gdpr_registry`` has the
+    provider and ``register_gdpr_owner`` has the owner — and an erasure is
+    one part, so it is one receipt. Two would assert the deletion happened
+    twice, which is a false legal record rather than a duplicate log line.
+    """
+    from stapel_core.comm import emit
+
+    _stored(make_recording)
+    correlation = str(uuid.uuid4())
+    emit("gdpr.erasure.requested", {
+        "request_id": 11,
+        "correlation_id": correlation,
+        "subject_type": SUBJECT_ACCOUNT,
+        "subject_key": str(user.id),
+    })
+    drain()
+
+    receipts = _receipts()
+    assert len(receipts) == 1
+    assert receipts[0]["owner"] == "recordings"
+    assert receipts[0]["receipt_id"] == f"recordings:account:{user.id}:{correlation}"
+
+
 def test_probe_is_answered_from_the_erasure_subscriber(use_fakes, drain):
     from stapel_core.comm import emit
     from stapel_core.django.outbox.models import OutboxEvent
-
-    import stapel_recordings.actions as actions
-
-    # Co-location is the evidence the protocol asks for: both handlers are
-    # in the module that erases, so an answer cannot come from a process
-    # that merely imported the models.
-    assert actions.handle_owner_probe.__module__ == actions.handle_erasure_requested.__module__
 
     correlation = str(uuid.uuid4())
     emit("gdpr.owner.probe", {"correlation_id": correlation})

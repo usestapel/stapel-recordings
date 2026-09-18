@@ -32,3 +32,19 @@ class RecordingsConfig(AppConfig):
 
         if RecordingsGDPRProvider().section not in gdpr_registry.sections:
             gdpr_registry.register(RecordingsGDPRProvider())
+
+        # The erasure protocol (stapel-gdpr 0.5.0+), implemented once in
+        # stapel-core: gdpr.erasure.requested -> erase -> gdpr.section.erased
+        # with a deterministic receipt inside the erase's transaction, the
+        # gdpr.owner.probe answer from the same module, and the deprecated
+        # user.deleted. What stays ours is erase_subject (erasure.py).
+        #
+        # Registering by name is also what stands core's provider bridge
+        # down for this section exactly: until 0.27.0 this module carried
+        # its own copy of the protocol, and the bridge could only tell they
+        # were the same APP, not the same section (gdpr.W012).
+        from stapel_core.gdpr import register_gdpr_owner
+
+        from .erasure import OWNER, SUBJECT_TYPES, erase_subject
+
+        register_gdpr_owner(OWNER, SUBJECT_TYPES, erase_subject)

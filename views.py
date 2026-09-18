@@ -126,6 +126,9 @@ class TranscriptPagination(AnchorPagination):
 
     anchor_field = "sequence_num"
     ordering = "sequence_num"
+    #: The anchor is a gapless integer, not a timestamp — narrow the declared
+    #: type so the paginator's own schema says what the wire sends.
+    anchor_type = "integer"
 
     @property
     def page_size(self):

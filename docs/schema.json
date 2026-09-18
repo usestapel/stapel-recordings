@@ -831,11 +831,11 @@
             }
           },
           "next_anchor": {
-            "type": "string",
+            "type": "integer",
             "nullable": true
           },
           "prev_anchor": {
-            "type": "string",
+            "type": "integer",
             "nullable": true
           },
           "has_next": {

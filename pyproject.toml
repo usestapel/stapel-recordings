@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.26.0"
+version = "0.27.0"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -35,7 +35,12 @@ dependencies = [
     # transcription. An older core raises TypeError on the first
     # submission — a hard failure at the exact call the fix is about,
     # which is the right way for a floor to be wrong.
-    "stapel-core>=0.60.0,<1.0",
+    #
+    # 0.85.1 raises it once more: the data-owner side of the erasure
+    # protocol now lives in core (`register_gdpr_owner`, called from
+    # apps.ready()), and 0.85.1 is where the provider bridge yields to it.
+    # An older core has no such symbol, so it is an ImportError at startup.
+    "stapel-core>=0.85.1,<1.0",
 ]
 
 [project.urls]

@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -65,6 +65,12 @@
       "instead_of": [
         "stapel_recordings.models.Recording.delete"
       ]
+    },
+    {
+      "name": "erase_subject",
+      "kind": "gate_function",
+      "path": "stapel_recordings.erasure.erase_subject",
+      "intent": "The callable stapel-core drives for this module's gdpr owner registration: erase() for a subject type recordings claims, and None for one it does not, so an erasure the orchestrator opened no part for is never receipted. Wire nothing by hand — apps.ready() already passes it to register_gdpr_owner; reach for erase() directly only when you are deleting outside the protocol."
     },
     {
       "name": "get_erasure_client",

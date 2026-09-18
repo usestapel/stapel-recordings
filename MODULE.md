@@ -568,11 +568,18 @@ STAPEL_GDPR = {
 }
 ```
 
+**The protocol is core's, the destruction is ours.** `apps.ready()` calls
+`stapel_core.gdpr.register_gdpr_owner("recordings", SUBJECT_TYPES,
+erase_subject)`, which subscribes `gdpr.erasure.requested`,
+`gdpr.owner.probe` and the deprecated `user.deleted` — the handlers this
+module used to hand-write, now in one place for the whole fleet, with the
+deterministic receipt id and the receipt inside the erase's transaction.
+
 **One destruction path.** `erasure.erase(subject_type, subject_key,
 workspace_id=None)` is the only code that destroys a recording, and
-everything routes through it: the comm subscriber
-(`@on_action("gdpr.erasure.requested")`), the deprecated
-`@on_action("user.deleted")` (account subject; stapel-gdpr keeps firing it
+everything routes through it: `erasure.erase_subject` (what core drives, and
+what answers `None` for a subject type this module does not claim), the
+deprecated `user.deleted` (account subject; stapel-gdpr keeps firing it
 until 0.6.0), and `RecordingsGDPRProvider.delete()` (the in-process provider
 the monolith orchestrator calls). It removes the `Recording` rows for the
 subject, everything cascading from them (`Speaker`, `Segment`,
@@ -600,11 +607,13 @@ redelivery / orchestrator retry re-drives erasure for exactly the remaining
 rows. A second erasure of the same subject removes nothing, raises nothing,
 and still receipts — zero counts is an answer; silence is a timeout.
 
-**Liveness.** `@on_action("gdpr.owner.probe")` answers `gdpr.owner.alive
-{owner: "recordings", subject_types}` **from the same module** as the
-erasure handler. That co-location is the point: an answer proves the erasure
-path is being consumed, not that a container was deployed. It is what
-`gdpr.W006` and `GET /gdpr/api/v1/owners/health` read.
+**Liveness.** The registration answers `gdpr.owner.probe` with
+`gdpr.owner.alive {owner: "recordings", subject_types}` **from the same
+module** as the erasure handler. That co-location is the point: an answer
+proves the erasure path is being consumed, not that a container was
+deployed. It is what `gdpr.W006` and `GET /gdpr/api/v1/owners/health` read.
+Registering by name is also what stands core's provider bridge down for this
+section exactly, instead of for the whole app (`gdpr.W012`).
 
 **Retention — the soft delete finally ends.** Deleting a recording stamps
 `deleted_at`; nothing used to remove it afterwards. `tasks.

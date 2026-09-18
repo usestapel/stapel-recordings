@@ -12,15 +12,34 @@ The ``user.merged`` survivor probe had the same hole one step further in: the
 *from* id was read under a guard, the *into* id was not.
 
 Pinned here: both handlers ACK the malformed payload and touch no rows.
+
+``user.deleted`` is answered by the handler ``register_gdpr_owner`` builds in
+stapel-core since 0.27.0, so it is reached here through the registration
+``apps.ready()`` made rather than through a copy of the protocol in
+``actions.py``. The guard being pinned is this module's own —
+``recordings_for`` — and it did not move.
 """
 import types
 import uuid
 
 import pytest
 
-from stapel_recordings.actions import handle_user_deleted, handle_user_merged
-from stapel_recordings.erasure import SUBJECT_ACCOUNT, recordings_for
+from stapel_core.gdpr import register_gdpr_owner
+
+from stapel_recordings.actions import handle_user_merged
+from stapel_recordings.erasure import (
+    OWNER,
+    SUBJECT_ACCOUNT,
+    SUBJECT_TYPES,
+    erase_subject,
+    recordings_for,
+)
 from stapel_recordings.models import Job, Recording, RecordingShare
+
+#: The registration apps.ready() made — same terms, so this is a lookup.
+handle_user_deleted = register_gdpr_owner(
+    OWNER, SUBJECT_TYPES, erase_subject
+).handle_user_deleted
 
 pytestmark = pytest.mark.django_db
 

@@ -1,6 +1,65 @@
 # Changelog
 
 
+## [0.27.0] — 2026-09-18
+
+### Changed — the erasure protocol is core's, and a transcript anchor is an integer
+
+**One protocol, one place.** This module hand-wrote the data-owner side of
+the erasure protocol — `gdpr.erasure.requested`, `gdpr.owner.probe` and the
+deprecated `user.deleted`, sixty lines that nine libraries carried verbatim.
+`apps.ready()` now declares the owner instead:
+
+```python
+register_gdpr_owner("recordings", SUBJECT_TYPES, erasure.erase_subject)
+```
+
+Core builds the same three handlers, with the deterministic receipt id and
+the receipt inside the erase's transaction. What stays here is what was ever
+ours: `erasure.erase` and the new `erasure.erase_subject`, which answers
+`None` for a subject type this module does not claim so an erasure the
+orchestrator opened no part for is never receipted.
+
+The owner name, the four subject types and the rows each one destroys are
+unchanged. What changes on the wire is the receipt envelope: it now carries
+`receipt_id` (`recordings:<subject_type>:<subject_key>:<correlation_id>`,
+derived so a redelivery mints the same one) and is keyed by the subject
+rather than the correlation.
+
+Why it matters beyond tidiness: a library that both registers a
+`GDPRProvider` and hand-writes the protocol made core's provider bridge
+stand down for the whole **app** rather than for the named **section** —
+`gdpr.W012`. A named registration makes that question exact, and one erasure
+leaves exactly one receipt per part. Two receipts assert the deletion
+happened twice, which is a false legal record rather than a duplicate log
+line.
+
+`stapel-core>=0.85.1` is the new floor: `register_gdpr_owner` and the bridge
+that yields to it.
+
+### Fixed — `TranscriptPage.next_anchor` / `prev_anchor` are declared `integer`
+
+The contract declared both as `string` and the wire sent an **integer** on
+every page that had a neighbour: `TranscriptPagination` anchors on
+`sequence_num`, and the paginator copies the raw field value into the
+envelope, stringifying only values that carry `.isoformat()`. Every other
+anchor paginator in the fleet anchors on a datetime, where the claim is
+true; this one never could be. Nothing failed loudly — a generated client
+typed `next_anchor` as `string | null` and handed `4` back as the `anchor`
+query parameter, which works — so a TypeScript consumer simply believed a
+lie about every transcript longer than one page.
+
+The anchor IS an integer, so it is declared one:
+`TranscriptPageSerializer.next_anchor/prev_anchor` are
+`IntegerField(allow_null=True)` and `TranscriptPagination.anchor_type` is
+`"integer"`. `docs/schema.json` changes `string` → `integer` for both, and
+`tests/test_contract_wire.py::KNOWN_MISMATCHES` is now empty.
+
+**This is a wire change.** A client that parsed `next_anchor` as a string
+gets a number; regenerate the client. The empty transcript page (both
+anchors `null`) is unaffected — it was always honest.
+
+
 ## [0.26.0] — 2026-09-17
 
 ### Changed — the admin no longer renders what a meeting was ABOUT

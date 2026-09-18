@@ -45,25 +45,26 @@ here anyway (``test_every_declared_path_resolves_under_this_urlconf``
 asserts against it), so a later edit to ``tests/urls.py`` cannot silently
 unhook the contract.
 
-WHAT IT FOUND on its first run — 12 of 12 operations driven, 1 red:
+WHAT IT FOUND on its first run — 12 of 12 operations driven, 1 red, now fixed:
 
-* ``GET /recordings/{id}/transcript`` declares ``TranscriptPage.next_anchor``
-  and ``prev_anchor`` as ``string`` (REQUIRED, nullable) and sends an
-  **integer** on every page that has a neighbour.
-  ``TranscriptPagination.anchor_field`` is ``sequence_num``
-  (views.py:117-128), an ``IntegerField`` (models.py:260), and
-  ``AnchorPagination.get_paginated_response`` copies the raw field value into
-  the envelope — it stringifies only values that have ``.isoformat()``
-  (stapel-core ``django/api/pagination.py``:239-266), which an int does not.
-  Every other anchor paginator in the fleet anchors on a datetime, where that
-  branch fires and the claim is true; this one anchors on an int, where it
-  never can be. A generated client types ``next_anchor`` as ``string | null``
-  and hands ``4`` back as the ``anchor`` query parameter — which happens to
-  work, so nothing fails loudly; TypeScript simply believes a lie about every
-  transcript longer than one page. Recorded in ``KNOWN_MISMATCHES`` and left
-  exactly as it is: this is a gate, not a fix. The EMPTY state of the same
-  operation (a recording with no segments, both anchors genuinely null) is
-  honest and is driven separately, which is why the two tables are separate.
+* ``GET /recordings/{id}/transcript`` declared ``TranscriptPage.next_anchor``
+  and ``prev_anchor`` as ``string`` (REQUIRED, nullable) and sent an
+  **integer** on every page that had a neighbour.
+  ``TranscriptPagination.anchor_field`` is ``sequence_num`` (views.py), an
+  ``IntegerField`` (models.py), and ``AnchorPagination.get_paginated_response``
+  copies the raw field value into the envelope — it stringifies only values
+  that have ``.isoformat()``, which an int does not. Every other anchor
+  paginator in the fleet anchors on a datetime, where that branch fires and
+  the claim is true; this one anchors on an int, where it never could be. A
+  generated client typed ``next_anchor`` as ``string | null`` and handed ``4``
+  back as the ``anchor`` query parameter — which happens to work, so nothing
+  failed loudly; TypeScript simply believed a lie about every transcript
+  longer than one page. The anchor IS an integer, so 0.27.0 declares it one
+  (``IntegerField(allow_null=True)`` plus ``anchor_type = "integer"`` on the
+  paginator) and ``KNOWN_MISMATCHES`` is empty. The EMPTY state of the same
+  operation (a recording with no segments, both anchors genuinely null) was
+  always honest and is driven separately, which is why the two tables stay
+  separate.
 
 Everything else held, including every ``nullable`` field of ``RecordingDTO``
 and ``SharedRecordingDTO`` in both states, and
@@ -622,21 +623,7 @@ def _share_unlock_no_passcode(call):
 #: An entry names the defect AND its owner, and ``strict=True`` turns a fixed
 #: one into a failure until the entry is deleted, so a finding can be neither
 #: forgotten nor quietly kept.
-KNOWN_MISMATCHES = {
-    ("GET", V1 + "/recordings/{recording_id}/transcript"):
-        "TranscriptPage.next_anchor/prev_anchor are declared `string` "
-        "(REQUIRED, nullable) and the wire sends an INTEGER on every page "
-        "that has a neighbour. TranscriptPagination.anchor_field is "
-        "`sequence_num` (views.py:117-128), an IntegerField (models.py:260), "
-        "and AnchorPagination.get_paginated_response copies the raw field "
-        "value into the envelope, stringifying only values that carry "
-        "`.isoformat()` — which an int never does. OWNER: this module's "
-        "TranscriptPageSerializer (serializers.py:78-93), which is the only "
-        "place that promises `string` for an int anchor; the paginator itself "
-        "is shared fleet code (stapel-core django/api/pagination.py:239-266) "
-        "and is honest for the datetime anchors every other caller uses. "
-        "The EMPTY state of this operation is honest and is driven separately."
-}
+KNOWN_MISMATCHES: dict = {}
 
 #: The same, for the EMPTY-state pass. Separate on purpose: a defect can live
 #: in one state and not the other, and marking both xfail would hide a claim
