@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -100,6 +100,15 @@
       "intent": "Move a recording to the DLQ once the task it was awaiting has failed for good. DLQ, not retry: the Task primitive has already exhausted its own max_attempts."
     },
     {
+      "name": "invalidate_from",
+      "kind": "gate_function",
+      "path": "stapel_recordings.pipeline.invalidate_from",
+      "intent": "Declare a stage and everything downstream of it stale, so the next run recomputes instead of reusing what is already stored. The explicit half of the input-fingerprint checkpoint (stapel_recordings.checkpoints): reach for it when the INPUT changed in a way the row cannot show — a trim the customer has now paid to lift, a parameter held outside the recording — or when the artifact predates fingerprints entirely and its provenance is unknown. Declaring is all it does: no requeue, no status change, no artifact deleted, so the previous result stays on screen until the new one replaces it. Declare first, then reprocess_recording, or the run starts over checkpoints it was meant to distrust.",
+      "instead_of": [
+        "stapel_recordings.models.Recording.workflow_state"
+      ]
+    },
+    {
       "name": "reprocess_recording",
       "kind": "gate_function",
       "path": "stapel_recordings.pipeline.reprocess_recording",
@@ -153,6 +162,18 @@
       "kind": "gate_function",
       "path": "stapel_recordings.pipeline.run_stage",
       "intent": "One step of the generic driver, normally reached only through the recording.stage consumer. Call it directly when you are driving the pipeline synchronously on purpose (a management command, an integration test) — and note the index is a duplicate-delivery hint, not a stage selector: which stage runs is decided by NAME against the currently resolved list, so this cannot be used to skip ahead."
+    },
+    {
+      "name": "stage_input_fingerprint",
+      "kind": "factory",
+      "path": "stapel_recordings.pipeline.stage_input_fingerprint",
+      "intent": "What a named stage says its input is right now — the content hash plus the parameters that change its answer, or None when the stage declares none. Read it to explain why a stage re-ran (or did not) and to record alongside a host's own artifact; do not compare it by hand, because an unrecorded fingerprint means unknown, not stale, and guessing the other way re-buys every paid stage in the deployment."
+    },
+    {
+      "name": "stage_needs_recompute",
+      "kind": "predicate",
+      "path": "stapel_recordings.pipeline.stage_needs_recompute",
+      "intent": "Is a completed stage's stored result unusable because it was computed from a different input? The question every 'already done' guard has to ask before returning early — artifact-exists is the cheap half, and it is the half that hands a paying customer the previous answer. True when the input fingerprint moved or invalidate_from declared the stage stale; false when nothing is recorded, so an upgrade never re-pays for history."
     },
     {
       "name": "start_pipeline",
@@ -343,6 +364,15 @@
       "kind": "factory",
       "path": "stapel_recordings.stages.stage_dedupe_key",
       "intent": "The identity of one unit of pipeline work — this recording, this stored object, this stage — handed to the Task primitive as its dedupe_key, so a redelivered stage event joins the task already in flight instead of starting a second one. Reach for it when submitting work outside submit_task (a host's own stage): a submission without a dedupe key is a submission a redelivery duplicates, and on a priced stage that duplicate is an invoice."
+    },
+    {
+      "name": "stage_input_dedupe_key",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.stage_input_dedupe_key",
+      "intent": "The dedupe key submit_task uses: this recording, this stage, this INPUT. Prefer it to stage_dedupe_key when a stage declares an input fingerprint — the storage key is stable across a re-conversion, so an object-path key calls a re-transcribed two-hour meeting the same work as the ten minutes it replaced. Two clicks on one re-run coalesce into one paid call; a genuinely different input does not.",
+      "instead_of": [
+        "stapel_recordings.stages.stage_dedupe_key"
+      ]
     },
     {
       "name": "start_resummarize",

@@ -56,6 +56,7 @@ boot when it can see the agent's version.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -143,6 +144,47 @@ class Stage:
 
     name: str = ""
     status: str = ""
+
+    def input_fingerprint(self, recording, ctx: dict):  # noqa: ARG002
+        """What this stage is about to read, as a short stable string.
+
+        The identity of the INPUT plus every PARAMETER that changes the
+        answer — a content hash of the object, the provider, the language,
+        a trim. The driver records it beside the completion, and the
+        stage's result is reused only while the two still agree
+        (:mod:`stapel_recordings.checkpoints`). So this is the sentence that
+        decides whether a re-run is free or paid, and getting it wrong is
+        expensive in both directions: too narrow and a changed input is
+        served the old answer, too broad and every delivery re-buys the
+        stage.
+
+        Two requirements. It must be DETERMINISTIC for an unchanged input —
+        no timestamps, no uuids, no dict ordering — because a value that
+        differs from itself asks for a re-run on every delivery. And it must
+        be CHEAP: it is read on every pass of the driver, so it reads fields
+        the row already carries and never downloads an object to hash it
+        (the convert stage hashes the audio once, while the file is local,
+        exactly so nobody has to).
+
+        ``None`` (the default) means "I do not declare one", and the stage
+        keeps the behaviour it had before checkpoints existed: its own
+        artifact guard, reused whatever the input.
+        """
+        return None
+
+    def is_stale(self, recording, ctx: dict) -> bool:
+        """Was this stage's persisted artifact computed from another input?
+
+        What a stage's own idempotence guard must ask before returning
+        early. ``if the artifact exists: return`` is the cheap half of the
+        question and it is the half that hands a paying customer the
+        previous answer; this is the other half.
+        """
+        from . import checkpoints
+
+        return checkpoints.is_stale(
+            recording, self.name, self.input_fingerprint(recording, ctx)
+        )
 
     def run(self, recording, ctx: dict) -> dict:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -259,13 +301,65 @@ class ConvertStage(Stage):
     name = "convert"
     status = RecordingStatus.NORMALIZING
 
+    def input_fingerprint(self, recording, ctx):
+        """The uploaded object and the profile it is converted at.
+
+        The source's identity is its key plus the byte count the upload
+        finalizer verified — the two facts the row already holds about it.
+        Not a content hash: the container is the thing we refuse to
+        download twice, and a key that is reused for different bytes is not
+        a thing this module's upload sessions can produce.
+
+        The audio profile is in the fingerprint because it is a parameter
+        of the conversion: change the codec or the sample rate and the
+        stored object is genuinely a different object, even from the same
+        upload. A host that converts under further parameters of its own —
+        a trim is the live example — extends this rather than replacing it.
+        """
+        from .normalize import audio_profile
+
+        key = recording.file_storage_key or ""
+        if not key:
+            return None
+        size = getattr(recording, "file_size_bytes", None)
+        try:
+            profile = audio_profile().ext
+        except Exception:  # noqa: BLE001 — a fingerprint never fails a stage
+            profile = "?"
+        return f"src={key}|bytes={size}|profile={profile}"
+
+    def keep_source(self, recording, ctx) -> bool:  # noqa: ARG002
+        """Should the uploaded container survive this conversion?
+
+        False here: we are an audio service, the extracted audio is the
+        artifact, and the container is deleted (see the class docstring and
+        the upload ceiling that was raised on that promise).
+
+        A HOOK because one host already needs the opposite and had to reach
+        for the worst available tool to get it. Their case: a recording
+        trimmed to a free allowance, where the rest of the meeting is a sale
+        away — deleting the source turns "pay to hear the rest" into "upload
+        it again". They got there by swapping the storage backend's
+        ``delete_object`` for a no-op around this call, which kept the OBJECT
+        and did not stop the purge from clearing ``file_storage_key``: the
+        bytes stayed in the bucket and the row forgot where they were, so
+        the paid re-run had nothing to convert. The purge is one decision,
+        so it gets one switch.
+
+        Called AFTER the conversion, so the answer may depend on what the
+        conversion turned out to do. Returning True keeps the object and
+        the pointer; the host drops both itself once it knows it does not
+        need them.
+        """
+        return False
+
     def run(self, recording, ctx):
         from .normalize import NormalizeFatal, NormalizePaymentRequired, audio_profile
 
-        if recording.normalized_storage_key:
+        if recording.normalized_storage_key and not self.is_stale(recording, ctx):
             # Idempotent, but NOT a bare return: a re-drive after a failed
             # purge is the retry that finally removes the container.
-            self._purge_source(recording)
+            self._purge_source(recording, ctx)
             return ctx
         if not recording.file_storage_key:
             raise StageFatal("missing_raw_storage_key")
@@ -349,7 +443,7 @@ class ConvertStage(Stage):
                 "duration_seconds", "workflow_state", "updated_at",
             ])
 
-            self._purge_source(recording)
+            self._purge_source(recording, ctx)
             return ctx
         finally:
             # Success, StageFatal, StageRetryable, a killed worker's
@@ -357,8 +451,7 @@ class ConvertStage(Stage):
             # call, and it is the only place on disk it ever existed.
             shutil.rmtree(workdir, ignore_errors=True)
 
-    @staticmethod
-    def _purge_source(recording) -> None:
+    def _purge_source(self, recording, ctx=None) -> None:
         """Delete the uploaded container and forget its key.
 
         A no-op once the key is gone, so re-entry is free. With
@@ -366,6 +459,11 @@ class ConvertStage(Stage):
         is nothing to purge — that is the documented exception, and the
         accepted-upload ceiling drops accordingly
         (``services.accepted_upload_limit``).
+
+        Also a no-op when :meth:`keep_source` claims the container: OBJECT
+        AND POINTER TOGETHER. Keeping the bytes while clearing the key
+        would leave a recording that cannot be reprocessed and an object no
+        retention policy can reach.
         """
         from .normalize import audio_only_ingest_active
 
@@ -373,6 +471,11 @@ class ConvertStage(Stage):
         if not key or key == recording.normalized_storage_key:
             return
         if not audio_only_ingest_active():
+            return
+        if self.keep_source(recording, ctx or {}):
+            logger.info(
+                "convert: source container of recording %s kept on request", recording.id
+            )
             return
         try:
             get_storage().delete_object(key)
@@ -411,6 +514,34 @@ def stage_dedupe_key(recording, stage: str) -> str:
     """
     storage_key = recording.normalized_storage_key or recording.file_storage_key or ""
     return f"{recording.id}:{storage_key}:{stage}"
+
+
+def stage_input_dedupe_key(recording, stage) -> str:
+    """The identity of one unit of work, by INPUT rather than by object path.
+
+    :func:`stage_dedupe_key` reads the storage key, which is stable across a
+    re-conversion — the normalized audio is written back to the same path.
+    That is right for the question it was written for (two deliveries racing
+    over the same object) and wrong for the one that costs money: a second
+    click on "process in full" while the first is still transcribing is the
+    SAME work and must coalesce, while the same recording re-converted from
+    a longer source is DIFFERENT work and must not.
+
+    So when the stage declares an input fingerprint, that is what the key
+    carries. When it does not, this falls back to the object path and
+    nothing changes for that stage.
+    """
+    name = getattr(stage, "name", stage) or ""
+    fingerprint = None
+    if not isinstance(stage, str):
+        try:
+            fingerprint = stage.input_fingerprint(recording, {})
+        except Exception:  # noqa: BLE001 — a dedupe key never fails a stage
+            fingerprint = None
+    if not fingerprint:
+        return stage_dedupe_key(recording, name)
+    digest = hashlib.sha256(str(fingerprint).encode("utf-8")).hexdigest()[:32]
+    return f"{recording.id}:{name}:{digest}"
 
 
 def transcribe_attempt_ceiling() -> int:
@@ -458,15 +589,18 @@ def submit_task(
     events stay in order.
 
     ``dedupe_key`` is derived from *stage* when not given explicitly (see
-    :func:`stage_dedupe_key`) — EVERY submission carries one, because a
-    submission without one is a submission that a redelivered message
-    duplicates.
+    :func:`stage_input_dedupe_key`) — EVERY submission carries one, because
+    a submission without one is a submission that a redelivered message
+    duplicates. Pass the stage OBJECT rather than its name where the stage
+    declares an input fingerprint: the key is then the identity of the
+    work, so two clicks on the same re-run coalesce and a re-run over a
+    changed input does not.
     """
     from stapel_core.comm import start, status
     from stapel_core.comm.exceptions import CommError
 
     if dedupe_key is None:
-        dedupe_key = stage_dedupe_key(recording, stage or kind)
+        dedupe_key = stage_input_dedupe_key(recording, stage or kind)
 
     try:
         task_id = start(
@@ -497,6 +631,44 @@ class TranscribeStage(Stage):
 
     name = "transcribe"
     status = RecordingStatus.TRANSCRIBING
+
+    def input_fingerprint(self, recording, ctx):  # noqa: ARG002
+        """The audio's content hash and everything else the provider is told.
+
+        The hash is the one ConvertStage took while the normalized file was
+        still on local disk, so this costs a dict lookup. It is also what
+        makes this stage's checkpoint correct rather than merely present:
+        the storage KEY of the normalized audio does not change when the
+        audio does (the object is written to the same path), so a
+        key-shaped fingerprint would call a re-converted two-hour meeting
+        identical to the ten minutes it replaced.
+
+        The rest are the parameters that change the answer for the same
+        bytes: which provider, how the language was chosen, whether
+        diarization was asked for.
+
+        ``language`` itself is deliberately NOT in here, though it is an
+        input: this stage WRITES it back with what the provider detected,
+        so a fingerprint carrying it would differ from itself the moment
+        the stage succeeded, and the next delivery would re-buy the
+        transcription for ever. ``language_mode`` is the parameter that was
+        actually asked for, and it is the one the stage does not touch. A
+        fingerprint may only read what its own stage leaves alone.
+        """
+        content_hash = (recording.workflow_state or {}).get("audio_content_hash") or (
+            recording.metadata or {}
+        ).get("audio_content_hash")
+        if not content_hash:
+            # Nothing cheap identifies the audio. Say so rather than
+            # fingerprinting the storage key, which would compare equal
+            # across a re-conversion and quietly authorise reuse.
+            return None
+        return (
+            f"audio={content_hash}"
+            f"|provider={recording.provider_override or ''}"
+            f"|language_mode={recording.language_mode or ''}"
+            f"|diarization={bool(recording.diarization_enabled)}"
+        )
 
     def build_payload(self, recording) -> dict:
         """The ``llm.transcribe`` payload for *recording*.
@@ -581,8 +753,8 @@ class TranscribeStage(Stage):
         return payload
 
     def run(self, recording, ctx):
-        if recording.segments.exists():
-            return ctx  # idempotent: already transcribed
+        if recording.segments.exists() and not self.is_stale(recording, ctx):
+            return ctx  # idempotent: already transcribed, from THIS audio
 
         payload = self.build_payload(recording)
 
@@ -604,7 +776,7 @@ class TranscribeStage(Stage):
             # transcribe_attempt_ceiling() calls, of which at most the
             # first is paid for.
             max_attempts=int(recordings_settings.TRANSCRIBE_TASK_MAX_ATTEMPTS),
-            stage=self.name,
+            stage=self,
         )
         # Reached only under synchronous dispatch (TASK_DISPATCH="inline" —
         # brokerless monolith, tests, scripts): the task already completed
@@ -614,8 +786,10 @@ class TranscribeStage(Stage):
     def resume(self, recording, ctx, result):
         # Idempotent, like run(): task.completed is at-least-once, and a
         # redelivery must not re-read a handoff object this stage has
-        # already consumed and deleted.
-        if recording.segments.exists():
+        # already consumed and deleted. "Already transcribed" is again the
+        # narrow claim — transcribed FROM THIS AUDIO; segments left by an
+        # earlier, different input are what this result replaces.
+        if recording.segments.exists() and not self.is_stale(recording, ctx):
             return ctx
         if not isinstance(result, dict) or result.get("status") != "ok":
             reason = (
@@ -662,14 +836,37 @@ class MergeStage(Stage):
     name = "merge"
     status = RecordingStatus.MERGING
 
+    def input_fingerprint(self, recording, ctx):  # noqa: ARG002
+        """The transcript this stage merges and summarizes.
+
+        Its own content, not the stage before it: the segments are
+        editable after the pipeline is done (a word corrected, a turn
+        reassigned), and the artifacts built here are artifacts OF THAT
+        CONTENT. The hash is the canonical transcript hash — the same key
+        the summary is pinned to and the one a host's staleness flag
+        already reads, so one number decides freshness everywhere instead
+        of two that can disagree.
+        """
+        from . import transcript_schema
+
+        if not recording.segments_count:
+            return None
+        return "transcript=" + transcript_schema.transcript_hash(
+            transcript_schema.from_db_segments(recording)
+        )
+
     def run(self, recording, ctx):
         from . import transcript_schema
 
-        if recording.transcript_storage_key and recording.summary:
-            return ctx  # idempotent
-
         transcript = transcript_schema.from_db_segments(recording)
-        if not recording.transcript_storage_key:
+        current = transcript_schema.transcript_hash(transcript)
+
+        # The stored transcript is an artifact OF the segments, so "does it
+        # exist" is not the question — "is it the one these segments make"
+        # is. A re-run after a re-transcription finds the key populated and
+        # the content a meeting old.
+        stored = _recorded_derived_hash(recording, DERIVED_TRANSCRIPT)
+        if not recording.transcript_storage_key or stored != current:
             storage = get_storage()
             key = _key(recording, "transcript.json")
             try:
@@ -680,6 +877,10 @@ class MergeStage(Stage):
                 raise StageRetryable("transcript_store_failed", str(exc)) from exc
             recording.transcript_storage_key = key
             recording.save(update_fields=["transcript_storage_key", "updated_at"])
+            _record_derived_hash(recording, DERIVED_TRANSCRIPT, current)
+
+        if recording.summary and _recorded_derived_hash(recording, DERIVED_SUMMARY) == current:
+            return ctx  # the summary already belongs to THIS transcript
 
         if not (recordings_settings.SUMMARIZE_ENABLED and transcript.segments):
             return ctx
@@ -692,7 +893,7 @@ class MergeStage(Stage):
             _summarize_payload(recording, transcript),
             recording=recording,
             deadline_seconds=int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
-            stage=self.name,
+            stage=self,
         )
         return self.resume(recording, ctx, result)
 
@@ -815,6 +1016,31 @@ def _transcript_language(recording, transcript) -> str:
 #: Derived-artifact kind for the narrative summary (the key under
 #: ``metadata["derived"]`` / ``metadata["staleness"]``).
 DERIVED_SUMMARY = "summary"
+
+#: Derived-artifact kind for the stored unified transcript JSON. The same
+#: convention as the summary, and for the same reason: the object at
+#: ``transcript_storage_key`` is a rendering of the segments at one moment,
+#: and "the key is set" says nothing about WHICH moment. Recorded so a
+#: re-transcription (or an edit) is followed by a rewrite instead of by a
+#: stored transcript that quietly disagrees with the rows it came from.
+DERIVED_TRANSCRIPT = "transcript"
+
+
+def _recorded_derived_hash(recording, kind: str):
+    """Which transcript version *kind* was built from, or ``None``."""
+    derived = (recording.metadata or {}).get("derived") or {}
+    value = (derived.get(kind) or {}).get("transcript_hash")
+    return str(value) if value else None
+
+
+def _record_derived_hash(recording, kind: str, transcript_hash: str) -> None:
+    """Pin *kind* to the transcript version it was just built from."""
+    metadata = dict(recording.metadata or {})
+    derived = dict(metadata.get("derived") or {})
+    derived[kind] = {**(derived.get(kind) or {}), "transcript_hash": str(transcript_hash)}
+    metadata["derived"] = derived
+    recording.metadata = metadata
+    recording.save(update_fields=["metadata", "updated_at"])
 
 
 def summary_from_result(result):
@@ -1193,7 +1419,24 @@ def transcript_from_result(result: dict) -> dict:
 
 def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_used) -> None:
     """Write Speaker/Segment rows from an ``llm.transcribe`` result dict and
-    denormalize counters onto the Recording."""
+    denormalize counters onto the Recording.
+
+    REPLACES, and replaces ATOMICALLY. A recording can be transcribed more
+    than once — a re-conversion of a longer source, a provider changed, a
+    reprocess — and the rows of the previous transcript are not a base to
+    add to: appending would interleave two transcripts of the same meeting
+    into one unreadable list, with duplicated sequence numbers and a word
+    count that belongs to neither.
+
+    The delete and the insert are one transaction, so the change is visible
+    to readers only as a whole: the user keeps seeing the previous
+    transcript — every segment of it — until the moment the new one is
+    complete, and never a half-emptied one. That is also why the delete
+    happens HERE, at the end of the paid work, rather than when the re-run
+    was scheduled: a run cleared up front leaves the customer staring at an
+    empty meeting for as long as the transcription takes, and at nothing at
+    all if it fails.
+    """
     from django.db import transaction
 
     words = transcript.get("words") or []
@@ -1203,6 +1446,13 @@ def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_
     duration = transcript.get("duration_seconds")
 
     with transaction.atomic():
+        # Segments first: Speaker is their FK target, and a speaker deleted
+        # while a segment still points at it nulls that segment's speaker
+        # instead of removing it — the old transcript would survive as rows
+        # with no voice attached to them.
+        recording.segments.all().delete()
+        recording.speakers.all().delete()
+
         speaker_map: dict[str, Speaker] = {}
         for idx, label in enumerate(speakers_detected):
             speaker_map[label] = Speaker.objects.create(
@@ -1430,6 +1680,9 @@ __all__ = [
     "NoTranscriptToSummarize",
     "SummarizationUnavailable",
     "DERIVED_SUMMARY",
+    "DERIVED_TRANSCRIPT",
+    "stage_dedupe_key",
+    "stage_input_dedupe_key",
     "summary_from_result",
     "store_summary",
     "start_resummarize",

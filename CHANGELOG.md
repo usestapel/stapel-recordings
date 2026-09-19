@@ -1,6 +1,72 @@
 # Changelog
 
 
+## [0.28.0] — 2026-09-19
+
+### Fixed — a checkpoint is only valid for the input that produced it
+
+**The defect, in one line: "already done" meant "an artifact with this name
+exists".** A recording processed under a host's trim, re-queued in full
+after the customer paid for the whole meeting, completed in 55 seconds and
+ran nothing. The driver cleared its cursor as designed; every stage then
+found its own artifact of the trimmed run — a normalized object, segment
+rows, a stored transcript, a summary — and returned early on its existence.
+Status `completed`, duration 599 seconds of a 7116-second meeting, and an
+invoice the customer had already paid.
+
+A stage checkpoint is now a PAIR: the artifact, and the fingerprint of the
+input and parameters it was computed from
+(`stapel_recordings.checkpoints`). A stage declares its own —
+`Stage.input_fingerprint(recording, ctx)`, a content hash plus whatever
+changes the answer — the driver records it beside the completion, and the
+result is reused only while the two still agree. Change the input and the
+stage recomputes, together with every stage downstream of it; retry the
+same input and it resumes for free, which is the half that keeps a failed
+stage from re-buying a priced call it already has an answer for.
+
+- `ConvertStage` fingerprints the uploaded object and the audio profile;
+  `TranscribeStage` fingerprints the normalized audio's content hash and
+  the parameters the provider is told (NOT the detected language, which the
+  stage writes back — a fingerprint may only read what its own stage leaves
+  alone). `MergeStage` keys on the transcript hash, so a re-transcription
+  rewrites `transcript.json` and re-summarizes instead of finding both
+  fields populated and stopping.
+- `pipeline.invalidate_from(recording_id, stage)` — the explicit half, for
+  a parameter that does not live on the row and for artifacts produced
+  before fingerprints existed. It DECLARES only: no requeue, no status
+  change, nothing deleted. Pair it with `reprocess_recording`.
+- An unrecorded fingerprint means unknown, not stale. Nothing in an
+  existing deployment re-runs on upgrade, and a crash between "artifact
+  written" and "completion committed" still recovers without paying twice.
+
+**Segment rows are now REPLACED, atomically.** `_persist_transcript`
+deletes the previous transcript's segments and speakers inside the same
+transaction that writes the new ones. It used to only insert, so a second
+transcription of the same meeting interleaved two transcripts into one
+list with duplicated sequence numbers. The delete happens at the END of the
+paid work rather than when the re-run is scheduled: the user keeps seeing
+the previous result — all of it — until the new one is complete, and the
+whole of it if the re-run fails.
+
+**`ConvertStage.keep_source(recording, ctx)`** — a hook for the one host
+that needs the uploaded container to survive the conversion (a recording
+trimmed to a free allowance, where the rest of the meeting is a sale away).
+It got there by swapping the storage backend's `delete_object` for a no-op
+around the stage, which kept the object and did not stop the purge from
+clearing `file_storage_key`: the bytes stayed in the bucket and the row
+forgot where they were, so the paid re-run had nothing to convert. The
+purge is one decision and now has one switch — object and pointer together.
+
+**`stages.stage_input_dedupe_key`** replaces `stage_dedupe_key` inside
+`submit_task`. The storage key is stable across a re-conversion (the
+normalized object is written back to the same path), so an object-path
+dedupe key called a re-transcribed two-hour meeting the same work as the
+ten minutes it replaced. The key now carries the input fingerprint: two
+clicks on one re-run coalesce into one paid call, a different input does
+not. `submit_task(stage=...)` therefore takes the stage OBJECT where it
+used to take its name; a name still works and keeps the old key.
+
+
 ## [0.27.0] — 2026-09-18
 
 ### Changed — the erasure protocol is core's, and a transcript anchor is an integer

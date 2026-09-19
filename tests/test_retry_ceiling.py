@@ -66,7 +66,9 @@ class TestTheCeiling:
 
         assert seen["kind"] == "llm.transcribe"
         assert seen["max_attempts"] == 1
-        assert seen["stage"] == "transcribe"
+        # The STAGE, not its name: the dedupe key is built from the stage's
+        # input fingerprint, and a name cannot be asked for one.
+        assert seen["stage"].name == "transcribe"
 
 
 class TestEverySubmissionIsDeduplicated:

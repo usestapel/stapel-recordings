@@ -24,11 +24,11 @@ pip install stapel-recordings
 
 | Fact | Value |
 |---|---|
-| Version | `0.27.0` |
+| Version | `0.28.0` |
 | Python | `>=3.11` (3.11, 3.12, 3.13, 3.14) |
 | HTTP operations | 12 |
 | Config axes | 1 |
-| Usage surface | 49 |
+| Usage surface | 53 |
 | Extension points | 7 |
 | Error codes | 61 |
 | Fleet dependencies | [`stapel-agent`](https://github.com/usestapel/stapel-agent) (optional) · [`stapel-auth`](https://github.com/usestapel/stapel-auth) (optional) · [`stapel-core`](https://github.com/usestapel/stapel-core) |
@@ -162,7 +162,13 @@ STAPEL_RECORDINGS = {
 ```
 
 A generic driver runs the resolved stage list, advancing the status machine
-and emitting the next stage through the outbox. See
+and emitting the next stage through the outbox. A stage that has already
+run is skipped only while its INPUT has not changed: each completion
+records the stage's `input_fingerprint` (content hash + parameters), so a
+re-run over a different source re-runs every stage from the one that
+changed — and a retry over the same source resumes without re-buying the
+priced call. `pipeline.invalidate_from(recording_id, stage)` declares a
+stage stale for the cases a fingerprint cannot see. See
 [MODULE.md](https://github.com/usestapel/stapel-recordings/blob/main/MODULE.md)
 for the stage contract and worked examples.
 

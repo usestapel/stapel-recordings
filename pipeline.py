@@ -33,6 +33,17 @@ as each successful stage, the *names* of the completed stages
   (never a silent ``completed``). Stage names within one pipeline must be
   unique — the completed-set treats a repeated name as already done.
 
+Reuse is keyed on the INPUT, not on the stage's name. A completed stage is
+skipped only while the artifact it left behind was computed from the input
+the stage would read now: each completion records the stage's
+``input_fingerprint`` (:mod:`stapel_recordings.checkpoints`), and a stage
+whose fingerprint has moved — or one an app layer declared stale through
+:func:`invalidate_from` — re-runs, together with everything downstream of
+it. Without that, "already done" meant "an artifact with this name exists",
+and a re-run over a changed input handed back the previous answer while
+reporting success. A retry over an UNCHANGED input still resumes for free:
+same fingerprint, same checkpoint, nothing re-bought.
+
 Run identity — ``run_id`` / ``attempt``. A recording can go through the
 pipeline more than once (:func:`reprocess_recording`), and every run costs
 real money to whoever hosts it. Each run therefore carries its own
@@ -85,7 +96,7 @@ from django.db import transaction
 from django.utils import timezone
 from stapel_core.comm import mutate_and_emit
 
-from . import events
+from . import checkpoints, events
 from .conf import recordings_settings
 from .models import Recording, RecordingStatus
 from .stages import StageAwaiting, StageFatal, StageNeedsPayment, StageRetryable, get_stage
@@ -157,6 +168,134 @@ def start_pipeline(recording_id: str) -> None:
         events.emit_stage(recording.id, 0)
 
 
+# ─── Checkpoint validity ───────────────────────────────────────────────
+
+
+def stage_input_fingerprint(recording, stage_name: str, ctx=None):
+    """The fingerprint *stage_name* declares for the input it would read now.
+
+    ``None`` when the stage declares none, cannot be resolved, or raises —
+    a stage that cannot say what its input is has not said the input
+    changed, and an exception in a fingerprint must never be the reason a
+    pipeline stops. Read it to explain a re-run; compare it yourself only
+    through :func:`stapel_recordings.checkpoints.is_stale`, which knows
+    what an unknown means.
+    """
+    try:
+        stage = get_stage(stage_name)
+    except (KeyError, TypeError, ImportError):
+        return None
+    if ctx is None:
+        ctx = _pipeline_meta(recording).get("ctx") or {}
+    try:
+        value = stage.input_fingerprint(recording, ctx)
+    except Exception:  # noqa: BLE001 — see the docstring
+        logger.warning(
+            "pipeline: stage %s could not fingerprint its input for %s",
+            stage_name, recording.id, exc_info=True,
+        )
+        return None
+    return str(value) if value else None
+
+
+def stage_needs_recompute(recording, stage_name: str, ctx=None) -> bool:
+    """Is *stage_name*'s persisted result unusable for the current input?"""
+    return checkpoints.is_stale(
+        recording, stage_name, stage_input_fingerprint(recording, stage_name, ctx)
+    )
+
+
+def _next_pending(recording, pipeline: list[str]) -> tuple[int | None, bool]:
+    """``(index of the stage to run, is it a recomputation)``.
+
+    The first listed stage whose name has not completed — or, before that,
+    the first COMPLETED stage whose checkpoint no longer matches its input.
+    A stage that has to recompute takes the whole tail of the pipeline with
+    it: its output is every later stage's input, so their artifacts were
+    computed from something that is about to stop existing. They are
+    dropped from the cursor here and re-run in order, each still consulting
+    its own checkpoint when its turn comes — so a stage whose input turns
+    out unchanged after all (a diarizer fed the same audio) is free to
+    say so.
+
+    The fingerprints themselves are deliberately KEPT while the cursor is
+    dropped: they describe the artifacts still sitting in storage, and a
+    stage two steps down needs its old fingerprint intact to notice that
+    its input has moved.
+    """
+    completed = set(_completed_stages(recording))
+    for index, name in enumerate(pipeline):
+        if name not in completed:
+            return index, False
+        if stage_needs_recompute(recording, name):
+            logger.info(
+                "pipeline: recording %s stage %s was computed from a different "
+                "input — recomputing it and every stage after it",
+                recording.id, name,
+            )
+            _drop_cursor_from(recording, pipeline, index)
+            return index, True
+    return None, False
+
+
+def _drop_cursor_from(recording, pipeline: list[str], index: int) -> None:
+    """Un-complete *pipeline[index:]* (in memory). Fingerprints survive."""
+    tail = set(pipeline[index:])
+    state = dict(recording.workflow_state or {})
+    pl = dict(state.get("pipeline") or {})
+    kept = [name for name in (pl.get("completed") or []) if name not in tail]
+    pl["completed"] = kept
+    pl["completed_index"] = index - 1
+    pl.pop("ctx", None)
+    state["pipeline"] = pl
+    recording.workflow_state = state
+
+
+def invalidate_from(recording_id: str, stage: str) -> bool:
+    """Declare *stage* and every stage after it stale. Returns True if applied.
+
+    The explicit half of :mod:`stapel_recordings.checkpoints` — for what a
+    fingerprint cannot see by itself. Two live reasons: a parameter that
+    does not live on the row changed (a plan that trimmed the audio was
+    paid for, so the source is no longer the same input), and an artifact
+    produced before fingerprints were recorded at all, whose provenance is
+    unknown and therefore trusted.
+
+    Declares only. It does NOT requeue, does not touch status, does not
+    delete a single artifact: the host stays in charge of the transition
+    (:func:`reprocess_recording` / :func:`retry_recording`), and the user
+    keeps seeing the previous result until the new one replaces it. Pair it
+    with the transition — declare first, requeue second — so a requeue that
+    lands before the declaration cannot run the pipeline over checkpoints
+    it was supposed to distrust.
+
+    Unknown stage names are accepted and recorded: a stage may be absent
+    from the currently resolved pipeline and present in the next delivery's.
+    """
+    with transaction.atomic():
+        try:
+            recording = Recording.objects.select_for_update().get(pk=recording_id)
+        except Recording.DoesNotExist:
+            logger.warning("invalidate_from: recording %s not found", recording_id)
+            return False
+        try:
+            pipeline = resolve_pipeline(recording)
+        except Exception:
+            logger.exception("invalidate_from: pipeline resolver failed for %s", recording_id)
+            pipeline = []
+        if stage in pipeline:
+            doomed = pipeline[pipeline.index(stage):]
+        else:
+            doomed = [stage]
+        checkpoints.declare_invalid(recording, doomed)
+        recording.save(update_fields=["workflow_state", "updated_at"])
+    logger.info(
+        "pipeline: recording %s — stages %s declared stale, they will recompute",
+        recording_id, ", ".join(doomed),
+    )
+    return True
+
+
 # ─── Driver ────────────────────────────────────────────────────────────
 
 
@@ -199,18 +338,21 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             _dlq(recording, stage="<pipeline>", reason="empty_pipeline")
             return
 
-        if stage_index <= _completed_index(recording):
+        next_index, recompute = _next_pending(recording, pipeline)
+        if not recompute and stage_index <= _completed_index(recording):
             return  # duplicate delivery of an already-completed stage — no-op
-
-        completed = set(_completed_stages(recording))
-        next_index = next((i for i, name in enumerate(pipeline) if name not in completed), None)
         if next_index is None:
             _finalize(recording)  # every listed stage has completed
             return
         stage_name = pipeline[next_index]
 
         started = (recording.workflow_state or {}).get("pipeline", {}).get("stage")
-        if started and started != stage_name and started not in pipeline and started not in completed:
+        if (
+            started
+            and started != stage_name
+            and started not in pipeline
+            and started not in set(_completed_stages(recording))
+        ):
             logger.warning(
                 "pipeline: recording %s pending stage %r was removed from the "
                 "resolved pipeline — skipping to %r",
@@ -230,6 +372,8 @@ def run_stage(recording_id: str, stage_index: int) -> None:
         recording.save(update_fields=["status", "workflow_state", "updated_at"])
 
         ctx = (recording.workflow_state or {}).get("pipeline", {}).get("ctx") or {}
+        # Read BEFORE the stage consumes its input — see _mark_completed.
+        fingerprint = stage_input_fingerprint(recording, stage_name, ctx)
         try:
             new_ctx = stage.run(recording, ctx) or {}
         except StageAwaiting as exc:
@@ -238,7 +382,10 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             # (and only resume) can complete this exact stage; the
             # recording's status stays stage-specific — the user sees
             # "transcribing", not a blank.
-            _set_awaiting(recording, next_index, stage_name, exc.task_id, exc.kind)
+            _set_awaiting(
+                recording, next_index, stage_name, exc.task_id, exc.kind,
+                fingerprint=fingerprint,
+            )
             recording.save(update_fields=["workflow_state", "updated_at"])
             logger.info(
                 "pipeline: recording %s stage %s awaiting task %s (%s)",
@@ -269,7 +416,7 @@ def run_stage(recording_id: str, stage_index: int) -> None:
         # from crash recovery (crash before this commit re-runs the stage;
         # after it, the duplicate is dropped by the completed_index guard
         # above and public events are never re-emitted with fresh event_ids).
-        _mark_completed(recording, next_index, stage_name)
+        _mark_completed(recording, next_index, stage_name, fingerprint)
         recording.save(update_fields=["retry_count", "workflow_state", "updated_at"])
 
         events.emit_stage_completed(recording, stage_name, next_index, **run_identity(recording))
@@ -307,6 +454,7 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
 
         stage_name = awaiting.get("stage") or ""
         stage_index = int(awaiting.get("index", 0))
+        fingerprint = awaiting.get("fingerprint")
         try:
             stage = get_stage(stage_name)
         except (KeyError, TypeError, ImportError) as exc:
@@ -339,7 +487,7 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
         _clear_awaiting(recording)
         _clear_last_error(recording)
         _store_ctx(recording, new_ctx)
-        _mark_completed(recording, stage_index, stage_name)
+        _mark_completed(recording, stage_index, stage_name, fingerprint)
         _ensure_run(recording)
         recording.save(update_fields=["retry_count", "workflow_state", "updated_at"])
 
@@ -681,7 +829,17 @@ def _completed_stages(recording: Recording) -> list[str]:
     return list(_pipeline_meta(recording).get("completed") or [])
 
 
-def _mark_completed(recording: Recording, stage_index: int, stage_name: str) -> None:
+def _mark_completed(
+    recording: Recording, stage_index: int, stage_name: str, fingerprint=None
+) -> None:
+    """Record the completion AND what produced it.
+
+    *fingerprint* is the stage's input fingerprint as read BEFORE it ran,
+    not after: a stage is entitled to consume its input (the convert stage
+    purges the container it converted), and a fingerprint taken afterwards
+    would describe an input nobody will ever present again — which reads as
+    "changed" on the next delivery and re-runs the stage for ever.
+    """
     state = dict(recording.workflow_state or {})
     pl = dict(state.get("pipeline") or {})
     done = list(pl.get("completed") or [])
@@ -691,6 +849,9 @@ def _mark_completed(recording: Recording, stage_index: int, stage_name: str) -> 
     pl["completed_index"] = stage_index
     state["pipeline"] = pl
     recording.workflow_state = state
+    checkpoints.record_fingerprint(recording, stage_name, fingerprint)
+    # The declaration asked for exactly this re-run, and it has happened.
+    checkpoints.clear_invalidation(recording, stage_name)
 
 
 def _set_current(recording: Recording, stage_index: int, stage_name: str) -> None:
@@ -704,7 +865,12 @@ def _set_current(recording: Recording, stage_index: int, stage_name: str) -> Non
 
 
 def _set_awaiting(
-    recording: Recording, stage_index: int, stage_name: str, task_id: str, kind: str
+    recording: Recording,
+    stage_index: int,
+    stage_name: str,
+    task_id: str,
+    kind: str,
+    fingerprint=None,
 ) -> None:
     """Remember which stage is awaiting which task.
 
@@ -720,6 +886,11 @@ def _set_awaiting(
         "stage": stage_name,
         "index": stage_index,
         "since": timezone.now().isoformat(),
+        # The input this submission was made FOR, read before the stage ran.
+        # resume() completes the stage minutes or hours later, by which time
+        # the input may no longer be readable the same way; the checkpoint
+        # must still record what the result came from.
+        "fingerprint": str(fingerprint) if fingerprint else None,
     }
     pl["stage_index"] = stage_index
     pl["stage"] = stage_name
@@ -784,5 +955,8 @@ __all__ = [
     "retry_recording",
     "resume_after_payment",
     "reprocess_recording",
+    "invalidate_from",
+    "stage_input_fingerprint",
+    "stage_needs_recompute",
     "run_identity",
 ]

@@ -20,7 +20,7 @@ PYTHON ?= python3
 # Emit the contract triad + capabilities.json + llms.txt (the fifth contract
 # artifact, stapel_tools.llms_txt) into docs/.
 #
-# The llms.txt budget is raised from the generator's default 4000 to 8000,
+# The llms.txt budget is raised from the generator's default 4000 to 9000,
 # the same exception stapel-auth (8000) and stapel-workspaces (4500) already
 # take. This is the fleet's most file-rich module (39 usage-surface entries
 # across services, storage, pipeline, stages, sources, resources, erasure
@@ -30,11 +30,15 @@ PYTHON ?= python3
 # reprocess intent that now has to explain it) landed at 6488/6500, i.e. on
 # the ceiling, so the ceiling moved to 7000 — and 0.22.0's audio-only ingest
 # (two upload ceilings, the stored profile, the census) landed at 6994/7000,
-# one token under it, so it moves to 8000. Raise the ceiling, do NOT
+# one token under it, so it moves to 8000 — and 0.28.0's checkpoint
+# surface (invalidate_from + the three fingerprint readers, which have
+# to explain when reuse is and is not allowed, because getting that
+# sentence wrong is what let a paid re-run reuse a trimmed result)
+# landed at 8382/8000, so it moves to 9000. Raise the ceiling, do NOT
 # shorten `intent` lines in docs/capabilities.meta.json to fit — a trimmed
 # context file is indistinguishable from a complete one at the point of use,
 # which is the failure mode the budget gate exists to prevent.
-# contract-check below enforces the same 8000 ceiling.
+# contract-check below enforces the same 9000 ceiling.
 #
 # README.md is the SIXTH artifact (tracker #257): assembled by
 # stapel_tools.readme from docs/readme.md (the human half — what this module
@@ -44,7 +48,7 @@ PYTHON ?= python3
 contract:
 	$(PYTHON) -m stapel_recordings._codegen --out docs
 	$(PYTHON) -m stapel_recordings._capabilities --out docs
-	$(PYTHON) -m stapel_tools.llms_txt . --out docs --budget 8000
+	$(PYTHON) -m stapel_tools.llms_txt . --out docs --budget 9000
 	$(PYTHON) -m stapel_tools.readme .
 
 # Drift gate: regenerate into a temp dir and diff against the committed docs/*.json
@@ -53,7 +57,7 @@ contract-check:
 	@tmp=$$(mktemp -d); \
 	$(PYTHON) -m stapel_recordings._codegen --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
 	$(PYTHON) -m stapel_recordings._capabilities --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
-	$(PYTHON) -m stapel_tools.llms_txt . --out "$$tmp" --budget 8000 || { rm -rf "$$tmp"; exit 1; }; \
+	$(PYTHON) -m stapel_tools.llms_txt . --out "$$tmp" --budget 9000 || { rm -rf "$$tmp"; exit 1; }; \
 	rc=0; \
 	for f in schema.json flows.json errors.json capabilities.json llms.txt; do \
 		if ! diff -q "docs/$$f" "$$tmp/$$f" >/dev/null 2>&1; then \

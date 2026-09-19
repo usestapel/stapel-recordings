@@ -123,7 +123,13 @@ STAPEL_RECORDINGS = {
 ```
 
 A generic driver runs the resolved stage list, advancing the status machine
-and emitting the next stage through the outbox. See
+and emitting the next stage through the outbox. A stage that has already
+run is skipped only while its INPUT has not changed: each completion
+records the stage's `input_fingerprint` (content hash + parameters), so a
+re-run over a different source re-runs every stage from the one that
+changed — and a retry over the same source resumes without re-buying the
+priced call. `pipeline.invalidate_from(recording_id, stage)` declares a
+stage stale for the cases a fingerprint cannot see. See
 [MODULE.md](https://github.com/usestapel/stapel-recordings/blob/main/MODULE.md)
 for the stage contract and worked examples.
 
