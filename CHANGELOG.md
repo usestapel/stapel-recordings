@@ -1,6 +1,62 @@
 # Changelog
 
 
+## [0.29.0] — 2026-09-20
+
+### Fixed — the merge deadline killed the retries it declared
+
+`MergeStage` submitted `llm.summarize` with
+`deadline_seconds = SUMMARIZE_TIMEOUT_SECONDS` — the very number this
+package's task delegate uses as the CALL timeout — while leaving
+`max_attempts` at three. Attempt one consumed the whole deadline, the
+60-second task sweep then failed the row with "deadline exceeded" before
+attempt two could exist, and the pipeline DLQ'd the recording at
+`merge/task_failed`. A retry ladder nobody could climb (a client stand,
+2026-09-13).
+
+Two numbers now, and they are different by construction:
+
+* `summarize_budget_seconds(recording)` — what ONE call may take, sized
+  to the meeting (`SUMMARIZE_TIMEOUT_SECONDS` + hours ×
+  `SUMMARIZE_SECONDS_PER_HOUR`, capped at
+  `SUMMARIZE_TIMEOUT_MAX_SECONDS`). A flat 300 s cannot bound a
+  map-reduce over a four-hour transcript.
+* `task_deadline_seconds(budget, attempts)` — budget × attempts +
+  `TASK_DEADLINE_HEADROOM_SECONDS` (420). Call it wherever a stage
+  passes both `deadline_seconds` and `max_attempts`.
+
+The per-recording budget reaches the executor as `task_timeout_seconds`
+in the payload, which `task_delegates` POPS before the Function call —
+it is ours, and the agent's contract rightly refuses keys it does not
+declare.
+
+### Fixed — a summary retry no longer re-buys the summary
+
+`_summarize_payload` now sends `idempotency_key = summary:<transcript
+hash>` (stapel-agent >= 0.29.0), so every attempt after the first is
+served from the agent's per-part checkpoint. That is what makes
+`SUMMARIZE_TASK_MAX_ATTEMPTS` = 2 affordable, and
+`summarize_attempt_ceiling()` states the product of the two ladders the
+way `transcribe_attempt_ceiling()` does for transcription.
+
+### Fixed — the watchdog had no ceiling
+
+`recordings_reconcile` re-emits `recording.stage` for anything
+non-terminal that has not moved, and a re-drive that lands on
+`StageAwaiting` never touches `retry_count`. So a recording the pipeline
+could not finish was re-driven every `STUCK_THRESHOLD_SECONDS` for as
+long as it existed — a client stand did that for a fortnight against an
+empty download allowlist (2026-08-20), and nothing but the agent's
+7-day checkpoint stood between that loop and a second invoice.
+
+`pipeline.note_reconcile_redrive()` counts each re-drive on the
+recording and refuses past `RECONCILE_MAX_REDRIVES` (5), failing it with
+`last_error.reason = "reconcile_exhausted"` where a person can see it.
+The count resets whenever a stage actually completes, because what the
+cap bounds is "re-driven and got nowhere", not "took a long time". 0
+restores the old unbounded behaviour, written down rather than reached
+by accident.
+
 ## [0.28.0] — 2026-09-19
 
 ### Fixed — a checkpoint is only valid for the input that produced it

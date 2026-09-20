@@ -48,8 +48,20 @@ def _make_delegate(kind: str, timeout_setting: str):
         from stapel_core.comm import call
 
         from .conf import recordings_settings
+        from .stages import TASK_TIMEOUT_KEY
 
-        timeout = float(getattr(recordings_settings, timeout_setting))
+        # A per-task budget beats a per-deployment one where the work
+        # grows with the recording: a four-hour meeting's summary is a
+        # map-reduce the flat SUMMARIZE_TIMEOUT_SECONDS never covered.
+        # Popped, not forwarded — the agent's schema refuses keys it does
+        # not declare, and this one is the executor's, not the call's.
+        payload = dict(payload or {})
+        stated = payload.pop(TASK_TIMEOUT_KEY, None)
+        timeout = (
+            float(stated)
+            if stated
+            else float(getattr(recordings_settings, timeout_setting))
+        )
         # noqa: R009 — this IS the sanctioned bridge, not the defect the
         # rule targets: (1) a background task executor waits, not an HTTP
         # worker; (2) the timeout is explicit and long; (3) waiting state is

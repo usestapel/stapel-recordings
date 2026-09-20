@@ -1,8 +1,8 @@
-# stapel-recordings 0.28.0
+# stapel-recordings 0.29.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 53 · extension points 7 · operations 12 · error codes 61.
+Contract: axes 1 · surface 57 · extension points 7 · operations 12 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -29,6 +29,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - invalidate_from — stapel_recordings.pipeline.invalidate_from
   instead of: stapel_recordings.models.Recording.workflow_state
   Declare a stage and everything downstream of it stale, so the next run recomputes instead of reusing what is already stored. The explicit half of the input-fingerprint checkpoint (stapel_recordings.checkpoints): reach for it when the INPUT changed in a way the row cannot show — a trim the customer has now paid to lift, a parameter held outside the recording — or when the artifact predates fingerprints entirely and its provenance is unknown. Declaring is all it does: no requeue, no status change, no artifact deleted, so the previous result stays on screen until the new one replaces it. Declare first, then reprocess_recording, or the run starts over checkpoints it was meant to distrust.
+- note_reconcile_redrive — stapel_recordings.pipeline.note_reconcile_redrive
+  Count one watchdog re-drive of a recording and answer whether it may be re-driven at all; False means it has just been failed with reason=reconcile_exhausted. Call it in any custom watchdog that re-emits recording.stage, because a re-drive does not consume retry_count and an uncounted one repeats for the life of the recording.
 - purge_soft_deleted_recordings — stapel_recordings.tasks.purge_soft_deleted_recordings
   The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever.
 - reprocess_recording — stapel_recordings.pipeline.reprocess_recording
@@ -140,6 +142,12 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - submit_task — stapel_recordings.stages.submit_task
   instead of: stapel_core.comm.call
   Submit long-running work (transcription, summary) as a task and return control right away: a result comes back only under synchronous dispatch, otherwise StageAwaiting is raised and the stage resumes in Stage.resume on task.completed. Unlike comm.call, a synchronous call would hold the worker for the model's entire runtime and requires guessing a timeout that a queue makes unguessable.
+- summarize_attempt_ceiling — stapel_recordings.stages.summarize_attempt_ceiling
+  The MOST llm.summarize calls one recording's merge stage can cause: MAX_STAGE_RETRIES x SUMMARIZE_TASK_MAX_ATTEMPTS. The sibling of transcribe_attempt_ceiling, and read for the same reason before raising either setting; every call after the first is free only because _summarize_payload passes the transcript hash as the agent's idempotency key.
+- summarize_budget_seconds — stapel_recordings.stages.summarize_budget_seconds
+  How long ONE llm.summarize call may take for THIS recording: the flat SUMMARIZE_TIMEOUT_SECONDS plus the meeting's own length, clamped at SUMMARIZE_TIMEOUT_MAX_SECONDS. Use it instead of reading the flat setting whenever a budget has to cover a map-reduce whose work grows with the transcript.
+- task_deadline_seconds — stapel_recordings.stages.task_deadline_seconds
+  The task deadline that lets a task actually USE the attempts it declares: one attempt's budget x max_attempts + TASK_DEADLINE_HEADROOM_SECONDS. Call it wherever a stage passes both deadline_seconds and max_attempts to submit_task, because setting the deadline to one attempt's budget makes every later attempt unreachable ('deadline exceeded' before attempt two).
 - transcribe_attempt_ceiling — stapel_recordings.stages.transcribe_attempt_ceiling
   The MOST provider calls one recording's transcribe stage can cause: MAX_STAGE_RETRIES x TRANSCRIBE_TASK_MAX_ATTEMPTS. Read it in a host's own check or dashboard before raising either setting — the two retry ladders multiply, and the shipped 3x3 is how one 148-minute recording reached the provider six times.
 - transcript_from_result — stapel_recordings.stages.transcript_from_result

@@ -95,16 +95,37 @@ class Command(BaseCommand):
             .filter(updated_at__lt=cutoff, deleted_at__isnull=True)
             .order_by("updated_at")[:BATCH]
         )
+        from ...pipeline import note_reconcile_redrive
+
         count = 0
+        exhausted = 0
         # One atomic batch: the outbox rows commit together (and emit() is
         # correctly inside a transaction — no outside-atomic warning noise).
         with transaction.atomic():
             for r in qs:
+                # COUNTED, and finite. A re-drive costs nothing it can see:
+                # it does not touch retry_count, so before this counter a
+                # recording the pipeline could not finish was re-driven
+                # every pass forever — the iron-agent stand did exactly
+                # that for a fortnight against an empty allowlist
+                # (2026-08-20), and a storm of 64 errors in one week on
+                # 2026-09-10 looked the same from the outside. The stage
+                # ladder and the task ladder both declare a ceiling; a
+                # watchdog that declares none is where the ceilings leak.
+                if not note_reconcile_redrive(r):
+                    exhausted += 1
+                    continue
                 stage_index = (r.workflow_state or {}).get("pipeline", {}).get("stage_index")
                 if stage_index is None:
                     stage_index = 0  # never started a stage — restart from the top
                 emit_stage(r.id, int(stage_index))
                 count += 1
+        if exhausted:
+            logger.warning(
+                "recordings_reconcile: %d recording(s) were failed instead of "
+                "re-driven again — see last_error.reason=reconcile_exhausted",
+                exhausted,
+            )
         return count
 
     def cleanup_abandoned_uploads(self) -> int:

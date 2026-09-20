@@ -409,6 +409,7 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             return
 
         recording.retry_count = 0
+        _reset_reconcile_redrives(recording)
         _clear_last_error(recording)
         _store_ctx(recording, new_ctx)
         # Persist "stage N completed" in the same transaction as the success
@@ -484,6 +485,7 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
             return
 
         recording.retry_count = 0
+        _reset_reconcile_redrives(recording)
         _clear_awaiting(recording)
         _clear_last_error(recording)
         _store_ctx(recording, new_ctx)
@@ -711,6 +713,66 @@ def _handle_retry(recording: Recording, stage_name: str, reason: str, detail=Non
     recording.save(update_fields=["retry_count", "status", "workflow_state", "updated_at"])
     logger.info("pipeline: %s stage %s retryable (%s), attempt %d — parked",
                 recording.id, stage_name, reason, recording.retry_count)
+
+
+def note_reconcile_redrive(recording: Recording) -> bool:
+    """Count one watchdog re-drive. False means "do not re-drive it again".
+
+    THE HOLE THIS CLOSES. Every other ladder in this pipeline declares a
+    ceiling — ``MAX_STAGE_RETRIES`` for the stage, ``max_attempts`` for
+    the task, and :func:`stages.transcribe_attempt_ceiling` proves the
+    two do not multiply. The watchdog declared none. It re-emits
+    ``recording.stage`` for anything non-terminal that has not moved in
+    ``STUCK_THRESHOLD_SECONDS``, and a re-drive that lands on
+    ``StageAwaiting`` returns without touching ``retry_count`` — so a
+    recording the pipeline cannot finish is re-driven every 17.5 minutes
+    for as long as it exists. A client stand ran that way for a
+    fortnight against an empty download allowlist (2026-08-20). Nothing
+    charged money in that particular case, because the agent refused
+    before the provider; that was luck, not design — the agent's
+    checkpoint expires in 7 days and the watchdog does not.
+
+    So: a counter on the recording, a declared cap, and a DLQ when it is
+    spent. Reset whenever the pipeline actually moves (see
+    :func:`_reset_reconcile_redrives`), because what the cap must bound
+    is "re-driven and got nowhere", not "took a long time".
+    """
+    cap = int(recordings_settings.RECONCILE_MAX_REDRIVES)
+    state = recording.workflow_state or {}
+    pipeline_state = dict(state.get("pipeline") or {})
+    used = int(pipeline_state.get("reconcile_redrives") or 0)
+
+    if cap and used >= cap:
+        stage_name = str(pipeline_state.get("stage") or "") or "pipeline"
+        _dlq(
+            recording,
+            stage=stage_name,
+            reason="reconcile_exhausted",
+            detail=(
+                f"the watchdog re-drove this recording {used} time(s) "
+                f"(cap {cap}) and it never moved on"
+            ),
+        )
+        return False
+
+    pipeline_state["reconcile_redrives"] = used + 1
+    recording.workflow_state = {**state, "pipeline": pipeline_state}
+    recording.save(update_fields=["workflow_state", "updated_at"])
+    return True
+
+
+def _reset_reconcile_redrives(recording: Recording) -> None:
+    """Forget the watchdog's count — the pipeline moved on its own.
+
+    Mutates in place; the caller is mid-transaction and saves.
+    """
+    state = recording.workflow_state or {}
+    pipeline_state = state.get("pipeline") or {}
+    if pipeline_state.get("reconcile_redrives"):
+        recording.workflow_state = {
+            **state,
+            "pipeline": {**pipeline_state, "reconcile_redrives": 0},
+        }
 
 
 def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_errored=False) -> None:

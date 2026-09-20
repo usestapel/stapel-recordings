@@ -493,6 +493,32 @@ DEFAULTS = {
         # is swallowed as best-effort, so the summary just silently never
         # appears.
         "SUMMARIZE_TIMEOUT_SECONDS": 300,
+        # ...and how much longer for a LONG one. 300s is right for a
+        # 20-minute meeting and wrong for a four-hour one: summarisation
+        # is map-reduce, so the work grows with the transcript while this
+        # number did not. The budget for one call is
+        #
+        #     SUMMARIZE_TIMEOUT_SECONDS + hours × SUMMARIZE_SECONDS_PER_HOUR
+        #
+        # clamped at SUMMARIZE_TIMEOUT_MAX_SECONDS — see
+        # stages.summarize_budget_seconds().
+        "SUMMARIZE_SECONDS_PER_HOUR": 300,
+        "SUMMARIZE_TIMEOUT_MAX_SECONDS": 3600,
+        # How many times the task primitive re-runs a summary. TWO, and
+        # only because the call is now checkpointed per map-reduce part
+        # (stapel-agent >= 0.29.0, idempotency_key on llm.summarize): the
+        # second attempt re-buys nothing it already has. Raising this
+        # without that checkpoint raises the bill by the same factor.
+        "SUMMARIZE_TASK_MAX_ATTEMPTS": 2,
+        # Slack between "one attempt's budget × the attempts it declares"
+        # and the task's DEADLINE. Without it the two were the same
+        # number, so the first timeout already left the row past its
+        # deadline and the sweep failed it as "deadline exceeded" before
+        # attempt two existed — a merge stage that declared three
+        # attempts and could never take them (a client stand, 2026-09-13).
+        # Covers the 60s sweep interval and the retry backoff between
+        # attempts.
+        "TASK_DEADLINE_HEADROOM_SECONDS": 420,
         # Who executes llm.* tasks in THIS process. True (default): if no
         # real handler is nearby (microservices — the agent has its own
         # database and can't see this process's task record), register the
@@ -510,6 +536,18 @@ DEFAULTS = {
         # this too — a system check (W005) warns on inconsistency.
         "STUCK_THRESHOLD_SECONDS": 35 * 60,
         "ABANDONED_UPLOAD_THRESHOLD_SECONDS": 60 * 60,
+        # How many times the watchdog may re-drive ONE recording that
+        # never moves on. Every other ladder here declares a ceiling; this
+        # one declared none, and a re-drive does not consume retry_count,
+        # so a recording the pipeline cannot finish was re-emitted every
+        # STUCK_THRESHOLD_SECONDS for as long as it existed. Five passes
+        # is ~1.5 hours of patience at the default threshold, after which
+        # the recording is failed with reason=reconcile_exhausted and a
+        # person can see it. The counter resets whenever a stage actually
+        # completes, so a slow pipeline is not a failing one. 0 restores
+        # the old unbounded behaviour, and is written down here rather
+        # than reachable by accident.
+        "RECONCILE_MAX_REDRIVES": 5,
 
         # ── Erasure / retention (stapel_recordings.tasks) ─────────────
         # How long a soft-deleted recording is kept before the scheduled

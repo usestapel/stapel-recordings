@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -107,6 +107,12 @@
       "instead_of": [
         "stapel_recordings.models.Recording.workflow_state"
       ]
+    },
+    {
+      "name": "note_reconcile_redrive",
+      "kind": "gate_function",
+      "path": "stapel_recordings.pipeline.note_reconcile_redrive",
+      "intent": "Count one watchdog re-drive of a recording and answer whether it may be re-driven at all; False means it has just been failed with reason=reconcile_exhausted. Call it in any custom watchdog that re-emits recording.stage, because a re-drive does not consume retry_count and an uncounted one repeats for the life of the recording."
     },
     {
       "name": "reprocess_recording",
@@ -403,10 +409,28 @@
       ]
     },
     {
+      "name": "summarize_attempt_ceiling",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.summarize_attempt_ceiling",
+      "intent": "The MOST llm.summarize calls one recording's merge stage can cause: MAX_STAGE_RETRIES x SUMMARIZE_TASK_MAX_ATTEMPTS. The sibling of transcribe_attempt_ceiling, and read for the same reason before raising either setting; every call after the first is free only because _summarize_payload passes the transcript hash as the agent's idempotency key."
+    },
+    {
+      "name": "summarize_budget_seconds",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.summarize_budget_seconds",
+      "intent": "How long ONE llm.summarize call may take for THIS recording: the flat SUMMARIZE_TIMEOUT_SECONDS plus the meeting's own length, clamped at SUMMARIZE_TIMEOUT_MAX_SECONDS. Use it instead of reading the flat setting whenever a budget has to cover a map-reduce whose work grows with the transcript."
+    },
+    {
       "name": "summary_from_result",
       "kind": "predicate",
       "path": "stapel_recordings.stages.summary_from_result",
       "intent": "Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure."
+    },
+    {
+      "name": "task_deadline_seconds",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.task_deadline_seconds",
+      "intent": "The task deadline that lets a task actually USE the attempts it declares: one attempt's budget x max_attempts + TASK_DEADLINE_HEADROOM_SECONDS. Call it wherever a stage passes both deadline_seconds and max_attempts to submit_task, because setting the deadline to one attempt's budget makes every later attempt unreachable ('deadline exceeded' before attempt two)."
     },
     {
       "name": "transcribe_attempt_ceiling",

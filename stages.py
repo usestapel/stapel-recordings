@@ -70,6 +70,13 @@ from .storage import get_storage
 
 logger = logging.getLogger(__name__)
 
+#: Payload key carrying one task's call budget to this package's task
+#: delegate (``task_delegates``), which pops it before the Function call.
+#: It is OURS, not the agent's: how long our executor waits is a property
+#: of this pipeline's recording, and the agent's contract has no field for
+#: it (nor should it — ``additionalProperties: false`` would refuse it).
+TASK_TIMEOUT_KEY = "task_timeout_seconds"
+
 
 # ─── Stage contract + signals ──────────────────────────────────────────
 
@@ -566,6 +573,58 @@ def transcribe_attempt_ceiling() -> int:
     )
 
 
+def summarize_attempt_ceiling() -> int:
+    """The MOST llm.summarize calls one recording's merge stage can cause.
+
+    Same arithmetic as :func:`transcribe_attempt_ceiling`, stated for the
+    same reason. Every call after the first is served from stapel-agent's
+    checkpoint — per map-reduce PART — because
+    :func:`_summarize_payload` passes the transcript hash as the
+    idempotency key.
+    """
+    return int(recordings_settings.MAX_STAGE_RETRIES) * int(
+        recordings_settings.SUMMARIZE_TASK_MAX_ATTEMPTS
+    )
+
+
+def summarize_budget_seconds(recording, transcript=None) -> int:
+    """How long ONE llm.summarize call may take, for THIS recording.
+
+    A constant cannot bound work that grows with the meeting: the call
+    is a map-reduce over the transcript, and 300 seconds that comfortably
+    covers twenty minutes cannot cover four hours. The audio's own
+    duration is the honest input — it is known before the call, it is
+    what the transcript's size follows from, and it needs no guess about
+    tokens.
+    """
+    base = int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS)
+    per_hour = int(recordings_settings.SUMMARIZE_SECONDS_PER_HOUR)
+    ceiling = int(recordings_settings.SUMMARIZE_TIMEOUT_MAX_SECONDS)
+
+    seconds = getattr(recording, "duration_seconds", None)
+    if not seconds and transcript is not None:
+        seconds = getattr(transcript, "duration_seconds", None)
+    try:
+        hours = max(float(seconds or 0.0), 0.0) / 3600.0
+    except (TypeError, ValueError):
+        hours = 0.0
+    return int(max(base, min(base + hours * per_hour, ceiling)))
+
+
+def task_deadline_seconds(budget_seconds: int, max_attempts: int) -> int:
+    """The deadline a task needs to be able to USE the attempts it declares.
+
+    The merge stage set its deadline to exactly one attempt's budget
+    while declaring three attempts. The first timeout therefore left the
+    row past its deadline, the 60-second sweep failed it with "deadline
+    exceeded", and attempts two and three never existed — a retry ladder
+    that could not be climbed (a client stand, 2026-09-13).
+    """
+    attempts = max(int(max_attempts), 1)
+    headroom = int(recordings_settings.TASK_DEADLINE_HEADROOM_SECONDS)
+    return int(budget_seconds) * attempts + headroom
+
+
 def submit_task(
     kind,
     payload,
@@ -888,11 +947,17 @@ class MergeStage(Stage):
         # The transcript is already saved — it's the main artifact. The
         # summary runs as a SEPARATE task: it can take tens of seconds, and
         # there's no reason to hold a worker for it.
+        budget = summarize_budget_seconds(recording, transcript)
+        attempts = int(recordings_settings.SUMMARIZE_TASK_MAX_ATTEMPTS)
         result = submit_task(
             "llm.summarize",
-            _summarize_payload(recording, transcript),
+            _summarize_payload(recording, transcript, budget_seconds=budget),
             recording=recording,
-            deadline_seconds=int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
+            # Sized to the meeting, and big enough for the attempts this
+            # declares — see task_deadline_seconds() for what happened
+            # when the two were one number.
+            deadline_seconds=task_deadline_seconds(budget, attempts),
+            max_attempts=attempts,
             stage=self,
         )
         return self.resume(recording, ctx, result)
@@ -949,7 +1014,7 @@ class EmbedStage(Stage):
 # ─── stage helpers ─────────────────────────────────────────────────────
 
 
-def _summarize_payload(recording, transcript) -> dict:
+def _summarize_payload(recording, transcript, *, budget_seconds=None) -> dict:
     """Payload for ``llm.summarize``.
 
     Language comes from the recording, or from what STT detected when
@@ -957,14 +1022,30 @@ def _summarize_payload(recording, transcript) -> dict:
     Without it the model picks its own language, which has produced a
     summary in the wrong language for the conversation — about as useless
     as no summary at all.
+
+    ``idempotency_key`` is the transcript's own hash, which makes a
+    retried summary free: stapel-agent checkpoints each part of the
+    map-reduce under it, so the second attempt re-buys nothing the first
+    one already paid for, and an EDITED transcript is a different key and
+    therefore a real new summary.
+
+    ``task_timeout_seconds`` is read by this package's task delegate and
+    stripped before the call — it is how long this particular meeting's
+    summary may take, and the agent's contract has no business carrying
+    our executor's budget.
     """
     from . import transcript_schema
 
     payload = {
         "text": transcript_schema.render_markdown(transcript),
         "model": recordings_settings.SUMMARIZE_MODEL,
+        "idempotency_key": (
+            f"summary:{transcript_schema.transcript_hash(transcript)}"
+        ),
         **identity_payload(recording),
     }
+    if budget_seconds:
+        payload[TASK_TIMEOUT_KEY] = int(budget_seconds)
     payload_language = _transcript_language(recording, transcript)
     if payload_language:
         payload["language"] = payload_language
