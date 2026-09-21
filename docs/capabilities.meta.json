@@ -396,6 +396,10 @@
       "kind": "factory",
       "intent": "The MOST provider calls one recording's transcribe stage can cause: MAX_STAGE_RETRIES x TRANSCRIBE_TASK_MAX_ATTEMPTS. Read it in a host's own check or dashboard before raising either setting — the two retry ladders multiply, and the shipped 3x3 is how one 148-minute recording reached the provider six times."
     },
+    "refuse_empty_transcript": {
+      "kind": "gate_function",
+      "intent": "StageFatal('empty_transcript') for a transcript with no words over audio of at least EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS. A host stage that persists an llm.transcribe result calls it first."
+    },
     "stranded_handoff": {
       "kind": "factory",
       "intent": "An llm.transcribe result assembled from a handoff object that is sitting in this deployment's own bucket with no segments to show for it — a transcription that happened, was paid for, and whose reply never got home. Reach for it before submitting the priced task in any host transcribe stage: the key is addressed by THIS side, so a lost reply is an unread transcript rather than a lost one, and adopting it is the difference between collecting paid work and buying it twice."

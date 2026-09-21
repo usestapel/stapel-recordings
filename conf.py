@@ -485,6 +485,12 @@ DEFAULTS = {
         # task ladder MULTIPLY, and production measured that product as
         # six paid calls for one recording.
         "TRANSCRIBE_TASK_MAX_ATTEMPTS": 1,
+        # Audio at least this long that comes back with NO words and NO
+        # utterances is a failed transcription (stage DLQ, reason
+        # ``empty_transcript``), not a finished one — see
+        # stages.refuse_empty_transcript. Below it, silence is a result.
+        # 0 disables the check.
+        "EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS": 5.0,
         "SUMMARIZE_ENABLED": True,
         "SUMMARIZE_MODEL": "medium",
         # How long to WAIT for llm.summarize. Without an explicit argument

@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -331,6 +331,12 @@
       "kind": "factory",
       "path": "stapel_recordings.stages.identity_payload",
       "intent": "The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording being processed. Reach for it in every custom stage that calls the agent: a stage runs on a queue long after the request that created the recording, so there is no current user to read, and the agent writes one billable ledger row per provider call. Omit it and that row is unattributable — the spend is recorded and belongs to nobody. Hand-rolling the dict instead is how the two spellings drift and half the ledger goes dark."
+    },
+    {
+      "name": "refuse_empty_transcript",
+      "kind": "gate_function",
+      "path": "stapel_recordings.stages.refuse_empty_transcript",
+      "intent": "StageFatal('empty_transcript') for a transcript with no words over audio of at least EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS. A host stage that persists an llm.transcribe result calls it first."
     },
     {
       "name": "register_stage",

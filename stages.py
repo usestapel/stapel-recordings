@@ -883,6 +883,9 @@ class TranscribeStage(Stage):
             raise StageRetryable("transcribe_failed", str(reason))
 
         transcript = transcript_from_result(result)
+        # A finished stage is one that produced a transcript. "status: ok"
+        # with nothing in it is not that — see refuse_empty_transcript.
+        refuse_empty_transcript(recording, transcript, result)
         _persist_transcript(
             recording,
             transcript,
@@ -1563,6 +1566,59 @@ def transcript_from_result(result: dict) -> dict:
     if not isinstance(transcript, dict):
         raise StageRetryable("transcript_unreadable", f"{key}: not a JSON object")
     return transcript
+
+
+def refuse_empty_transcript(recording, transcript: dict, result: dict) -> None:
+    """An empty transcript over real audio is a failed transcription.
+
+    Measured on a client host (2026-09-21): a 10-minute meeting came back
+    from the STT provider with zero words, the agent answered ``status:
+    ok`` with a 623-byte transcript, this stage persisted nothing, ``merge``
+    skipped the summary because there was nothing to summarize, and the
+    pipeline declared the recording ``completed`` — ``segments_count=0``,
+    no summary, and a "ready" mail that had nothing to send. Every ladder
+    saw success. The customer saw an empty meeting.
+
+    So a transcript with no utterances and no words, for audio at least
+    ``EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS`` long, is :class:`StageFatal`
+    (``empty_transcript``): the recording is parked in ``error`` with a
+    ``recording.failed`` a host can act on (refund, notify, retry by hand).
+    Fatal rather than retryable, because a retry re-reads the same answer:
+    the agent serves a checkpointed transcript for days, and a stranded
+    handoff object is re-adopted on every pass — so that object is dropped
+    here first, and a deliberate retry transcribes again.
+
+    A clip shorter than the floor, or one whose length nobody measured, is
+    allowed to be silent: a two-second test recording with no speech is a
+    result, not a failure.
+    """
+    if transcript.get("utterances") or transcript.get("words"):
+        return
+    floor = float(recordings_settings.EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS or 0)
+    if floor <= 0:
+        return
+    duration = recording.duration_seconds or transcript.get("duration_seconds") or 0
+    try:
+        duration = float(duration)
+    except (TypeError, ValueError):
+        duration = 0.0
+    if duration < floor:
+        return
+    provider = result.get("provider_used") or transcript.get("provider") or "the STT provider"
+    detail = (
+        f"{provider} returned no words and no utterances for {duration:.0f}s of audio"
+        + (" (served from the agent's checkpoint)" if result.get("cached") else "")
+        + (" (adopted from a stranded handoff)" if result.get("recovered_handoff") else "")
+    )
+    logger.error(
+        "transcribe: recording %s — %s. Not completing the stage on an empty "
+        "transcript; the recording is parked as failed.", recording.id, detail,
+    )
+    # Whatever was handed off is worthless and would be adopted again on the
+    # next pass (stranded_handoff) — drop it so a deliberate retry actually
+    # transcribes.
+    _discard_handoff(recording, result)
+    raise StageFatal("empty_transcript", detail)
 
 
 def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_used) -> None:

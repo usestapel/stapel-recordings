@@ -1,6 +1,36 @@
 # Changelog
 
 
+## [0.32.0] — 2026-09-22
+
+### Fixed — an empty transcript completed the recording
+
+Measured on a client host (2026-09-21), twice, deterministically: a
+10-minute meeting came back from `llm.transcribe` as `status: ok` with
+zero words and zero utterances (the agent served a checkpointed empty
+answer from the STT provider — "no provider call, no charge"). The
+transcribe stage persisted nothing, `merge` skipped the summary because
+there was nothing to summarize, and half a second after "awaiting task"
+the pipeline declared the recording `completed`: `segments_count=0`, no
+summary, and a "ready" mail with nothing to send. Every ladder saw
+success. The customer saw an empty meeting. The stage was not skipped and
+the task was not lost — the answer was empty, and empty read as done.
+
+`TranscribeStage.resume` now calls `refuse_empty_transcript`: a transcript
+with no utterances and no words, for audio at least
+`EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS` long (default 5), is
+`StageFatal("empty_transcript")` — the recording is parked in `error` with
+`recording.failed` (`user_retryable=True`) and `last_error.detail` naming
+the provider, the length and whether the answer was a checkpoint hit or an
+adopted handoff. Fatal rather than retryable: a retry re-reads the same
+checkpointed nothing. Any stranded handoff object the answer came from is
+dropped first, so a deliberate retry transcribes instead of re-adopting
+the empty object for ever. A clip shorter than the floor, or one whose
+length nobody measured, may still be silent.
+
+Pair with stapel-agent 0.32.0, which stops the empty answer at its source
+(not checkpointed, fallback chain walked).
+
 ## [0.31.0] — 2026-09-21
 
 ### Fixed — a browser recording's duration was "unknown" forever, and a paying customer stayed parked

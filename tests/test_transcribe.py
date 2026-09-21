@@ -113,3 +113,144 @@ def test_transcribe_failure_parks_for_retry(ready_recording, stub_transcribe, dr
 class _UrlOnly:
     def presigned_get_url(self, key, *, expires_seconds=3600):
         return f"memory://get/{key}"
+
+
+# ─── An empty transcript over real audio is not a finished stage ──────────
+#
+# The incident (a client host, 2026-09-21): a 10-minute meeting came back
+# from llm.transcribe as ``status: ok`` with zero utterances and zero words
+# (the agent served a checkpointed empty answer). This stage persisted
+# nothing, merge skipped the summary, and the recording was declared
+# ``completed`` with segments_count=0. Every gate was green.
+#
+# Ordinary django_db tests: the assertion is about the stage OUTCOME (fatal
+# vs completed), which is decided in Python before anything commits, so
+# pytest-django's transaction wrapping cannot make them pass for the wrong
+# reason — the pre-change code completes the recording inside the very same
+# wrapped transaction, and that is what the first test fails on.
+
+
+def _empty_transcript_result(duration=None):
+    return {
+        "status": "ok",
+        "provider_used": "elevenlabs",
+        "fallback_used": False,
+        "cached": True,
+        "transcript": {
+            "provider": "elevenlabs",
+            "language": "spa",
+            "duration_seconds": duration,
+            "words": [],
+            "utterances": [],
+            "speakers_detected": [],
+            "raw": {},
+        },
+    }
+
+
+def test_an_empty_transcript_over_ten_minutes_does_not_complete_the_recording(
+    ready_recording, stub_transcribe, drain
+):
+    from stapel_core.django.outbox.models import OutboxEvent
+
+    ready_recording.duration_seconds = 600.0185
+    ready_recording.save(update_fields=["duration_seconds"])
+    stub_transcribe.result = _empty_transcript_result()
+
+    events.emit_stage(ready_recording.id, 0)
+    drain()
+
+    r = Recording.objects.get(pk=ready_recording.id)
+    assert r.status == RecordingStatus.ERROR
+    assert r.segments_count == 0
+    assert r.workflow_state["last_error"]["stage"] == "transcribe"
+    assert r.workflow_state["last_error"]["reason"] == "empty_transcript"
+    assert "600s of audio" in r.workflow_state["last_error"]["detail"]
+    assert "checkpoint" in r.workflow_state["last_error"]["detail"]
+    topics = list(OutboxEvent.objects.values_list("topic", flat=True))
+    assert "recording.failed" in topics
+    assert "recording.completed" not in topics
+
+
+def test_an_empty_transcript_is_fatal_not_retried(make_recording, stub_transcribe):
+    """A retry re-reads the same checkpointed nothing; the stage says so once."""
+    from stapel_recordings.stages import StageFatal, TranscribeStage
+
+    r = make_recording(
+        status=RecordingStatus.TRANSCRIBING, normalized_storage_key="k", duration_seconds=600.0
+    )
+    with pytest.raises(StageFatal) as excinfo:
+        TranscribeStage().resume(r, {}, _empty_transcript_result())
+    assert excinfo.value.reason == "empty_transcript"
+    assert Segment.objects.filter(recording=r).count() == 0
+
+
+def test_a_short_silent_clip_is_a_result(ready_recording, stub_transcribe, drain):
+    ready_recording.duration_seconds = 2.0
+    ready_recording.save(update_fields=["duration_seconds"])
+    stub_transcribe.result = _empty_transcript_result(duration=2.0)
+
+    events.emit_stage(ready_recording.id, 0)
+    drain()
+
+    r = Recording.objects.get(pk=ready_recording.id)
+    assert r.status == RecordingStatus.COMPLETED
+    assert r.segments_count == 0
+
+
+def test_unmeasured_audio_may_be_silent(make_recording, stub_transcribe):
+    """No duration on the row and none in the transcript: nothing to weigh
+    the emptiness against, so the stage keeps its old answer."""
+    from stapel_recordings.stages import TranscribeStage
+
+    r = make_recording(status=RecordingStatus.TRANSCRIBING, normalized_storage_key="k")
+    TranscribeStage().resume(r, {}, _empty_transcript_result())
+    r.refresh_from_db()
+    assert r.segments_count == 0
+
+
+def test_the_floor_is_configuration(make_recording, stub_transcribe, settings):
+    from stapel_recordings.stages import TranscribeStage
+
+    settings.STAPEL_RECORDINGS = {
+        **getattr(settings, "STAPEL_RECORDINGS", {}),
+        "EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS": 0,
+    }
+    r = make_recording(
+        status=RecordingStatus.TRANSCRIBING, normalized_storage_key="k", duration_seconds=600.0
+    )
+    TranscribeStage().resume(r, {}, _empty_transcript_result())
+    r.refresh_from_db()
+    assert r.segments_count == 0
+
+
+def test_an_empty_stranded_handoff_is_dropped_so_a_retry_transcribes(
+    use_fakes, make_recording, stub_transcribe
+):
+    """The handoff object is re-adopted on every pass while it exists; an
+    empty one would be adopted, refused, adopted, refused, for ever."""
+    import json
+
+    from stapel_recordings.stages import StageFatal, TranscribeStage, handoff_key
+    from stapel_recordings.storage import get_storage
+
+    r = make_recording(
+        status=RecordingStatus.TRANSCRIBING, normalized_storage_key="k", duration_seconds=600.0
+    )
+    key = handoff_key(r)
+    get_storage().put_bytes(
+        key, json.dumps(_empty_transcript_result()["transcript"]).encode(),
+        content_type="application/json",
+    )
+
+    with pytest.raises(StageFatal) as excinfo:
+        TranscribeStage().run(r, {})
+
+    assert excinfo.value.reason == "empty_transcript"
+    assert "stranded handoff" in excinfo.value.detail
+    assert stub_transcribe.calls == []  # adopted, not re-bought
+    try:
+        leftover = get_storage().get_bytes(key)
+    except KeyError:  # the fake raises for a missing object
+        leftover = None
+    assert not leftover
