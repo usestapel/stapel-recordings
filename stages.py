@@ -815,6 +815,20 @@ class TranscribeStage(Stage):
         if recording.segments.exists() and not self.is_stale(recording, ctx):
             return ctx  # idempotent: already transcribed, from THIS audio
 
+        # BEFORE PAYING AGAIN, LOOK WHERE THE LAST ANSWER WOULD BE.
+        #
+        # The handoff object is written by the provider BEFORE it replies,
+        # and at a key THIS side chose — so a transcript whose reply was
+        # lost is not lost, it is unread. Measured, 2026-09-20: a 2h28m
+        # meeting was transcribed, the 8 779 798 bytes landed in our bucket
+        # at 22:06:01, and the small reply naming them was published into a
+        # NATS inbox that had died with a restarted consumer. The task then
+        # failed `deadline_exceeded` and the only way back was to buy the
+        # transcription a second time.
+        stranded = stranded_handoff(recording)
+        if stranded is not None:
+            return self.resume(recording, ctx, stranded)
+
         payload = self.build_payload(recording)
 
         # A TASK, NOT A SYNCHRONOUS CALL. Transcription takes minutes, or
@@ -1438,6 +1452,48 @@ def handoff_key(recording) -> str:
     a recording that never got past this stage.
     """
     return _key(recording, "transcript.raw.json")
+
+
+def stranded_handoff(recording) -> dict | None:
+    """An ``llm.transcribe`` result whose reply never arrived, or None.
+
+    The handoff is a claim check this side addressed: ``handoff_key`` is
+    derived from the recording, the provider writes the bytes there before
+    it answers, and only the small envelope naming them travels the wire.
+    So an object sitting at that key with no segments to show for it means
+    exactly one thing — the transcription happened, was paid for, and the
+    answer did not get home.
+
+    Adopted ONLY when the recording has no segments at all. If it has stale
+    ones the audio has changed underneath, and a handoff from the previous
+    audio is the wrong transcript, not a free one.
+
+    Never raises: absent is the ordinary answer, and every first attempt
+    takes that path.
+    """
+    if not transcript_handoff_enabled():
+        return None
+    if recording.segments.exists():
+        return None
+    key = handoff_key(recording)
+    try:
+        data = get_storage().get_bytes(key)
+    except Exception:
+        return None
+    if not data:
+        return None
+    logger.warning(
+        "transcribe: recording %s has no segments but a finished transcript "
+        "of %d bytes is waiting at %s — adopting it instead of transcribing "
+        "again. The provider wrote it and its reply was lost; this is paid "
+        "work being collected, not repeated.",
+        recording.id, len(data), key,
+    )
+    return {
+        "status": "ok",
+        "transcript_ref": {"key": key, "bytes": len(data)},
+        "recovered_handoff": True,
+    }
 
 
 def _discard_handoff(recording, result: dict) -> None:

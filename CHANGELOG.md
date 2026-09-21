@@ -1,6 +1,45 @@
 # Changelog
 
 
+## [0.30.0] — 2026-09-21
+
+### Fixed — a transcript whose reply was lost was bought a second time
+
+The handoff is a claim check THIS side addresses. `handoff_key(recording)`
+is derived from the recording, the provider writes the transcript there
+before it answers, and only the small envelope naming the bytes travels
+the wire. So when the envelope is lost, the transcript is not: it is
+sitting in our own bucket, at a key we can compute, unread.
+
+Measured on a client host, 2026-09-20: a 2h28m meeting was transcribed and
+8 779 798 bytes landed at `…/transcript.raw.json` at 22:06:01, while the
+reply naming them was published into a NATS inbox that had died seconds
+earlier with a consumer its own healthcheck restarted. The task failed
+`deadline_exceeded`, the recording showed `error` with zero segments, and
+the only route back was `recordings_resume --from-stage transcribe` — which
+paid the speech-to-text provider again for bytes already in the bucket.
+
+`TranscribeStage.run` now looks before it pays. New `stranded_handoff()`
+returns a ready `llm.transcribe` result when an object is waiting at this
+recording's handoff key, and the stage resumes from it exactly as it would
+from a delivered reply — same verification, same persistence, same
+delete-on-read. Adopted ONLY when the recording has no segments at all: if
+it has stale ones the audio changed underneath, and a handoff from the
+previous audio is the wrong transcript, not a free one. A deployment with
+`TRANSCRIPT_HANDOFF` off never looks.
+
+Pairs with stapel-core 0.89.0, which closes the same class one layer down —
+there the provider persists a named call's reply before publishing and the
+caller collects it — but this one needs no new wire contract at all: the
+object and the key have both existed since the handoff shipped, and nothing
+was reading them.
+
+### Added
+
+* `stranded_handoff(recording)` on the module surface, for a host
+  transcribe stage that builds its own payload and must make the same check
+  before submitting a priced task.
+
 ## [0.29.0] — 2026-09-20
 
 ### Fixed — the merge deadline killed the retries it declared

@@ -313,3 +313,83 @@ class TestTheHandoffObjectIsAPostbox:
         erase(SUBJECT_WORKSPACE, str(recording.workspace_id))
 
         assert get_storage().head_object(key)[0] is False
+
+
+class TestATranscriptWhoseReplyWasLostIsCollected:
+    """The claim check is addressed by THIS side, so a lost reply is not a
+    lost transcript — it is an unread one.
+
+    Measured on a client host, 2026-09-20: a 2h28m meeting was transcribed,
+    the 8 779 798 bytes landed in our bucket at 22:06:01, and the small
+    reply naming them was published into a NATS inbox that had died with a
+    consumer its own healthcheck had just restarted. The task failed
+    `deadline_exceeded`, and the only way back was to buy the transcription
+    a second time while the first one sat in the bucket.
+    """
+
+    def _stranded(self, monkeypatch, recording):
+        key = stages.handoff_key(recording)
+        fake = FakeStorage({key: BODY})
+        monkeypatch.setattr(stages, "get_storage", lambda: fake)
+        return key, fake
+
+    def test_the_stage_adopts_it_instead_of_paying_again(
+        self, monkeypatch, make_recording
+    ):
+        recording = make_recording(normalized_storage_key="recordings/x/y/a.opus")
+        key, fake = self._stranded(monkeypatch, recording)
+        fake.deleted = []
+        fake.delete_object = fake.deleted.append
+
+        def _must_not_submit(*args, **kwargs):
+            raise AssertionError("the provider must not be paid twice")
+
+        monkeypatch.setattr(stages, "submit_task", _must_not_submit)
+
+        TranscribeStage().run(recording, {})
+
+        recording.refresh_from_db()
+        assert recording.segments_count == 1
+        assert fake.deleted == [key], "the postbox is emptied once it is read"
+
+    def test_nothing_waiting_means_the_ordinary_path(
+        self, monkeypatch, make_recording
+    ):
+        recording = make_recording(normalized_storage_key="recordings/x/y/a.opus")
+        fake = FakeStorage()  # empty bucket
+
+        def _get(key):
+            raise FileNotFoundError(key)
+
+        fake.get_bytes = _get
+        monkeypatch.setattr(stages, "get_storage", lambda: fake)
+        submitted = {"n": 0}
+
+        def _submit(*a, **k):
+            submitted["n"] += 1
+            return {"status": "ok", "transcript": TRANSCRIPT}
+
+        monkeypatch.setattr(stages, "submit_task", _submit)
+
+        TranscribeStage().run(recording, {})
+        assert submitted["n"] == 1, "the provider is still called when nothing waits"
+
+    def test_a_handoff_from_different_audio_is_not_adopted(
+        self, monkeypatch, make_recording
+    ):
+        """Stale segments mean the audio changed underneath. A leftover from
+        the previous audio is the WRONG transcript, not a free one."""
+        recording = make_recording(normalized_storage_key="recordings/x/y/a.opus")
+        self._stranded(monkeypatch, recording)
+        stages._persist_transcript(
+            recording, TRANSCRIPT, provider_used="elevenlabs", fallback_used=False
+        )
+        assert stages.stranded_handoff(recording) is None
+
+    @override_settings(STAPEL_RECORDINGS={"TRANSCRIPT_HANDOFF": False})
+    def test_a_deployment_without_handoff_never_looks(
+        self, monkeypatch, make_recording
+    ):
+        recording = make_recording(normalized_storage_key="recordings/x/y/a.opus")
+        self._stranded(monkeypatch, recording)
+        assert stages.stranded_handoff(recording) is None
