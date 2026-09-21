@@ -10,7 +10,8 @@ The tests guard three things, each of which can break silently:
   - ``-t`` must sit AFTER ``-i``: before ``-i`` it limits input decode time,
     which is a different duration for streaming containers;
   - the duration returned is that of what was ACTUALLY WRITTEN, not the
-    source — otherwise the interface promises minutes that don't exist.
+    source — ``ffmpeg_normalize`` gets this by header-probing ``dst_path``
+    AFTER ``_run_ffmpeg``, not by guessing ``min(source, cap)``.
 """
 import pytest
 
@@ -30,15 +31,23 @@ def run(monkeypatch):
     Patches ``subprocess.run`` itself rather than ``_run_ffmpeg``, so the
     test doesn't just check its own stand-in. ``captured["cmd"]`` ends up
     holding exactly what would have gone to ffmpeg.
+
+    ``_probe_audio`` is patched to answer differently depending on WHICH
+    file it is asked about: ``ffmpeg_normalize`` probes the source first
+    (has-audio detection, before ``_run_ffmpeg``) and probes ``dst_path``
+    again afterwards (the header-probe that decides the return value) — two
+    calls, and only the second one drives what a test asserts on.
     """
-    captured = {}
+    captured = {"written_duration": 600.0}
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = list(cmd)
         return _Done()
 
     def fake_probe(path):
-        return True, captured.get("source_duration", 2820.0)  # 47 minutes
+        if path == "out.wav":  # the file ffmpeg_normalize just wrote
+            return True, captured.get("written_duration")
+        return True, captured.get("source_duration", 2820.0)  # the source, 47 minutes
 
     monkeypatch.setattr(normalize.subprocess, "run", fake_run)
     monkeypatch.setattr(normalize, "_probe_audio", fake_probe)
@@ -63,11 +72,16 @@ def test_cap_placed_after_input(run):
 
 
 def test_returns_written_duration(run):
+    """The header-probe of what ffmpeg wrote, not a source/cap computation."""
+    run["written_duration"] = 600.0
     assert normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600) == 600.0
 
 
 def test_short_recording_is_not_stretched(run):
-    run["source_duration"] = 120.0
+    """A source shorter than the cap is not padded to the cap: the returned
+    duration is whatever the written file's own header says, whether or not
+    that happens to equal the cap that was requested."""
+    run["written_duration"] = 120.0
     assert normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600) == 120.0
 
 
@@ -79,14 +93,15 @@ def test_zero_and_negative_cap_are_ignored(run):
         )
 
 
-def test_unknown_duration_with_cap(monkeypatch, run):
-    """ffprobe returned no duration, but a cap was requested.
+def test_written_duration_unknown_is_reported_honestly(run):
+    """Header-probing the file ffmpeg just wrote found no duration.
 
-    The cap is the best information we have about the file on disk; None
-    would mean "we know nothing", even though we ourselves capped it.
+    ``ffmpeg_normalize`` reports that honestly (None) rather than falling
+    back to the requested cap as a guess — a guess here would say "600
+    seconds" about a file whose own header cannot back that number up.
     """
-    monkeypatch.setattr(normalize, "_probe_audio", lambda path: (True, None))
-    assert normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600) == 600.0
+    run["written_duration"] = None
+    assert normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600) is None
 
 
 # ── which binary gets executed is settings, not the environment ──────────
@@ -109,6 +124,15 @@ def test_ffmpeg_binary_comes_from_settings_at_call_time(run):
     assert run["cmd"][0] == "/opt/media/bin/ffmpeg"
 
 
+class _DoneWithDuration:
+    """A header probe that FOUND a duration — the packet-scan fallback must
+    not be reached, so this test stays about the header probe's binary."""
+
+    returncode = 0
+    stdout = b'{"streams": [], "format": {"duration": "12.3"}}'
+    stderr = b""
+
+
 def test_ffprobe_binary_comes_from_settings_at_call_time(monkeypatch):
     from django.test import override_settings
 
@@ -118,7 +142,7 @@ def test_ffprobe_binary_comes_from_settings_at_call_time(monkeypatch):
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = list(cmd)
-        return _Done()
+        return _DoneWithDuration()
 
     monkeypatch.setattr(normalize.subprocess, "run", fake_run)
     with override_settings(STAPEL_RECORDINGS={"FFPROBE_BIN": "/opt/media/bin/ffprobe"}):

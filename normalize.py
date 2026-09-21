@@ -47,13 +47,17 @@ duration cap for free-tier plans ("first N minutes of any recording"). The
 cut happens HERE, at the pipeline entrance, so no later stage knows about
 plans or can process (and pay a provider for) minutes the client didn't buy.
 :func:`probe_duration` returns the source duration for an honest "first 10
-of 47 minutes" label.
+of 47 minutes" label — it is AUTHORITATIVE: header first (unchanged, 30s
+timeout), and only on a header miss (a live-muxed ``.webm`` from a browser's
+``MediaRecorder`` never carries one) a demux-only packet-walk fallback,
+never a decode.
 """
 from __future__ import annotations
 
 import json
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -186,7 +190,20 @@ class NormalizePaymentRequired(NormalizeFatal):
     minutes nobody paid for. The ``convert`` stage catches THIS first and
     re-raises ``stages.StageNeedsPayment``, which parks the recording in the
     ``needs_payment`` status instead of DLQ'ing it.
+
+    ``extra`` is an optional payload the host's gate attaches to the park —
+    ``estimated_credits``, ``original_duration_seconds`` — so the parked
+    recording can name the number it was refused on, not just the reason
+    code. Keyword-only, defaults to ``None`` (read back as ``{}``); it
+    carries through ``StageNeedsPayment`` unchanged into the
+    ``needs_payment`` block ``pipeline._park_for_payment`` writes.
     """
+
+    def __init__(
+        self, reason: str, detail: Optional[str] = None, *, extra: Optional[dict] = None
+    ):
+        super().__init__(reason, detail)
+        self.extra = extra or {}
 
 
 def passthrough_normalize(src_path: str, dst_path: str) -> Optional[float]:
@@ -196,7 +213,7 @@ def passthrough_normalize(src_path: str, dst_path: str) -> Optional[float]:
 
 
 def probe_duration(src_path: str) -> Optional[float]:
-    """Source duration in seconds, without transcoding.
+    """Source duration in seconds, without transcoding. AUTHORITATIVE.
 
     Public because a host has a legitimate reason to know the SOURCE
     duration separately from the resulting one: if a recording was capped
@@ -204,9 +221,21 @@ def probe_duration(src_path: str) -> Optional[float]:
     minutes". Without this, a host would reach into the private
     ``_probe_audio`` or add its own ffprobe call — a second copy of this
     logic that would drift from it on the first change.
+
+    Header first, via :func:`_probe_audio` (unchanged: a 30s timeout, no
+    decode). ONLY on a header miss — ``format.duration`` and every stream's
+    own ``duration`` absent — this falls back to :func:`_scan_duration_by_packets`,
+    a demux-only packet walk. The header miss is not exotic: a browser's
+    ``MediaRecorder`` live-muxes Matroska (``.webm``) and writes the header
+    before it knows how long the recording will be, so ``format.duration``
+    is simply never there. Before this fallback, that made every such
+    upload's duration ``None`` forever — and a caller reading "unknown
+    length" as "cannot pay" parked the customer forever too.
     """
     _, duration = _probe_audio(src_path)
-    return duration
+    if duration is not None:
+        return duration
+    return _scan_duration_by_packets(src_path)
 
 
 def ffmpeg_normalize(
@@ -229,23 +258,26 @@ def ffmpeg_normalize(
     all, and can't accidentally process (and pay a provider for) minutes the
     client didn't buy.
 
-    Returns the duration of WHAT WAS WRITTEN, not the source: the caller
-    stores it as the recording's duration, and it must describe the file
-    that actually exists. Use :func:`probe_duration` for the source duration
-    when an honest label is needed.
+    Returns the duration of WHAT WAS WRITTEN, not the source — found by
+    header-probing ``dst_path`` AFTER :func:`_run_ffmpeg`, not by guessing
+    ``min(source_duration, cap)``: this module's own muxers (Ogg/Opus, WAV)
+    always finish a local file with a seekable, backpatched header, so this
+    is a plain header read, and it is exactly right whether or not a source
+    header ever carried a duration at all (a live-muxed ``.webm`` never
+    does). The caller stores this as the recording's duration, and it must
+    describe the file that actually exists. Use :func:`probe_duration` for
+    the source duration when an honest label ("first 10 of 47 minutes") is
+    needed.
     """
-    has_audio, duration = _probe_audio(src_path)
+    has_audio, _source_duration = _probe_audio(src_path)
     if not has_audio:
         raise NormalizeFatal("no_audio_stream", "input has no decodable audio track")
     cap = None
     if max_duration_seconds is not None and max_duration_seconds > 0:
         cap = float(max_duration_seconds)
     _run_ffmpeg(src_path, dst_path, max_duration_seconds=cap)
-    if cap is not None and duration is not None:
-        return min(duration, cap)
-    # Duration unknown (ffprobe didn't return one), but a cap was requested
-    # and applied — the cap is the best we know about the file on disk.
-    return cap if duration is None else duration
+    _, written_duration = _probe_audio(dst_path)
+    return written_duration
 
 
 def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = None) -> None:
@@ -324,6 +356,94 @@ def _probe_audio(path: str) -> tuple[bool, Optional[float]]:
                 except (TypeError, ValueError):
                     pass
     return has_audio, duration
+
+
+def _scan_duration_by_packets(path: str) -> Optional[float]:
+    """Demux-only fallback for a header that carries no duration.
+
+    A browser-recorded ``.webm`` (MediaRecorder, live-muxed Matroska) is the
+    motivating case: the muxer streams the header out before it knows the
+    file's eventual length, so neither ``format.duration`` nor any stream's
+    own ``duration`` is ever written — :func:`_probe_audio` returns ``None``
+    correctly, and that is precisely the value a downstream caller must not
+    read as "broken" or "unknown forever".
+
+    NO FRAME IS DECODED: this walks packet headers only —
+    ``ffprobe -show_entries packet=pts_time,duration_time``. The last
+    packet's ``pts_time + duration_time`` is the stream's end, i.e. its
+    duration.
+
+    Streamed via ``Popen`` and only the LAST non-empty line is kept: stdout
+    is roughly 30 bytes per packet, and an hour of speech is tens of
+    thousands of packets — buffering all of it (``subprocess.run`` /
+    ``communicate()``) would hold megabytes in memory for a number that
+    lives in the final line.
+
+    Timeout is ``FFMPEG_TIMEOUT_SECONDS`` — deliberately NOT the header
+    probe's 30s: a demux-only scan of an hours-long recording does more
+    work than reading a header and deserves the same budget
+    :func:`_run_ffmpeg` gets. On timeout this raises
+    :class:`NormalizeFatal` with reason ``duration_unprobeable`` rather than
+    returning ``None`` silently — a scan that never finished is not the
+    same fact as a file that legitimately has no duration.
+
+    No new size guard here: ``MAX_CONTAINER_UPLOAD_BYTES`` already bounds
+    the input this runs over.
+    """
+    cmd = [
+        _ffprobe_bin(), "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0",
+        path,
+    ]
+    timeout = _subprocess_timeout()
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+    except FileNotFoundError as exc:
+        raise NormalizeFatal("ffprobe_missing", str(exc)) from exc
+
+    timed_out = False
+
+    def _kill_on_timeout() -> None:
+        nonlocal timed_out
+        timed_out = True
+        proc.kill()
+
+    timer = threading.Timer(timeout, _kill_on_timeout)
+    timer.start()
+    last_line = ""
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:  # streamed: only the last line is kept
+            line = line.strip()
+            if line:
+                last_line = line
+        proc.wait()
+    finally:
+        timer.cancel()
+        stderr_tail = ""
+        if proc.stderr is not None:
+            stderr_tail = proc.stderr.read()[:300]
+            proc.stderr.close()
+        if proc.stdout is not None:
+            proc.stdout.close()
+
+    if timed_out:
+        raise NormalizeFatal("duration_unprobeable", f"packet scan exceeded {timeout}s")
+    if proc.returncode != 0:
+        raise NormalizeFatal("ffprobe_failed", f"rc={proc.returncode}: {stderr_tail}")
+    if not last_line:
+        return None
+    parts = last_line.split(",")
+    if len(parts) < 2:
+        return None
+    try:
+        pts_time = float(parts[0])
+        duration_time = float(parts[1])
+    except ValueError:
+        return None
+    return pts_time + duration_time
 
 
 __all__ = [

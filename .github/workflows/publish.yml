@@ -121,6 +121,11 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.9.1,<1"
 
+      # tests/test_normalize_live_webm.py needs a real ffmpeg (see ci.yml) —
+      # a missing binary must fail this release gate red, never skip.
+      - name: Install ffmpeg (tests/test_normalize_live_webm.py needs a real one)
+        run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+
       - name: Tests with coverage
         run: |
           pytest tests/ \

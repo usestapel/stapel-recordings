@@ -269,7 +269,20 @@ ffmpeg/ffprobe on PATH, and `libopus` in the build for the default codec —
 system check `stapel_recordings.E006`); `passthrough_normalize` for
 environments without ffmpeg, which means **nothing is extracted and the
 upload is stored whole** (checks W008 and E007). Raise `NormalizeFatal` for
-unfixable input.
+unfixable input, or `NormalizePaymentRequired` (optional `extra: dict`
+payload — e.g. `estimated_credits`, `original_duration_seconds` — carried
+through `stages.StageNeedsPayment` into the `needs_payment` block a park
+writes) when the account can't pay for this recording.
+
+`probe_duration()` is AUTHORITATIVE. Header first (`ffprobe -show_format
+-show_streams`, 30s timeout). On a header miss — `format.duration` and
+every stream's own `duration` absent, which is exactly what a browser's
+`MediaRecorder` produces (live-muxed `.webm`, header written before the
+stream length is known) — it falls back to a demux-only packet walk
+(`ffprobe -show_entries packet=…`, no decode, `FFMPEG_TIMEOUT_SECONDS`
+budget) rather than returning `None` forever. `ffmpeg_normalize()` returns
+the duration of what it actually WROTE — a header-probe of `dst_path` after
+encoding, not a `min(source, cap)` guess.
 
 `audio_profile()` is what the stored object IS — codec, channels, sample
 rate, object extension, content type and `bytes_per_hour`, the number the

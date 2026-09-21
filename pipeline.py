@@ -394,7 +394,8 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             return
         except StageNeedsPayment as exc:
             _park_for_payment(
-                recording, stage=stage_name, reason=exc.reason, detail=exc.detail
+                recording, stage=stage_name, reason=exc.reason, detail=exc.detail,
+                extra=exc.extra,
             )
             return
         except StageFatal as exc:
@@ -468,7 +469,8 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
         except StageNeedsPayment as exc:
             _clear_awaiting(recording)
             _park_for_payment(
-                recording, stage=stage_name, reason=exc.reason, detail=exc.detail
+                recording, stage=stage_name, reason=exc.reason, detail=exc.detail,
+                extra=exc.extra,
             )
             return
         except StageFatal as exc:
@@ -796,13 +798,21 @@ def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_
     logger.warning("pipeline: recording %s DLQ at stage %s (%s)", recording.id, stage, reason)
 
 
-def _park_for_payment(recording: Recording, *, stage: str, reason: str, detail=None) -> None:
+def _park_for_payment(
+    recording: Recording, *, stage: str, reason: str, detail=None, extra=None
+) -> None:
     """Park a recording the account cannot pay for. Not a failure.
 
     The block goes to ``workflow_state["needs_payment"]``, deliberately NOT
     to ``last_error``: that field is what a UI renders as "something broke",
     and an empty wallet is not a breakage. Keeping them apart also means a
     genuine error recorded before the park is still readable next to it.
+
+    ``extra`` — from ``StageNeedsPayment.extra`` / ultimately
+    ``normalize.NormalizePaymentRequired.extra`` — lets the park name the
+    number it was refused on (``estimated_credits``,
+    ``original_duration_seconds``) instead of only a reason code. Optional;
+    an absent or falsy value is written as ``{}``.
 
     The run identity is minted if missing and otherwise untouched — the run
     is not over, it is waiting, and the same run resumes after payment, so a
@@ -814,6 +824,7 @@ def _park_for_payment(recording: Recording, *, stage: str, reason: str, detail=N
         "stage": stage,
         "reason": reason,
         "detail": (str(detail)[:500] if detail else None),
+        "extra": dict(extra) if extra else {},
         "at": timezone.now().isoformat(),
     }
     recording.workflow_state = state

@@ -1,6 +1,52 @@
 # Changelog
 
 
+## [0.31.0] — 2026-09-21
+
+### Fixed — a browser recording's duration was "unknown" forever, and a paying customer stayed parked
+
+A browser's `MediaRecorder` live-muxes `.webm` (Matroska): it streams the
+header out before it knows how long the recording will be, so
+`format.duration` — and every stream's own `duration` — is simply never
+written. `probe_duration` read that correctly and honestly as `None`, and a
+downstream caller reading "unknown length" as "this account cannot pay"
+parked the recording in `needs_payment` for good. Nothing was broken; the
+header genuinely had no answer, and nothing here ever asked a second way.
+
+Two mechanisms close it, both in `normalize.py`:
+
+* `probe_duration` is now AUTHORITATIVE. Header first, unchanged (30s
+  timeout, no decode). Only on a header miss, it falls back to a
+  demux-only packet walk — `ffprobe -show_entries packet=pts_time,duration_time`,
+  streamed via `Popen` and keeping only the LAST line, so an hour of
+  packets never sits in memory for a number the final line already has.
+  The scan's timeout is `FFMPEG_TIMEOUT_SECONDS`, not the header probe's
+  30s; a scan that times out raises `NormalizeFatal("duration_unprobeable")`
+  rather than returning `None` — a scan that never finished is not the same
+  fact as a file that legitimately has no duration.
+* `ffmpeg_normalize` now returns the duration of what it actually WROTE —
+  a header-probe of `dst_path` after encoding — instead of guessing
+  `min(source_duration, cap)`. This module's own muxers (Ogg/Opus, WAV)
+  always finish a local file with a seekable, backpatched header, so this
+  is a plain header read, and it is exactly right whether or not the
+  source ever had a duration at all. `passthrough_normalize` still
+  returns `None`.
+
+Proven against a REAL fixture, not a mock: `ffmpeg -f lavfi -i
+sine=frequency=440:duration=4 -c:a libopus -f webm -live 1 -` — the
+`-live 1` flag is what makes ffmpeg's own muxer write an unseekable,
+duration-less header, reproducing exactly what a browser produces.
+
+### Added
+
+* `NormalizePaymentRequired` and `stages.StageNeedsPayment` accept an
+  optional keyword-only `extra: dict` payload (e.g. `estimated_credits`,
+  `original_duration_seconds`), carried through unchanged into the
+  `needs_payment` block `pipeline._park_for_payment` writes to
+  `workflow_state` — a park can now name the number it was refused on, not
+  only its reason code. Defaults to `None` (read back as `{}`); no
+  existing positional call site changes.
+
 ## [0.30.0] — 2026-09-21
 
 ### Fixed — a transcript whose reply was lost was bought a second time

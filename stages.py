@@ -110,7 +110,18 @@ class StageNeedsPayment(StageError):
     ``reason`` is the machine-readable code a UI branches on
     (``insufficient_credits``, ``free_minutes_exhausted``); ``detail`` is for
     logs and may carry balance internals, so it does not reach a client.
+
+    ``extra`` is an optional payload naming the NUMBER a park was refused
+    on — ``estimated_credits``, ``original_duration_seconds`` — so a park
+    can say more than its reason code. Keyword-only, defaults to ``None``
+    (read back as ``{}``), and carries through unchanged from
+    ``normalize.NormalizePaymentRequired`` into the ``needs_payment`` block
+    ``pipeline._park_for_payment`` writes to ``workflow_state``.
     """
+
+    def __init__(self, reason: str, detail: str | None = None, *, extra: dict | None = None):
+        super().__init__(reason, detail)
+        self.extra = extra or {}
 
 
 class StageAwaiting(StageError):
@@ -378,7 +389,7 @@ class ConvertStage(Stage):
         # NeedsPayment BEFORE Fatal: it is a subclass, and an `except
         # NormalizeFatal` reached first would swallow it into a DLQ.
         except NormalizePaymentRequired as exc:
-            raise StageNeedsPayment(exc.reason, exc.detail) from exc
+            raise StageNeedsPayment(exc.reason, exc.detail, extra=exc.extra) from exc
         except NormalizeFatal as exc:
             raise StageFatal(exc.reason, exc.detail) from exc
         workdir = tempfile.mkdtemp(prefix="rec-convert-")
@@ -395,7 +406,7 @@ class ConvertStage(Stage):
             # The host's affordability gate speaks here: NeedsPayment first,
             # or the base-class handler below turns "top up" into "failed".
             except NormalizePaymentRequired as exc:
-                raise StageNeedsPayment(exc.reason, exc.detail) from exc
+                raise StageNeedsPayment(exc.reason, exc.detail, extra=exc.extra) from exc
             except NormalizeFatal as exc:
                 raise StageFatal(exc.reason, exc.detail) from exc
 

@@ -460,7 +460,10 @@ def test_ffmpeg_is_told_to_drop_video_and_downmix(monkeypatch):
 
     monkeypatch.setattr(normalize.subprocess, "run", fake_run)
     normalize.ffmpeg_normalize("in.mkv", "out.opus")
-    cmd = captured["cmds"][-1]
+    # ffmpeg_normalize now also header-probes dst_path AFTER encoding (for the
+    # duration of what was actually WRITTEN), so the encode command is no
+    # longer necessarily the LAST one issued — pick it out by its own flag.
+    cmd = next(c for c in captured["cmds"] if "-vn" in c)
     assert "-vn" in cmd
     assert cmd[cmd.index("-ac") + 1] == "1"
     assert cmd[cmd.index("-ar") + 1] == "16000"
@@ -488,7 +491,9 @@ def test_two_channels_stay_two_when_a_host_asks(monkeypatch):
     )
     with override_settings(STAPEL_RECORDINGS={"AUDIO_CHANNELS": 2}):
         normalize.ffmpeg_normalize("in.mkv", "out.opus")
-    cmd = captured["cmds"][-1]
+    # See test_ffmpeg_is_told_to_drop_video_and_downmix: the encode command
+    # is no longer necessarily the last subprocess call.
+    cmd = next(c for c in captured["cmds"] if "-ac" in c)
     assert cmd[cmd.index("-ac") + 1] == "2"
 
 
