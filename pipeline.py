@@ -543,12 +543,52 @@ def retry_recording(recording_id: str) -> bool:
             return False
         if recording.status != RecordingStatus.ERROR:
             return False
+        refusal = retry_refusal(recording)
+        if refusal:
+            logger.info(
+                "retry_recording: recording %s not retried (%s)", recording_id, refusal
+            )
+            return False
         recording.status = RecordingStatus.QUEUED
         recording.retry_count = 0
         recording.save(update_fields=["status", "retry_count", "updated_at"])
         events.emit_stage(recording.id, _completed_index(recording) + 1)
     logger.info("pipeline: recording %s requeued for retry", recording_id)
     return True
+
+
+#: :func:`retry_refusal` answers: the upload never reached storage.
+RETRY_REFUSED_UPLOAD_INCOMPLETE = "upload_incomplete"
+#: :func:`retry_refusal` answers: the pipeline failed for want of a source
+#: object that is still not there.
+RETRY_REFUSED_NO_SOURCE = "no_source"
+
+
+def retry_refusal(recording: Recording) -> str | None:
+    """Why a retry of this errored recording cannot succeed, or None.
+
+    A retry re-runs the pipeline over the stored source. When the failure is
+    that there IS no source, re-running changes nothing: it fails
+    ``convert`` with ``missing_raw_storage_key`` again, once per click, and
+    the person who pressed the button learns only that it broke twice.
+    Only a finished upload (or a restored source) can help, so those cases
+    are refused here and the host tells the person to upload.
+
+    - the last error is an upload-stage failure (``upload_abandoned`` and
+      friends): no object was ever finalized;
+    - the last error is ``missing_raw_storage_key`` and the row still has
+      no source pointer (a restore that put one back makes it retryable).
+    """
+    state = recording.workflow_state or {}
+    last = state.get("last_error") if isinstance(state, dict) else None
+    if not isinstance(last, dict):
+        return None
+    has_source = bool(recording.file_storage_key or recording.normalized_storage_key)
+    if last.get("stage") == "upload" and not has_source:
+        return RETRY_REFUSED_UPLOAD_INCOMPLETE
+    if last.get("reason") == "missing_raw_storage_key" and not has_source:
+        return RETRY_REFUSED_NO_SOURCE
+    return None
 
 
 def resume_after_payment(recording_id: str) -> bool:
@@ -1026,6 +1066,9 @@ __all__ = [
     "start_pipeline",
     "run_stage",
     "retry_recording",
+    "retry_refusal",
+    "RETRY_REFUSED_UPLOAD_INCOMPLETE",
+    "RETRY_REFUSED_NO_SOURCE",
     "resume_after_payment",
     "reprocess_recording",
     "invalidate_from",

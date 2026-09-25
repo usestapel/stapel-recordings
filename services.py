@@ -172,26 +172,84 @@ class UnsupportedUploadExtension(StapelServiceError, ValueError):
         self.ext = ext
 
 
-def validated_upload_ext(filename: str) -> str:
-    """Return the object-key suffix (``.mp3``) for *filename*. A missing
-    filename, one with no extension, or one outside the allowlist raises
-    :class:`UnsupportedUploadExtension`."""
-    if not filename:
-        raise UnsupportedUploadExtension(filename)
+#: Declared media type -> object-key extension, for a file whose NAME
+#: carries no extension. Audio and video types only: a declared type is a
+#: hint, the content gate and the convert stage's probe are what decide.
+CONTENT_TYPE_EXTENSIONS = {
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/m4a": "m4a",
+    "audio/aac": "aac",
+    "audio/x-aac": "aac",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "audio/wave": "wav",
+    "audio/ogg": "ogg",
+    "audio/opus": "opus",
+    "audio/webm": "webm",
+    "audio/flac": "flac",
+    "audio/x-flac": "flac",
+    "audio/amr": "amr",
+    "audio/3gpp": "3gp",
+    "audio/aiff": "aiff",
+    "audio/x-aiff": "aiff",
+    "audio/x-ms-wma": "wma",
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "video/webm": "webm",
+    "video/x-matroska": "mkv",
+    "video/3gpp": "3gp",
+}
+
+
+def _name_extension(filename: str) -> str | None:
+    """The extension a file NAME carries, or None when it carries none.
+
+    "notulen 1" has none, and neither do "Meeting 25.09" or "Diego. Mision
+    y Vision": a suffix after the last dot counts as an extension only when
+    it looks like one (1-5 characters, letters or digits, at least one
+    letter). Otherwise a name a phone recorder or a person chose is read as
+    a file type and refused.
+    """
     _, dot, ext = filename.rpartition(".")
     ext = ext.strip().lower()
     if not dot or not ext:
+        return None
+    if len(ext) > 5 or not ext.isalnum() or ext.isdigit():
+        return None
+    return ext
+
+
+def validated_upload_ext(filename: str, content_type: str | None = None) -> str:
+    """Return the object-key suffix (``.mp3``) for *filename*.
+
+    A name with an extension outside ``UPLOAD_EXTENSION_ALLOWLIST`` raises
+    :class:`UnsupportedUploadExtension` — the person named a file type we
+    do not take. A name with NO extension falls back to the declared
+    *content_type* (audio/video types only, see
+    :data:`CONTENT_TYPE_EXTENSIONS`); with neither, it raises."""
+    if not filename:
         raise UnsupportedUploadExtension(filename)
     allowlist = {e.lower() for e in (recordings_settings.UPLOAD_EXTENSION_ALLOWLIST or [])}
+    ext = _name_extension(filename)
+    if ext is None:
+        declared = (content_type or "").split(";")[0].strip().lower()
+        ext = CONTENT_TYPE_EXTENSIONS.get(declared)
+        if ext is None:
+            raise UnsupportedUploadExtension(filename)
     if ext not in allowlist:
         raise UnsupportedUploadExtension(ext)
     return f".{ext}"
 
 
-def _storage_key(recording: Recording, *, filename: str) -> str:
+def _storage_key(
+    recording: Recording, *, filename: str, content_type: str | None = None
+) -> str:
     prefix = recordings_settings.STORAGE_PREFIX.strip("/")
     base = f"{prefix}/{recording.workspace_id}/{recording.id}/audio"
-    return f"{base}{validated_upload_ext(filename)}"
+    return f"{base}{validated_upload_ext(filename, content_type)}"
 
 
 def check_workspace_membership(*, user_id, workspace_id) -> bool:
@@ -335,7 +393,7 @@ def create_upload_session(
     admits an upload declaring that type."""
     max_size = _checked_declared_size(declared_size_bytes, required=False)
     storage = get_storage()
-    key = _storage_key(recording, filename=filename)
+    key = _storage_key(recording, filename=filename, content_type=content_type)
     ttl = int(recordings_settings.UPLOAD_SESSION_TTL_SECONDS)
     _supersede_open_sessions(recording)
     presigned_url = storage.presigned_put_url(
@@ -380,7 +438,7 @@ def start_multipart_upload(
         )
 
     storage = get_storage()
-    key = _storage_key(recording, filename=filename)
+    key = _storage_key(recording, filename=filename, content_type=content_type)
     ttl = int(recordings_settings.MULTIPART_SESSION_TTL_SECONDS)
     _supersede_open_sessions(recording)
 
@@ -592,6 +650,7 @@ __all__ = [
     "abort_multipart_upload_session",
     "finalize_upload",
     "validated_upload_ext",
+    "CONTENT_TYPE_EXTENSIONS",
     "upload_limits",
     "accepted_upload_limit",
     "UnsupportedUploadExtension",

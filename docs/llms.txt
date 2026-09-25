@@ -1,8 +1,8 @@
-# stapel-recordings 0.32.0
+# stapel-recordings 0.33.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 59 · extension points 7 · operations 12 · error codes 61.
+Contract: axes 1 · surface 60 · extension points 7 · operations 12 · error codes 61.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -49,6 +49,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - retry_recording — stapel_recordings.pipeline.retry_recording
   instead of: stapel_recordings.events.emit_stage
   The ONLY way back from error: an explicit error -> queued transition that resumes at the first stage whose name has not completed. Expose it from a retry endpoint or admin action instead of setting status and re-emitting recording.stage by hand — a redelivered event deliberately never resurrects a DLQ'd recording, and a hand-reset status without the completed-set cursor re-runs stages whose results were already published.
+- retry_refusal — stapel_recordings.pipeline.retry_refusal
+  Why a retry of an errored recording cannot succeed (upload_incomplete: the upload never reached storage; no_source: convert failed for want of a source that is still missing), or None. retry_recording already refuses these; call it in a retry endpoint to answer with 'upload the file again' instead of a generic not-retryable, and to hide a Retry button that would fail the same way.
 - run_stage — stapel_recordings.pipeline.run_stage
   One step of the generic driver, normally reached only through the recording.stage consumer. Call it directly when you are driving the pipeline synchronously on purpose (a management command, an integration test) — and note the index is a duplicate-delivery hint, not a stage selector: which stage runs is decided by NAME against the currently resolved list, so this cannot be used to skip ahead.
 - start_pipeline — stapel_recordings.pipeline.start_pipeline
@@ -56,7 +58,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Kick processing for a recording whose file has landed. Idempotent under duplicate deliveries: it locks the row and writes the metadata.pipeline start marker in the same transaction as the stage-0 emit, so two deliveries produce one pipeline. Emitting recording.stage yourself gets you neither the lock nor the marker.
 - validated_upload_ext — stapel_recordings.services.validated_upload_ext
   instead of: django.core.validators.FileExtensionValidator
-  The one place an upload filename is judged: returns the object-key suffix (".mp3") when the extension is in UPLOAD_EXTENSION_ALLOWLIST, raises UnsupportedUploadExtension otherwise. Reach for this instead of a hand-rolled whitelist or a FileExtensionValidator with a literal list — a second allowlist is a second thing to extend when the host's NORMALIZER learns a new container, and the one that gets forgotten is the one that lets an unhandled file into the pipeline.
+  The one place an upload filename is judged: returns the object-key suffix (".mp3") when the extension is in UPLOAD_EXTENSION_ALLOWLIST, raises UnsupportedUploadExtension otherwise. A name with no extension ("notulen 1", "Meeting 25.09") falls back to the declared audio/video content type. Reach for this instead of a hand-rolled whitelist or a FileExtensionValidator with a literal list — a second allowlist is a second thing to extend when the host's NORMALIZER learns a new container, and the one that gets forgotten is the one that lets an unhandled file into the pipeline.
 ### predicate
 - check_workspace_membership — stapel_recordings.services.check_workspace_membership
   instead of: stapel_core.comm.call, stapel_workspaces.services.get_membership

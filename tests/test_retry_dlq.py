@@ -134,3 +134,38 @@ def test_retry_recording_is_the_explicit_error_to_queued_transition(make_recordi
     assert r.status == RecordingStatus.COMPLETED
     assert ran == ["ok", "flaky"]  # completed stage was not re-run on retry
     assert pipeline.retry_recording(str(r.id)) is False  # not in error anymore
+
+
+def test_retry_is_refused_for_an_upload_that_never_finished(make_recording, drain):
+    """Production 2026-09-24 (babf7d91): an upload whose complete call failed
+    was swept to upload_abandoned; the person pressed Retry twice and got two
+    convert runs failing missing_raw_storage_key, plus a staff hold on a
+    recording with nothing to hold. A retry cannot produce a source."""
+    from stapel_recordings import pipeline
+
+    r = make_recording(
+        status=RecordingStatus.ERROR,
+        workflow_state={"last_error": {"stage": "upload", "reason": "upload_abandoned"}},
+    )
+    assert pipeline.retry_refusal(r) == pipeline.RETRY_REFUSED_UPLOAD_INCOMPLETE
+    with override_settings(STAPEL_RECORDINGS=_FAKE):
+        assert pipeline.retry_recording(str(r.id)) is False
+        drain()
+    r.refresh_from_db()
+    assert r.status == RecordingStatus.ERROR
+    assert r.workflow_state["last_error"]["reason"] == "upload_abandoned"
+
+
+def test_retry_after_missing_source_waits_for_a_restored_pointer(make_recording, drain):
+    from stapel_recordings import pipeline
+
+    r = make_recording(
+        status=RecordingStatus.ERROR,
+        workflow_state={"last_error": {"stage": "convert", "reason": "missing_raw_storage_key"}},
+    )
+    assert pipeline.retry_recording(str(r.id)) is False
+    r.file_storage_key = "recordings/restored/audio.mp4"
+    r.save(update_fields=["file_storage_key"])
+    assert pipeline.retry_refusal(r) is None
+    with override_settings(STAPEL_RECORDINGS=_FAKE):
+        assert pipeline.retry_recording(str(r.id)) is True

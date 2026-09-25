@@ -43,6 +43,45 @@ def test_create_upload_session_rejects_extensionless_filename(use_fakes, make_re
         services.create_upload_session(recording=r, filename="noext")
 
 
+def test_extensionless_name_takes_the_declared_audio_type(use_fakes, make_recording):
+    """Production 2026-09-22: an Android recorder file named "notulen 1" got
+    415 twice at multipart start and the person left. The name carries no
+    extension; the declared type does."""
+    r = make_recording(status=RecordingStatus.CREATED)
+    session, _parts, _sz = services.start_multipart_upload(
+        recording=r, file_size_bytes=1024, filename="notulen 1", content_type="audio/mp4"
+    )
+    assert session.storage_key.endswith(f"{r.id}/audio.m4a")
+
+
+@pytest.mark.parametrize("name", ["Meeting 25.09", "SEVIO 25:9 - Con Diego. Mision y Vision"])
+def test_a_dot_in_a_name_is_not_an_extension(use_fakes, make_recording, name):
+    r = make_recording(status=RecordingStatus.CREATED)
+    session = services.create_upload_session(
+        recording=r, filename=name, content_type="audio/mpeg"
+    )
+    assert session.storage_key.endswith(f"{r.id}/audio.mp3")
+
+
+def test_extensionless_name_with_no_media_type_is_still_refused(use_fakes, make_recording):
+    r = make_recording(status=RecordingStatus.CREATED)
+    with pytest.raises(services.UnsupportedUploadExtension):
+        services.start_multipart_upload(
+            recording=r,
+            file_size_bytes=1024,
+            filename="notulen 1",
+            content_type="application/octet-stream",
+        )
+
+
+def test_a_named_non_media_extension_is_refused_whatever_the_type(use_fakes, make_recording):
+    r = make_recording(status=RecordingStatus.CREATED)
+    with pytest.raises(services.UnsupportedUploadExtension):
+        services.create_upload_session(
+            recording=r, filename="minutes.docx", content_type="audio/mpeg"
+        )
+
+
 def test_extension_allowlist_is_settings_extensible(use_fakes, make_recording):
     from django.test import override_settings
 

@@ -309,6 +309,11 @@
         "stapel_recordings.events.emit_stage"
       ]
     },
+    "retry_refusal": {
+      "kind": "gate_function",
+      "intent": "Why a retry of an errored recording cannot succeed (upload_incomplete: the upload never reached storage; no_source: convert failed for want of a source that is still missing), or None. retry_recording already refuses these; call it in a retry endpoint to answer with 'upload the file again' instead of a generic not-retryable, and to hide a Retry button that would fail the same way.",
+      "instead_of": []
+    },
     "run_identity": {
       "kind": "factory",
       "intent": "The recording's current pipeline run as {run_id, attempt} — the same pair recording.stage_completed / recording.completed / recording.failed carry. Read it to tie a run to what it cost: an invoice line, a credit hold, an audit trail, or the idempotency key a metering consumer builds (recording_id + run_id — keyed on the recording alone, every reprocess after the first is free). Read-only, and cheaper than re-deriving the workflow_state key names, which are the driver's private cursor layout.",
@@ -422,7 +427,7 @@
     },
     "validated_upload_ext": {
       "kind": "gate_function",
-      "intent": "The one place an upload filename is judged: returns the object-key suffix (\".mp3\") when the extension is in UPLOAD_EXTENSION_ALLOWLIST, raises UnsupportedUploadExtension otherwise. Reach for this instead of a hand-rolled whitelist or a FileExtensionValidator with a literal list — a second allowlist is a second thing to extend when the host's NORMALIZER learns a new container, and the one that gets forgotten is the one that lets an unhandled file into the pipeline.",
+      "intent": "The one place an upload filename is judged: returns the object-key suffix (\".mp3\") when the extension is in UPLOAD_EXTENSION_ALLOWLIST, raises UnsupportedUploadExtension otherwise. A name with no extension (\"notulen 1\", \"Meeting 25.09\") falls back to the declared audio/video content type. Reach for this instead of a hand-rolled whitelist or a FileExtensionValidator with a literal list — a second allowlist is a second thing to extend when the host's NORMALIZER learns a new container, and the one that gets forgotten is the one that lets an unhandled file into the pipeline.",
       "instead_of": [
         "django.core.validators.FileExtensionValidator"
       ]

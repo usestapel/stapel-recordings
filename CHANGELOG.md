@@ -1,6 +1,36 @@
 # Changelog
 
 
+## [0.33.0] — 2026-09-25
+
+### Fixed — Retry on an upload that never finished ran the pipeline anyway
+
+On a client host a 7.1 GB upload lost its `complete` call; the sweeper marked
+it `upload/upload_abandoned`. The person pressed Retry twice. `retry_recording`
+accepted any `error` row, so each click started `convert`, which failed
+`missing_raw_storage_key`, raised a staff hold on a recording with nothing
+to hold, and replaced the honest "upload did not finish" with a conversion
+failure.
+
+`retry_refusal(recording)` names the two cases a retry cannot fix —
+`upload_incomplete` (last error at the `upload` stage, no source pointer) and
+`no_source` (`missing_raw_storage_key` with the pointer still empty; a
+restored pointer makes it retryable again) — and `retry_recording` returns
+False for both. Hosts call `retry_refusal` to answer "upload the file again"
+instead of a generic not-retryable.
+
+### Fixed — a file name without an extension was refused, whatever it was
+
+An Android recorder file named `notulen 1` got `415` twice at multipart start
+and the person left; `Meeting 25.09` and `Diego. Mision y Vision` were read as
+extensions `09` and ` mision y vision`. `validated_upload_ext(filename,
+content_type)` now treats a suffix as an extension only when it looks like one
+(1-5 letters/digits, at least one letter) and, for a name with none, takes the
+extension from the declared audio/video type (`CONTENT_TYPE_EXTENSIONS`).
+`create_upload_session` and `start_multipart_upload` pass their
+`content_type` through. A named non-media extension (`.docx`) is still
+refused, and so is an extension-less name declared `application/octet-stream`.
+
 ## [0.32.0] — 2026-09-22
 
 ### Fixed — an empty transcript completed the recording

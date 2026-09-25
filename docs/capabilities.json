@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -155,6 +155,12 @@
       ]
     },
     {
+      "name": "retry_refusal",
+      "kind": "gate_function",
+      "path": "stapel_recordings.pipeline.retry_refusal",
+      "intent": "Why a retry of an errored recording cannot succeed (upload_incomplete: the upload never reached storage; no_source: convert failed for want of a source that is still missing), or None. retry_recording already refuses these; call it in a retry endpoint to answer with 'upload the file again' instead of a generic not-retryable, and to hide a Retry button that would fail the same way."
+    },
+    {
       "name": "run_identity",
       "kind": "factory",
       "path": "stapel_recordings.pipeline.run_identity",
@@ -267,7 +273,7 @@
       "name": "validated_upload_ext",
       "kind": "gate_function",
       "path": "stapel_recordings.services.validated_upload_ext",
-      "intent": "The one place an upload filename is judged: returns the object-key suffix (\".mp3\") when the extension is in UPLOAD_EXTENSION_ALLOWLIST, raises UnsupportedUploadExtension otherwise. Reach for this instead of a hand-rolled whitelist or a FileExtensionValidator with a literal list — a second allowlist is a second thing to extend when the host's NORMALIZER learns a new container, and the one that gets forgotten is the one that lets an unhandled file into the pipeline.",
+      "intent": "The one place an upload filename is judged: returns the object-key suffix (\".mp3\") when the extension is in UPLOAD_EXTENSION_ALLOWLIST, raises UnsupportedUploadExtension otherwise. A name with no extension (\"notulen 1\", \"Meeting 25.09\") falls back to the declared audio/video content type. Reach for this instead of a hand-rolled whitelist or a FileExtensionValidator with a literal list — a second allowlist is a second thing to extend when the host's NORMALIZER learns a new container, and the one that gets forgotten is the one that lets an unhandled file into the pipeline.",
       "instead_of": [
         "django.core.validators.FileExtensionValidator"
       ]

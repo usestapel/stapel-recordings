@@ -93,9 +93,10 @@ CANONICAL_PREFIX = "/recordings/api/v1/"
 # is what had happened here: the Makefile said 8000 while this said 7000.
 # And to 9000 once 0.28.0's input-fingerprint checkpoints (invalidate_from,
 # stage_input_fingerprint, stage_needs_recompute, stage_input_dedupe_key)
-# landed the artifact at 8382/8000.
+# landed the artifact at 8382/8000. And to 10000 once 0.33.0's retry_refusal
+# landed it at 9135/9000.
 ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
-LLMS_TXT_BUDGET = "9000"
+LLMS_TXT_BUDGET = "10000"
 
 
 def _emit(out_dir: Path) -> None:
