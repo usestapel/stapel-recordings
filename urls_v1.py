@@ -11,6 +11,10 @@ from django.urls import path
 
 from .views import (
     FinalizeUploadView,
+    MultipartAbortView,
+    MultipartCompleteView,
+    MultipartPartsView,
+    MultipartStartView,
     RecordingDetailView,
     RecordingListCreateView,
     RecordingMediaView,
@@ -21,6 +25,7 @@ from .views import (
     SharedRecordingView,
     ShareUnlockView,
     UploadLimitsView,
+    UploadLookupView,
 )
 
 urlpatterns = [
@@ -28,8 +33,28 @@ urlpatterns = [
     # Read the ceilings before uploading. A literal segment, listed before
     # the <uuid> routes it can never collide with.
     path("recordings/upload-limits", UploadLimitsView.as_view(), name="recordings-upload-limits"),
+    # Is this file (by fingerprint) already here, or resumable?
+    path("recordings/uploads/lookup", UploadLookupView.as_view(), name="recordings-upload-lookup"),
     path("recordings/<uuid:recording_id>", RecordingDetailView.as_view(), name="recordings-detail"),
     path("recordings/<uuid:recording_id>/finalize", FinalizeUploadView.as_view(), name="recordings-finalize"),
+    # Multipart: start, mint/manifest, complete, abort. A start with a
+    # fingerprint is a verified upload (parts bound to their SHA-256).
+    path("recordings/<uuid:recording_id>/multipart", MultipartStartView.as_view(), name="recordings-multipart-start"),
+    path(
+        "recordings/<uuid:recording_id>/multipart/<uuid:upload_id>/parts",
+        MultipartPartsView.as_view(),
+        name="recordings-multipart-parts",
+    ),
+    path(
+        "recordings/<uuid:recording_id>/multipart/<uuid:upload_id>/complete",
+        MultipartCompleteView.as_view(),
+        name="recordings-multipart-complete",
+    ),
+    path(
+        "recordings/<uuid:recording_id>/multipart/<uuid:upload_id>/abort",
+        MultipartAbortView.as_view(),
+        name="recordings-multipart-abort",
+    ),
     path("recordings/<uuid:recording_id>/reprocess", ReprocessRecordingView.as_view(), name="recordings-reprocess"),
     # Authorized media delivery (audit STORE-01): the ONLY sanctioned way a
     # client reaches the bytes. Everything else — a key pasted into a public

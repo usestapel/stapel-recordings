@@ -1,8 +1,8 @@
-# stapel-recordings 0.33.0
+# stapel-recordings 0.34.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 60 · extension points 7 · operations 12 · error codes 61.
+Contract: axes 1 · surface 70 · extension points 7 · operations 18 · error codes 64.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -29,6 +29,12 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - invalidate_from — stapel_recordings.pipeline.invalidate_from
   instead of: stapel_recordings.models.Recording.workflow_state
   Declare a stage and everything downstream of it stale, so the next run recomputes instead of reusing what is already stored. The explicit half of the input-fingerprint checkpoint (stapel_recordings.checkpoints): reach for it when the INPUT changed in a way the row cannot show — a trim the customer has now paid to lift, a parameter held outside the recording — or when the artifact predates fingerprints entirely and its provenance is unknown. Declaring is all it does: no requeue, no status change, no artifact deleted, so the previous result stays on screen until the new one replaces it. Declare first, then reprocess_recording, or the run starts over checkpoints it was meant to distrust.
+- lookup — stapel_recordings.chunked.lookup
+  Find the newest recording in a workspace carrying a fingerprint: complete (already uploaded) or in_progress (resume its session). Pass the caller's visible queryset so a lookup never names a recording the caller cannot open.
+- manifest — stapel_recordings.chunked.manifest
+  What the STORE holds for a verified session and which parts are missing — the only source a resume may trust; a part of the wrong size counts as missing.
+- mint_part_urls — stapel_recordings.chunked.mint_part_urls
+  Part URLs for a verified session, each signed over the part's SHA-256 plus the exact headers the PUT must send; the store refuses any other bytes. Also slides the session deadline — minting proves the upload is alive.
 - note_reconcile_redrive — stapel_recordings.pipeline.note_reconcile_redrive
   Count one watchdog re-drive of a recording and answer whether it may be re-driven at all; False means it has just been failed with reason=reconcile_exhausted. Call it in any custom watchdog that re-emits recording.stage, because a re-drive does not consume retry_count and an uncounted one repeats for the life of the recording.
 - purge_soft_deleted_recordings — stapel_recordings.tasks.purge_soft_deleted_recordings
@@ -59,10 +65,14 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - validated_upload_ext — stapel_recordings.services.validated_upload_ext
   instead of: django.core.validators.FileExtensionValidator
   The one place an upload filename is judged: returns the object-key suffix (".mp3") when the extension is in UPLOAD_EXTENSION_ALLOWLIST, raises UnsupportedUploadExtension otherwise. A name with no extension ("notulen 1", "Meeting 25.09") falls back to the declared audio/video content type. Reach for this instead of a hand-rolled whitelist or a FileExtensionValidator with a literal list — a second allowlist is a second thing to extend when the host's NORMALIZER learns a new container, and the one that gets forgotten is the one that lets an unhandled file into the pipeline.
+- verify_manifest — stapel_recordings.chunked.verify_manifest
+  The completion check of a verified upload: every part present at its size, stored digests equal the declared ones, and together they hash to the session fingerprint; raises the 409 parts_missing / part_mismatch refusals and returns the store's own part list to complete with.
 ### predicate
 - check_workspace_membership — stapel_recordings.services.check_workspace_membership
   instead of: stapel_core.comm.call, stapel_workspaces.services.get_membership
   The fail-closed "may this user see this workspace's recordings" check — asks workspaces.check_membership by comm name, so it reads the same in a monolith and across services and never imports stapel-workspaces. Any wiring failure DENIES; hand-write the comm call and the natural except-branch is the permissive one, which is how an account that belongs to no workspace ends up listing someone else's recordings.
+- is_sha256_hex — stapel_recordings.chunked.is_sha256_hex
+  True for a 64-char lower-case hex digest — the wire form of every part hash and fingerprint.
 - is_valid_source_type — stapel_recordings.sources.is_valid_source_type
   instead of: stapel_recordings.models.SourceType.values
   The membership test for a source kind — ask this rather than comparing against the model enum's values, which rejects exactly the kinds a host went to the trouble of registering.
@@ -82,9 +92,15 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Mint a single-PUT presigned upload for a recording — the sanctioned way to hand a client an upload URL, because the UploadSession row it writes carries the TTL, the size ceiling and the storage key that finalize_upload later validates against. A bare presigned_put_url() gives you the URL and none of that.
 - default_pipeline_resolver — stapel_recordings.pipeline.default_pipeline_resolver
   The stock PIPELINE_RESOLVER — returns the PIPELINE setting verbatim. It is already the seam's default value, so a host never wires it; call it only from inside a custom resolver that wants "my per-workspace list, else the configured default" as its fallback.
+- expected_part_size — stapel_recordings.chunked.expected_part_size
+  Byte length of part n of a size-byte file cut at part_size; the last part is the remainder. The size a stored part must have to count.
 - finalize_upload — stapel_recordings.services.finalize_upload
   instead of: stapel_recordings.events.emit_uploaded
   Close an upload session and enter the pipeline: completes the multipart if there was one, stamps the real object size off a HEAD, moves the recording to queued and emits recording.uploaded through the outbox — idempotent under a concurrent second finalize. This is also the entry point for a programmatic import (a batch of historical recordings, a recorder that uploaded out of band); emitting recording.uploaded yourself skips every one of those steps.
+- fingerprint_bytes — stapel_recordings.chunked.fingerprint_bytes
+  fingerprint_of over in-memory bytes, returning the part digests too — for tests and server-side producers, never for a multi-gigabyte upload.
+- fingerprint_of — stapel_recordings.chunked.fingerprint_of
+  Fingerprint v1 of a file from its part SHA-256s — the same bytes the client computes, so one file is recognised wherever it was hashed. Never invent another file identity: lookup and verify_manifest both key on this one.
 - get_erasure_client — stapel_recordings.erasure.get_erasure_client
   instead of: stapel_gdpr.orchestrator.gdpr_orchestrator
   The configured ERASURE_CLIENT — how this module ASKS for an erasure rather than performing one. Use it (never an import of stapel_gdpr) when host code wants a recording erased through the receipts path; the seam is what lets a monolith call an orchestrator in-process and a service call one over HTTP.
@@ -97,6 +113,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   THE object-store handle for anything that touches recording bytes — the configured RecordingStorage (Django default_storage, the bundled S3/MinIO backend, or the host's own), memoized per resolved class. An export script, a custom stage or an admin action goes through this rather than building its own boto3 client or reaching for default_storage: the STORAGE seam is what makes the bucket, the credentials and the presign policy one decision instead of one per call site.
 - handoff_key — stapel_recordings.stages.handoff_key
   Where llm.transcribe is asked to write the transcript for a recording. Reach for it wherever that object must be named outside the stage — the erasure sweep uses it to find a handoff left behind by a recording that died between the agent's write and the stage's read, which no field of the row points at.
+- hex_to_b64 — stapel_recordings.chunked.hex_to_b64
+  Hex digest to the base64 form object stores want in x-amz-checksum-sha256.
 - identity_fields — stapel_recordings.stages.identity_fields
   The same attribution block built from raw ids, for callers that have them without a Recording — a live question, a search, a host view that knows its request.user. Absent ids are omitted rather than sent as null, which matters because the llm.* schemas type both as strings and reject unknown or ill-typed properties outright.
 - identity_payload — stapel_recordings.stages.identity_payload
@@ -136,7 +154,7 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   What a named stage says its input is right now — the content hash plus the parameters that change its answer, or None when the stage declares none. Read it to explain why a stage re-ran (or did not) and to record alongside a host's own artifact; do not compare it by hand, because an unrecorded fingerprint means unknown, not stale, and guessing the other way re-buys every paid stage in the deployment.
 - start_multipart_upload — stapel_recordings.services.start_multipart_upload
   instead of: stapel_recordings.storage.RecordingStorage.create_multipart_upload
-  The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects.
+  The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects. Pass fingerprint= (chunked.fingerprint_of) for a VERIFIED upload: no URLs at start, parts minted bound to their SHA-256 and checked by the store.
 - start_resummarize — stapel_recordings.stages.start_resummarize
   instead of: stapel_core.comm.call, stapel_recordings.pipeline.reprocess_recording
   Regenerate ONE recording's summary — the same llm.summarize call the merge stage makes, with no re-transcription and no pipeline run. This is the cheap counterpart of reprocess_recording, which re-runs every stage (a second STT bill) for a recording whose transcript is usually already correct. Returns (job, started); a request that arrives while one is in flight joins it instead of paying for a second summary. Raises NoTranscriptToSummarize / SummarizationUnavailable rather than degrading quietly, so a caller can answer 409 vs 503 honestly.
@@ -154,6 +172,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   How long ONE llm.summarize call may take for THIS recording: the flat SUMMARIZE_TIMEOUT_SECONDS plus the meeting's own length, clamped at SUMMARIZE_TIMEOUT_MAX_SECONDS. Use it instead of reading the flat setting whenever a budget has to cover a map-reduce whose work grows with the transcript.
 - task_deadline_seconds — stapel_recordings.stages.task_deadline_seconds
   The task deadline that lets a task actually USE the attempts it declares: one attempt's budget x max_attempts + TASK_DEADLINE_HEADROOM_SECONDS. Call it wherever a stage passes both deadline_seconds and max_attempts to submit_task, because setting the deadline to one attempt's budget makes every later attempt unreachable ('deadline exceeded' before attempt two).
+- total_parts_for — stapel_recordings.chunked.total_parts_for
+  How many parts a size-byte file has at part_size (at least one).
 - transcribe_attempt_ceiling — stapel_recordings.stages.transcribe_attempt_ceiling
   The MOST provider calls one recording's transcribe stage can cause: MAX_STAGE_RETRIES x TRANSCRIBE_TASK_MAX_ATTEMPTS. Read it in a host's own check or dashboard before raising either setting — the two retry ladders multiply, and the shipped 3x3 is how one 148-minute recording reached the provider six times.
 - transcript_from_result — stapel_recordings.stages.transcript_from_result
@@ -184,23 +204,29 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - stapel-auth (optional) — every endpoint requires an authenticated user (IsAuthenticated); stapel-auth is the shelf's session issuer — any stapel-core-compatible JWT issuer satisfies the check
 - stapel-core (required) — comm bus (recording.stage pipeline driving, llm.transcribe / llm.summarize calls), JWT authentication, GDPR provider registry, AppSettings config layer
 
-## HTTP operations (12) — call by operationId, never by a typed path
+## HTTP operations (18) — call by operationId, never by a typed path
 Paths are relative to `/recordings/api/v1/`.
 ### Recordings
 - POST /recordings — recordings_api_v1_recordings_create
 - POST /recordings/{recording_id}/finalize — recordings_api_v1_recordings_finalize_create
 - GET /recordings — recordings_api_v1_recordings_list
 - GET /recordings/{recording_id}/media — recordings_api_v1_recordings_media_retrieve
+- DELETE /recordings/{recording_id}/multipart/{upload_id}/abort — recordings_api_v1_recordings_multipart_abort_destroy
+- POST /recordings/{recording_id}/multipart/{upload_id}/complete — recordings_api_v1_recordings_multipart_complete_create
+- POST /recordings/{recording_id}/multipart — recordings_api_v1_recordings_multipart_create
+- POST /recordings/{recording_id}/multipart/{upload_id}/parts — recordings_api_v1_recordings_multipart_parts_create
+- GET /recordings/{recording_id}/multipart/{upload_id}/parts — recordings_api_v1_recordings_multipart_parts_retrieve
 - POST /recordings/{recording_id}/reprocess — recordings_api_v1_recordings_reprocess_create
 - POST /recordings/{recording_id}/resummarize — recordings_api_v1_recordings_resummarize_create
 - GET /recordings/{recording_id} — recordings_api_v1_recordings_retrieve
 - GET /recordings/{recording_id}/transcript — recordings_api_v1_recordings_transcript_retrieve
 - GET /recordings/upload-limits — recordings_api_v1_recordings_upload_limits_retrieve
+- GET /recordings/uploads/lookup — recordings_api_v1_recordings_uploads_lookup_retrieve
 - GET /shares/{link_token}/media — recordings_api_v1_shares_media_retrieve
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (61) — the StapelError envelope
+## Error codes (64) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -247,6 +273,9 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.409.recording_invalid_state [409] fix_input
 - error.409.recording_media_not_stored [409] fix_input
 - error.409.recording_no_transcript [409] fix_input
+- error.409.recording_upload_expired [409] fix_input
+- error.409.recording_upload_part_mismatch [409] fix_input {part_number}
+- error.409.recording_upload_parts_missing [409] fix_input {count,missing}
 - error.410.gone [410] retry
 - error.413.payload_too_large [413] retry
 - error.413.recording_too_large [413] retry {size,limit}

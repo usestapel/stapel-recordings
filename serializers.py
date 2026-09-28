@@ -6,11 +6,15 @@ from .dto import (
     CreateRecordingResponse,
     JobDTO,
     MediaURLDTO,
+    MultipartManifestDTO,
+    MultipartMintDTO,
+    MultipartStartDTO,
     RecordingDTO,
     SharedRecordingDTO,
     ShareUnlockDTO,
     TranscriptSegmentDTO,
     UploadLimitsDTO,
+    UploadLookupDTO,
     UploadSessionDTO,
 )
 
@@ -65,6 +69,59 @@ class CreateRecordingRequestSerializer(serializers.Serializer):
         except UnsupportedUploadExtension as exc:
             raise serializers.ValidationError(str(exc)) from exc  # noqa: R002
         return value
+
+
+_SHA256_HEX = r"^[0-9a-f]{64}$"
+
+
+class MultipartStartRequestSerializer(serializers.Serializer):
+    file_size_bytes = serializers.IntegerField(min_value=1)
+    content_type = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    # Names the object key's extension; defaults to the recording's upload
+    # session key, else the declared content_type.
+    filename = serializers.CharField(max_length=512, required=False)
+    # Fingerprint v1 of the whole file (stapel_recordings.chunked). Present =
+    # a verified upload: parts are minted later, bound to their hashes.
+    fingerprint = serializers.RegexField(_SHA256_HEX, required=False)
+
+
+class MultipartStartResponseSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = MultipartStartDTO
+
+
+class PartHashSerializer(serializers.Serializer):
+    part_number = serializers.IntegerField(min_value=1)
+    sha256 = serializers.RegexField(_SHA256_HEX)
+
+
+class MultipartMintRequestSerializer(serializers.Serializer):
+    parts = PartHashSerializer(many=True, allow_empty=False, max_length=100)
+
+
+class MultipartMintResponseSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = MultipartMintDTO
+
+
+class MultipartManifestSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = MultipartManifestDTO
+
+
+class CompletedPartSerializer(serializers.Serializer):
+    part_number = serializers.IntegerField(min_value=1)
+    etag = serializers.CharField(max_length=256, allow_blank=True)
+    sha256 = serializers.RegexField(_SHA256_HEX, required=False)
+
+
+class MultipartCompleteRequestSerializer(serializers.Serializer):
+    parts = CompletedPartSerializer(many=True)
+
+
+class UploadLookupSerializer(StapelDataclassSerializer):
+    class Meta:
+        dataclass = UploadLookupDTO
 
 
 class FinalizeUploadRequestSerializer(serializers.Serializer):

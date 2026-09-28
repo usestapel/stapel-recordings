@@ -57,7 +57,10 @@ on a terminal or client-owned status — which is how a client is told to stop.
 Both come from :func:`~stapel_recordings.dto.poll_after_seconds`, so the body
 and the header cannot disagree.
 """
+import uuid
+
 from django.http import HttpResponseRedirect
+from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
@@ -65,11 +68,17 @@ from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse, S
 from stapel_core.django.api.pagination import AnchorPagination
 from stapel_core.django.api.permissions import IsNotAnonymousUser
 
-from . import media, pipeline, services, shares, stages
+from . import chunked, media, pipeline, services, shares, stages
 from .conf import flag, recordings_settings
 from .dto import (
     CreateRecordingResponse,
+    MultipartManifestDTO,
+    MultipartMintDTO,
+    MultipartPartURLDTO,
+    MultipartStartDTO,
     ShareUnlockDTO,
+    StoredPartDTO,
+    UploadLookupDTO,
     job_to_dto,
     media_grant_to_dto,
     poll_after_seconds,
@@ -86,11 +95,12 @@ from .errors import (
     ERR_409_INVALID_STATE,
     ERR_409_MEDIA_NOT_STORED,
     ERR_409_NO_TRANSCRIPT,
+    ERR_409_UPLOAD_EXPIRED,
     ERR_503_MEDIA_UNAVAILABLE,
     ERR_503_SUMMARIZE_UNAVAILABLE,
     POLICY_DENIAL_CODES,
 )
-from .models import Recording
+from .models import Recording, UploadSession
 from .policy import as_decision, get_policy
 from .resources import resolve_resource_key
 from .serializers import (
@@ -99,6 +109,12 @@ from .serializers import (
     FinalizeUploadRequestSerializer,
     JobSerializer,
     MediaURLSerializer,
+    MultipartCompleteRequestSerializer,
+    MultipartManifestSerializer,
+    MultipartMintRequestSerializer,
+    MultipartMintResponseSerializer,
+    MultipartStartRequestSerializer,
+    MultipartStartResponseSerializer,
     RecordingSerializer,
     SharedRecordingSerializer,
     ShareUnlockRequestSerializer,
@@ -106,6 +122,7 @@ from .serializers import (
     TranscriptPageSerializer,
     TranscriptSegmentSerializer,
     UploadLimitsSerializer,
+    UploadLookupSerializer,
 )
 
 #: Header a client presents its unlock token in. A header, not a query
@@ -490,6 +507,344 @@ class FinalizeUploadView(SerializerSeamMixin, APIView):
             # does not depend on the host having configured one.
             return StapelErrorResponse(exc.http_status, exc.error_key, exc.error_params)
         return _recording_response(self, recording)
+
+
+# ── Multipart uploads (legacy + verified/fingerprint) ─────────────────────
+
+
+def _uploadable_recording(request, recording_id):
+    """The recording if the caller may upload to it, else ``None`` (404)."""
+    recording = _owned_qs(request).filter(pk=recording_id).first()
+    if recording is None or not get_policy().can_upload(request.user, recording):
+        return None
+    return recording
+
+
+def _multipart_session(recording, upload_id):
+    return UploadSession.objects.filter(
+        id=upload_id, recording=recording, is_multipart=True
+    ).first()
+
+
+def _service_error(exc: StapelServiceError):
+    return StapelErrorResponse(exc.http_status, exc.error_key, exc.error_params)
+
+
+def _part_url_dtos(parts):
+    return [
+        MultipartPartURLDTO(
+            part_number=int(p["part_number"]),
+            presigned_url=p["presigned_url"],
+            headers=dict(p.get("headers") or {}),
+        )
+        for p in parts
+    ]
+
+
+def _stored_part_dtos(parts):
+    return [
+        StoredPartDTO(
+            part_number=int(p["part_number"]),
+            etag=str(p.get("etag") or ""),
+            size=int(p.get("size") or 0),
+            sha256=p.get("sha256"),
+        )
+        for p in parts
+    ]
+
+
+def _start_filename(request, recording):
+    """Object-key filename: the body's, else the one the recording's upload
+    session was opened with, else extensionless (the declared type names it)."""
+    explicit = request.data.get("filename")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    last = recording.upload_sessions.order_by("-created_at").first()
+    if last is not None and last.storage_key:
+        return last.storage_key.rsplit("/", 1)[-1]
+    return "audio"
+
+
+@extend_schema(tags=["Recordings"])
+class UploadLookupView(SerializerSeamMixin, APIView):
+    """Is this file already here? Looked up by its fingerprint v1.
+
+    ``found: false`` — start a new upload. ``state: complete`` — the
+    recording already holds this file (``upload_id`` is null).
+    ``state: in_progress`` — resume ``upload_id``; ``uploaded_parts`` and
+    ``missing`` are what the STORE holds. Workspace members only, and only
+    recordings the caller may open are considered."""
+
+    permission_classes = [IsNotAnonymousUser]
+    response_serializer_class = UploadLookupSerializer
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name="fingerprint", type=str, location=OpenApiParameter.QUERY, required=True),
+            OpenApiParameter(name="workspace_id", type=str, location=OpenApiParameter.QUERY, required=True),
+        ],
+        responses={200: UploadLookupSerializer},
+    )
+    def get(self, request):  # noqa: R007
+        fingerprint = str(request.query_params.get("fingerprint") or "").strip().lower()
+        workspace_id = request.query_params.get("workspace_id")
+        try:
+            workspace_id = uuid.UUID(str(workspace_id))
+        except (TypeError, ValueError):
+            return StapelErrorResponse(403, ERR_403_WORKSPACE_FORBIDDEN)
+        if not services.check_workspace_membership(
+            user_id=getattr(request.user, "pk", None), workspace_id=workspace_id
+        ):
+            return StapelErrorResponse(403, ERR_403_WORKSPACE_FORBIDDEN)
+        visible = get_policy().visible_queryset(
+            request.user, Recording.objects.filter(workspace_id=workspace_id)
+        )
+        found = chunked.lookup(workspace_id, fingerprint, queryset=visible)
+        dto = UploadLookupDTO(
+            found=False, state=None, recording_id=None, upload_id=None,
+            part_size_bytes=None, total_parts=None, uploaded_parts=[], missing=[],
+            expires_at=None,
+        )
+        if found is not None:
+            session = found["session"]
+            dto.found = True
+            dto.state = found["state"]
+            dto.recording_id = str(found["recording"].pk)
+            dto.part_size_bytes = session.part_size_bytes
+            dto.total_parts = session.total_parts
+            if found["state"] == "in_progress":
+                try:
+                    listed = chunked.manifest(session)
+                except StapelServiceError as exc:
+                    return _service_error(exc)
+                dto.upload_id = str(session.pk)
+                dto.expires_at = session.expires_at.isoformat()
+                dto.uploaded_parts = _stored_part_dtos(listed["uploaded_parts"])
+                dto.missing = listed["missing"]
+        return StapelResponse(self.get_response_serializer_class()(dto))
+
+
+@extend_schema(tags=["Recordings"])
+class MultipartStartView(SerializerSeamMixin, APIView):
+    """Start a multipart upload.
+
+    Without ``fingerprint``: every part URL comes back in ``parts`` (legacy).
+    With ``fingerprint`` (v1): a VERIFIED upload — ``parts`` is empty; mint
+    part URLs bound to each part's SHA-256 with ``POST …/parts``."""
+
+    permission_classes = [IsNotAnonymousUser]
+    request_serializer_class = MultipartStartRequestSerializer
+    response_serializer_class = MultipartStartResponseSerializer
+
+    @extend_schema(request=MultipartStartRequestSerializer, responses={201: MultipartStartResponseSerializer})
+    def post(self, request, recording_id):  # noqa: R007
+        recording = _uploadable_recording(request, recording_id)
+        if recording is None:
+            return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        if recording.file_storage_key:
+            return StapelErrorResponse(409, ERR_409_INVALID_STATE)
+        req = self.get_request_serializer_class()(data=request.data)
+        req.is_valid(raise_exception=True)
+        data = req.validated_data
+        content_type = data.get("content_type") or None
+        try:
+            session, parts, part_size = services.start_multipart_upload(
+                recording=recording,
+                file_size_bytes=data["file_size_bytes"],
+                content_type=content_type,
+                filename=_start_filename(request, recording),
+                fingerprint=data.get("fingerprint"),
+            )
+        except StapelServiceError as exc:
+            return _service_error(exc)
+        dto = MultipartStartDTO(
+            upload_id=str(session.pk),
+            recording_id=str(recording.pk),
+            storage_key=session.storage_key,
+            part_size_bytes=int(part_size),
+            total_parts=chunked.total_parts_for(session.max_size_bytes, part_size),
+            parts=_part_url_dtos(parts),
+            expires_at=session.expires_at.isoformat(),
+        )
+        return StapelResponse(self.get_response_serializer_class()(dto), status=201)
+
+
+@extend_schema(tags=["Recordings"])
+class MultipartPartsView(SerializerSeamMixin, APIView):
+    """Part URLs and the store's manifest for one multipart upload.
+
+    ``POST`` (verified uploads): ``{parts: [{part_number, sha256}]}``, at
+    most 100 per call → URLs signed over each hash plus the exact
+    ``headers`` the PUT must send.
+
+    ``GET``: what the store holds (``uploaded_parts``) and what is
+    ``missing``. ``?mint=none`` returns the manifest alone; for a legacy
+    upload ``mint=missing`` (default) or ``mint=1,2`` also mints unbound URLs.
+    For a verified upload ``parts`` is always empty."""
+
+    permission_classes = [IsNotAnonymousUser]
+    request_serializer_class = MultipartMintRequestSerializer
+    response_serializer_class = MultipartManifestSerializer
+
+    @extend_schema(request=MultipartMintRequestSerializer, responses={200: MultipartMintResponseSerializer})
+    def post(self, request, recording_id, upload_id):  # noqa: R007
+        recording = _uploadable_recording(request, recording_id)
+        session = _multipart_session(recording, upload_id) if recording else None
+        if session is None:
+            return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        req = self.get_request_serializer_class()(data=request.data)
+        req.is_valid(raise_exception=True)
+        try:
+            minted = chunked.mint_part_urls(
+                session,
+                [dict(p) for p in req.validated_data["parts"]],
+                expires_seconds=int(recordings_settings.MULTIPART_SESSION_TTL_SECONDS),
+            )
+        except StapelServiceError as exc:
+            return _service_error(exc)
+        dto = MultipartMintDTO(parts=_part_url_dtos(minted), expires_at=session.expires_at.isoformat())
+        return StapelResponse(MultipartMintResponseSerializer(dto))
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="mint", type=str, location=OpenApiParameter.QUERY, required=False,
+                description="none | missing (default) | comma list of part numbers. "
+                "Legacy uploads only; a verified upload never mints here.",
+            ),
+        ],
+        responses={200: MultipartManifestSerializer},
+    )
+    def get(self, request, recording_id, upload_id):  # noqa: R007
+        recording = _uploadable_recording(request, recording_id)
+        session = _multipart_session(recording, upload_id) if recording else None
+        if session is None:
+            return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        if session.expires_at <= timezone.now() and not session.finalized_at:
+            return StapelErrorResponse(409, ERR_409_UPLOAD_EXPIRED)
+        try:
+            if session.fingerprint:
+                listed = chunked.manifest(session)
+                minted = []
+            else:
+                listed, minted = self._legacy(session, request.query_params.get("mint", "missing"))
+        except StapelServiceError as exc:
+            return _service_error(exc)
+        dto = MultipartManifestDTO(
+            upload_id=str(session.pk),
+            recording_id=str(recording.pk),
+            part_size_bytes=listed["part_size_bytes"],
+            total_parts=listed["total_parts"],
+            expires_at=session.expires_at.isoformat(),
+            uploaded_parts=_stored_part_dtos(listed["uploaded_parts"]),
+            missing=listed["missing"],
+            parts=_part_url_dtos(minted),
+        )
+        return StapelResponse(self.get_response_serializer_class()(dto))
+
+    @staticmethod
+    def _legacy(session, mint):
+        from .services import InvalidMultipartParts
+        from .storage import get_storage
+
+        storage = get_storage()
+        part_size = int(recordings_settings.MULTIPART_PART_SIZE)
+        total = chunked.total_parts_for(session.max_size_bytes, part_size)
+        try:
+            stored = [
+                p for p in storage.list_parts(session.storage_key, session.multipart_upload_id)
+                if 1 <= int(p["part_number"]) <= total
+            ]
+        except NotImplementedError:
+            stored = []
+        done = {int(p["part_number"]) for p in stored}
+        missing = [n for n in range(1, total + 1) if n not in done]
+        mint = str(mint or "").strip().lower()
+        if mint in ("none", "0", "false"):
+            wanted = []
+        elif mint in ("", "missing", "1", "true"):
+            wanted = missing
+        else:
+            try:
+                asked = {int(x) for x in mint.split(",") if x.strip()}
+            except ValueError as exc:
+                raise InvalidMultipartParts(f"mint is not a part list: {mint!r}") from exc
+            wanted = sorted(n for n in asked if 1 <= n <= total)
+        ttl = int(recordings_settings.MULTIPART_SESSION_TTL_SECONDS)
+        minted = [
+            {
+                "part_number": n,
+                "presigned_url": storage.presigned_upload_part_url(
+                    session.storage_key, session.multipart_upload_id, n, expires_seconds=ttl
+                ),
+            }
+            for n in wanted
+        ]
+        listed = {
+            "part_size_bytes": part_size,
+            "total_parts": total,
+            "uploaded_parts": stored,
+            "missing": missing,
+        }
+        return listed, minted
+
+
+@extend_schema(tags=["Recordings"])
+class MultipartCompleteView(SerializerSeamMixin, APIView):
+    """Complete a multipart upload and enqueue the pipeline.
+
+    Body ``{parts: [{part_number, etag, sha256?}]}``. A verified upload is
+    checked against the store first: ``409 recording_upload_parts_missing``
+    (``{count, missing}``) or ``409 recording_upload_part_mismatch``
+    (``{part_number}``, 0 = the whole-file fingerprint) leave the upload
+    open to re-send and complete again. Idempotent: a completed upload
+    answers 200 with its recording."""
+
+    permission_classes = [IsNotAnonymousUser]
+    request_serializer_class = MultipartCompleteRequestSerializer
+    response_serializer_class = RecordingSerializer
+
+    @extend_schema(request=MultipartCompleteRequestSerializer, responses={200: RecordingSerializer})
+    def post(self, request, recording_id, upload_id):  # noqa: R007
+        recording = _uploadable_recording(request, recording_id)
+        session = _multipart_session(recording, upload_id) if recording else None
+        if session is None:
+            return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        if session.finalized_at or recording.file_storage_key:
+            return _recording_response(self, recording)
+        if session.expires_at <= timezone.now():
+            return StapelErrorResponse(409, ERR_409_UPLOAD_EXPIRED)
+        req = self.get_request_serializer_class()(data=request.data)
+        req.is_valid(raise_exception=True)
+        parts = []
+        for p in req.validated_data["parts"]:
+            entry = {"PartNumber": int(p["part_number"]), "ETag": p["etag"]}
+            if session.fingerprint and p.get("sha256"):
+                entry["sha256"] = p["sha256"]
+            parts.append(entry)
+        try:
+            recording = services.finalize_upload(session=session, parts=parts)
+        except StapelServiceError as exc:
+            return _service_error(exc)
+        return _recording_response(self, recording)
+
+
+@extend_schema(tags=["Recordings"])
+class MultipartAbortView(SerializerSeamMixin, APIView):
+    """Abort a multipart upload and drop its stored parts."""
+
+    permission_classes = [IsNotAnonymousUser]
+
+    @extend_schema(request=None, responses={204: None})
+    def delete(self, request, recording_id, upload_id):  # noqa: R007
+        recording = _uploadable_recording(request, recording_id)
+        session = _multipart_session(recording, upload_id) if recording else None
+        if session is None:
+            return StapelErrorResponse(404, ERR_404_NOT_FOUND)
+        if session.finalized_at:
+            return StapelErrorResponse(409, ERR_409_INVALID_STATE)
+        services.abort_multipart_upload_session(session=session)
+        return StapelResponse(status=204)
 
 
 @extend_schema(tags=["Recordings"])

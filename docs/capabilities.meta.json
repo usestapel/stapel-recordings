@@ -69,6 +69,10 @@
     },
     {
       "select": "functions",
+      "path": "chunked.py"
+    },
+    {
+      "select": "functions",
       "path": "storage.py"
     },
     {
@@ -346,7 +350,7 @@
     },
     "start_multipart_upload": {
       "kind": "factory",
-      "intent": "The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects.",
+      "intent": "The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects. Pass fingerprint= (chunked.fingerprint_of) for a VERIFIED upload: no URLs at start, parts minted bound to their SHA-256 and checked by the store.",
       "instead_of": [
         "stapel_recordings.storage.RecordingStorage.create_multipart_upload"
       ]
@@ -431,6 +435,46 @@
       "instead_of": [
         "django.core.validators.FileExtensionValidator"
       ]
+    },
+    "expected_part_size": {
+      "kind": "factory",
+      "intent": "Byte length of part n of a size-byte file cut at part_size; the last part is the remainder. The size a stored part must have to count."
+    },
+    "fingerprint_bytes": {
+      "kind": "factory",
+      "intent": "fingerprint_of over in-memory bytes, returning the part digests too — for tests and server-side producers, never for a multi-gigabyte upload."
+    },
+    "fingerprint_of": {
+      "kind": "factory",
+      "intent": "Fingerprint v1 of a file from its part SHA-256s — the same bytes the client computes, so one file is recognised wherever it was hashed. Never invent another file identity: lookup and verify_manifest both key on this one."
+    },
+    "hex_to_b64": {
+      "kind": "factory",
+      "intent": "Hex digest to the base64 form object stores want in x-amz-checksum-sha256."
+    },
+    "is_sha256_hex": {
+      "kind": "predicate",
+      "intent": "True for a 64-char lower-case hex digest — the wire form of every part hash and fingerprint."
+    },
+    "lookup": {
+      "kind": "gate_function",
+      "intent": "Find the newest recording in a workspace carrying a fingerprint: complete (already uploaded) or in_progress (resume its session). Pass the caller's visible queryset so a lookup never names a recording the caller cannot open."
+    },
+    "manifest": {
+      "kind": "gate_function",
+      "intent": "What the STORE holds for a verified session and which parts are missing — the only source a resume may trust; a part of the wrong size counts as missing."
+    },
+    "mint_part_urls": {
+      "kind": "gate_function",
+      "intent": "Part URLs for a verified session, each signed over the part's SHA-256 plus the exact headers the PUT must send; the store refuses any other bytes. Also slides the session deadline — minting proves the upload is alive."
+    },
+    "total_parts_for": {
+      "kind": "factory",
+      "intent": "How many parts a size-byte file has at part_size (at least one)."
+    },
+    "verify_manifest": {
+      "kind": "gate_function",
+      "intent": "The completion check of a verified upload: every part present at its size, stored digests equal the declared ones, and together they hash to the session fingerprint; raises the 409 parts_missing / part_mismatch refusals and returns the store's own part list to complete with."
     }
   }
 }

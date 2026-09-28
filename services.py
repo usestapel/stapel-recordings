@@ -39,7 +39,7 @@ from django.db import transaction
 from django.utils import timezone
 from stapel_core.django.api.errors import ERR_500_INTERNAL, StapelServiceError
 
-from . import events, media_types
+from . import chunked, events, media_types
 from .conf import recordings_settings
 from .errors import (
     ERR_400_MULTIPART_PARTS_INVALID,
@@ -418,6 +418,7 @@ def start_multipart_upload(
     file_size_bytes: int,
     content_type: str | None = None,
     filename: str,
+    fingerprint: str | None = None,
 ) -> tuple[UploadSession, list[dict], int]:
     """Initiate a multipart upload. Returns (session, parts, part_size).
 
@@ -425,7 +426,15 @@ def start_multipart_upload(
     extension appended to the object key). *file_size_bytes* is required,
     must be positive and within ``MAX_UPLOAD_BYTES``, and becomes the
     session's enforced ceiling; the derived part count is additionally
-    capped by ``MAX_MULTIPART_PARTS``."""
+    capped by ``MAX_MULTIPART_PARTS``.
+
+    With *fingerprint* (fingerprint v1, :mod:`.chunked`) the upload is
+    VERIFIED: the store refuses a part without its SHA-256, the session
+    freezes fingerprint / part size / part count, and ``parts`` is empty —
+    part URLs are minted later, bound to each part's hash
+    (:func:`.chunked.mint_part_urls`)."""
+    if fingerprint is not None and not chunked.is_sha256_hex(fingerprint):
+        raise InvalidMultipartParts("fingerprint must be 64 lower-case hex chars")
     max_size = _checked_declared_size(file_size_bytes, required=True)
     part_size = int(recordings_settings.MULTIPART_PART_SIZE)
     num_parts = max(1, (max_size + part_size - 1) // part_size)
@@ -442,16 +451,22 @@ def start_multipart_upload(
     ttl = int(recordings_settings.MULTIPART_SESSION_TTL_SECONDS)
     _supersede_open_sessions(recording)
 
-    upload_id = storage.create_multipart_upload(key, content_type=content_type)
-    parts = [
-        {
-            "part_number": n,
-            "presigned_url": storage.presigned_upload_part_url(
-                key, upload_id, n, expires_seconds=ttl
-            ),
-        }
-        for n in range(1, num_parts + 1)
-    ]
+    if fingerprint is not None:
+        upload_id = storage.create_multipart_upload(
+            key, content_type=content_type, checksum_algorithm=chunked.CHECKSUM_ALGORITHM
+        )
+        parts = []
+    else:
+        upload_id = storage.create_multipart_upload(key, content_type=content_type)
+        parts = [
+            {
+                "part_number": n,
+                "presigned_url": storage.presigned_upload_part_url(
+                    key, upload_id, n, expires_seconds=ttl
+                ),
+            }
+            for n in range(1, num_parts + 1)
+        ]
     session = UploadSession.objects.create(
         recording=recording,
         presigned_url="",
@@ -460,6 +475,9 @@ def start_multipart_upload(
         expires_at=timezone.now() + timedelta(seconds=ttl),
         is_multipart=True,
         multipart_upload_id=upload_id,
+        fingerprint=fingerprint,
+        part_size_bytes=part_size if fingerprint is not None else None,
+        total_parts=num_parts if fingerprint is not None else None,
     )
     if recording.status == RecordingStatus.CREATED:
         recording.status = RecordingStatus.UPLOADING
@@ -587,6 +605,11 @@ def finalize_upload(
     for the last one, cannot be shown to be. In every one of those cases the
     object and the session are cleaned up, the recording stays out of
     ``queued`` and no ``recording.uploaded`` event is emitted.
+
+    A verified (fingerprint) session is checked against the store first
+    (:func:`.chunked.verify_manifest`): :class:`.chunked.UploadPartsMissing`
+    and :class:`.chunked.UploadPartMismatch` leave the session and its
+    parts in place, so the client re-sends and completes again.
     """
     try:
         return _finalize_upload_locked(
@@ -624,7 +647,13 @@ def _finalize_upload_locked(
         raise UploadTooLarge(int(file_size_bytes), int(session.max_size_bytes))
 
     storage = get_storage()
-    if session.is_multipart and session.multipart_upload_id:
+    if session.fingerprint and session.multipart_upload_id:
+        # Verified upload: the store's own part list is checked and used.
+        checked = chunked.verify_manifest(session, _validated_parts(session, parts))
+        storage.complete_multipart_upload(
+            session.storage_key, session.multipart_upload_id, checked
+        )
+    elif session.is_multipart and session.multipart_upload_id:
         checked = _validated_parts(session, parts)
         storage.complete_multipart_upload(
             session.storage_key, session.multipart_upload_id, checked

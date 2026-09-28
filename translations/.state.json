@@ -52,6 +52,18 @@
       "hash": "02d5b727487e0e6f",
       "origin": "llm"
     },
+    "error.409.recording_upload_expired": {
+      "hash": "7b61b392774f0f30",
+      "origin": "llm"
+    },
+    "error.409.recording_upload_part_mismatch": {
+      "hash": "a39dbdfdb8c30a52",
+      "origin": "llm"
+    },
+    "error.409.recording_upload_parts_missing": {
+      "hash": "c00a2d860ffa971a",
+      "origin": "llm"
+    },
     "error.413.recording_too_large": {
       "hash": "f8e714642bbd3e2a",
       "origin": "llm"
@@ -128,6 +140,18 @@
     },
     "error.409.recording_no_transcript": {
       "hash": "02d5b727487e0e6f",
+      "origin": "llm"
+    },
+    "error.409.recording_upload_expired": {
+      "hash": "7b61b392774f0f30",
+      "origin": "llm"
+    },
+    "error.409.recording_upload_part_mismatch": {
+      "hash": "a39dbdfdb8c30a52",
+      "origin": "llm"
+    },
+    "error.409.recording_upload_parts_missing": {
+      "hash": "c00a2d860ffa971a",
       "origin": "llm"
     },
     "error.413.recording_too_large": {

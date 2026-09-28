@@ -16,6 +16,14 @@ ERR_409_INVALID_STATE = "error.409.recording_invalid_state"
 ERR_413_TOO_LARGE = "error.413.recording_too_large"
 ERR_400_UPLOAD_SIZE_INVALID = "error.400.recording_upload_size_invalid"
 ERR_400_MULTIPART_PARTS_INVALID = "error.400.recording_multipart_parts_invalid"
+# Verified (fingerprint) multipart, at complete. Both leave the session open:
+# "missing" means send those parts and complete again; "mismatch" names the
+# part whose stored digest is not the declared one (0 = the file as a whole
+# does not hash to the fingerprint the upload started with).
+ERR_409_UPLOAD_PARTS_MISSING = "error.409.recording_upload_parts_missing"
+ERR_409_UPLOAD_PART_MISMATCH = "error.409.recording_upload_part_mismatch"
+# The upload session's deadline passed before it was completed: start again.
+ERR_409_UPLOAD_EXPIRED = "error.409.recording_upload_expired"
 ERR_415_UNSUPPORTED_MEDIA = "error.415.recording_unsupported_media"
 # Share links. Unknown / revoked / expired / deleted all answer the same
 # 404: telling them apart tells a probing client which guessed links exist.
@@ -57,6 +65,9 @@ STAPEL_RECORDINGS_ERRORS = {
     ERR_413_TOO_LARGE: "Upload of {size} bytes exceeds the maximum allowed size of {limit} bytes",
     ERR_400_UPLOAD_SIZE_INVALID: "Upload size must be a positive number of bytes, at most {limit}",
     ERR_400_MULTIPART_PARTS_INVALID: "Multipart part list is malformed or exceeds {max_parts} parts",
+    ERR_409_UPLOAD_PARTS_MISSING: "{count} upload parts have not arrived yet: {missing}",
+    ERR_409_UPLOAD_PART_MISMATCH: "Upload part {part_number} does not match its checksum",
+    ERR_409_UPLOAD_EXPIRED: "This upload has expired — start it again",
     ERR_415_UNSUPPORTED_MEDIA: "Upload file type is not supported",
     ERR_404_SHARE_NOT_FOUND: "Share link not found",
     ERR_401_SHARE_PASSCODE_REQUIRED: "This share link requires a passcode",
@@ -93,6 +104,9 @@ __all__ = [
     "ERR_413_TOO_LARGE",
     "ERR_400_UPLOAD_SIZE_INVALID",
     "ERR_400_MULTIPART_PARTS_INVALID",
+    "ERR_409_UPLOAD_PARTS_MISSING",
+    "ERR_409_UPLOAD_PART_MISMATCH",
+    "ERR_409_UPLOAD_EXPIRED",
     "ERR_415_UNSUPPORTED_MEDIA",
     "ERR_404_SHARE_NOT_FOUND",
     "ERR_401_SHARE_PASSCODE_REQUIRED",

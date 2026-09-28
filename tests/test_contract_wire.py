@@ -552,6 +552,121 @@ def _media(call):
     return call(client_for(owner), params={"recording_id": recording.id})
 
 
+# ── multipart: legacy and verified (fingerprint) ─────────────────────────────
+
+_WIRE_BYTES = b"w" * 2048  # one part at the default part size
+
+
+def verified_session(owner, *, send=True):
+    """A verified multipart upload of ``_WIRE_BYTES``; ``send`` puts its one
+    part in the store through the checksum gate."""
+    import base64
+    import hashlib
+
+    from stapel_recordings import chunked, services
+    from stapel_recordings.models import RecordingStatus
+    from stapel_recordings.tests import fakes
+
+    recording = make_recording(owner, status=RecordingStatus.CREATED)
+    fingerprint, _ = chunked.fingerprint_bytes(_WIRE_BYTES, 10 * 1024 * 1024)
+    session, _parts, _size = services.start_multipart_upload(
+        recording=recording,
+        file_size_bytes=len(_WIRE_BYTES),
+        filename="take.mp3",
+        fingerprint=fingerprint,
+    )
+    if send:
+        b64 = base64.b64encode(hashlib.sha256(_WIRE_BYTES).digest()).decode()
+        fakes.put_part(session.multipart_upload_id, 1, _WIRE_BYTES, sha256_b64=b64)
+    return recording, session, fingerprint
+
+
+@recipe("GET", "/recordings/uploads/lookup")
+def _upload_lookup(call):
+    owner = make_user()
+    recording, _session, fingerprint = verified_session(owner)
+    member(owner, recording.workspace_id)
+    return call(
+        client_for(owner),
+        query=f"?fingerprint={fingerprint}&workspace_id={recording.workspace_id}",
+    )
+
+
+@empty_state("GET", "/recordings/uploads/lookup")
+def _upload_lookup_empty(call):
+    """Nothing carries this fingerprint: ``found: false`` and every other
+    field null or empty."""
+    owner = make_user()
+    workspace_id = member(owner, uuid.uuid4())
+    return call(client_for(owner), query=f"?fingerprint={'a' * 64}&workspace_id={workspace_id}")
+
+
+@recipe("POST", "/recordings/{recording_id}/multipart", code=201)
+def _multipart_start(call):
+    from stapel_recordings.models import RecordingStatus
+
+    owner = make_user()
+    recording = make_recording(owner, status=RecordingStatus.CREATED)
+    return call(
+        client_for(owner),
+        params={"recording_id": recording.id},
+        data={"file_size_bytes": 2048, "filename": "take.mp3"},
+    )
+
+
+@recipe("POST", "/recordings/{recording_id}/multipart/{upload_id}/parts")
+def _multipart_mint(call):
+    import hashlib
+
+    owner = make_user()
+    recording, session, _fp = verified_session(owner, send=False)
+    return call(
+        client_for(owner),
+        params={"recording_id": recording.id, "upload_id": session.id},
+        data={"parts": [{"part_number": 1, "sha256": hashlib.sha256(_WIRE_BYTES).hexdigest()}]},
+    )
+
+
+@recipe("GET", "/recordings/{recording_id}/multipart/{upload_id}/parts")
+def _multipart_manifest(call):
+    owner = make_user()
+    recording, session, _fp = verified_session(owner)
+    return call(
+        client_for(owner),
+        params={"recording_id": recording.id, "upload_id": session.id},
+        query="?mint=none",
+    )
+
+
+@empty_state("GET", "/recordings/{recording_id}/multipart/{upload_id}/parts")
+def _multipart_manifest_empty(call):
+    """Nothing stored yet: ``uploaded_parts`` empty, every part missing."""
+    owner = make_user()
+    recording, session, _fp = verified_session(owner, send=False)
+    return call(
+        client_for(owner),
+        params={"recording_id": recording.id, "upload_id": session.id},
+        query="?mint=none",
+    )
+
+
+@recipe("POST", "/recordings/{recording_id}/multipart/{upload_id}/complete")
+def _multipart_complete(call):
+    owner = make_user()
+    recording, session, _fp = verified_session(owner)
+    return call(
+        client_for(owner),
+        params={"recording_id": recording.id, "upload_id": session.id},
+        data={"parts": [{"part_number": 1, "etag": "e"}]},
+    )
+
+
+@empty_state("POST", "/recordings/{recording_id}/multipart/{upload_id}/complete")
+def _multipart_complete_bare(call):
+    """Same as finalize's bare state: nothing derived yet, optional fields null."""
+    return _multipart_complete(call)
+
+
 # ── the public share surface ─────────────────────────────────────────────────
 
 

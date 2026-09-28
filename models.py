@@ -306,6 +306,13 @@ class UploadSession(models.Model):
     # it is storage-implementation opaque (S3 UploadId, or a synthetic id).
     is_multipart = models.BooleanField(default=False)
     multipart_upload_id = models.CharField(max_length=512, null=True, blank=True)
+    # Verified (fingerprint) multipart: null on every other session. The
+    # fingerprint is the client's fingerprint v1 of the whole file
+    # (``chunked.fingerprint_of``); part size and count are frozen at start
+    # so a later settings change cannot reshape an upload in flight.
+    fingerprint = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    part_size_bytes = models.IntegerField(null=True, blank=True)
+    total_parts = models.IntegerField(null=True, blank=True)
 
     class Meta:
         db_table = "recordings_upload_session"

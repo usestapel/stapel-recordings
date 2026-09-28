@@ -25,13 +25,24 @@ Contract (all keys are storage-relative strings):
     put_bytes(key, data, content_type=...) -> None
     get_bytes(key) -> bytes
     delete_object(key) -> None
-    create_multipart_upload(key, content_type=None) -> str   # upload_id
-    presigned_upload_part_url(key, upload_id, part_number, *, expires_seconds) -> str
+    create_multipart_upload(key, content_type=None, *, checksum_algorithm=None) -> str
+    presigned_upload_part_url(key, upload_id, part_number, *, expires_seconds,
+                              sha256_b64=None) -> str
+    part_checksum_headers(sha256_b64) -> dict        # headers a bound PUT must send
+    list_parts(key, upload_id) -> [{part_number, etag, size, sha256}]
     complete_multipart_upload(key, upload_id, parts) -> None
     abort_multipart_upload(key, upload_id) -> None
+
+Verified multipart (``checksum_algorithm="SHA256"``): the store refuses a
+part that does not carry ``x-amz-checksum-sha256``, each part URL is signed
+over that header, and ``list_parts`` reports the digest the STORE computed.
+The checksum keywords are passed only when a caller asks for verification,
+so a host backend written before them keeps working for plain uploads.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import io
 from abc import ABC, abstractmethod
 from functools import lru_cache
@@ -111,17 +122,39 @@ class RecordingStorage(ABC):
     def delete_object(self, key: str) -> None: ...
 
     # ── Multipart ────────────────────────────────────────────────────
+    # ``checksum_algorithm`` / ``sha256_b64`` are passed only for a verified
+    # upload; a backend that predates them still serves plain multipart.
     @abstractmethod
-    def create_multipart_upload(self, key: str, content_type: Optional[str] = None) -> str: ...
+    def create_multipart_upload(
+        self, key: str, content_type: Optional[str] = None, *, checksum_algorithm: Optional[str] = None
+    ) -> str: ...
 
     @abstractmethod
-    def presigned_upload_part_url(self, key: str, upload_id: str, part_number: int, *, expires_seconds: int = 3600) -> str: ...
+    def presigned_upload_part_url(
+        self, key: str, upload_id: str, part_number: int, *,
+        expires_seconds: int = 3600, sha256_b64: Optional[str] = None,
+    ) -> str: ...
 
     @abstractmethod
     def complete_multipart_upload(self, key: str, upload_id: str, parts: list[dict]) -> None: ...
 
     @abstractmethod
     def abort_multipart_upload(self, key: str, upload_id: str) -> None: ...
+
+    def part_checksum_headers(self, sha256_b64: str) -> dict:
+        """Headers a client must send with a part URL minted for *sha256_b64*.
+
+        Empty on a backend that does not bind a checksum into the URL."""
+        return {}
+
+    def list_parts(self, key: str, upload_id: str) -> list[dict]:
+        """Parts the store holds: ``[{part_number, etag, size, sha256}]``,
+        sorted by part number; ``sha256`` is lower-case hex or ``None``.
+
+        Not abstract: a backend that cannot answer raises
+        ``NotImplementedError``, and a verified upload refuses to complete
+        on it rather than trusting the client's list."""
+        raise NotImplementedError(f"{type(self).__name__} cannot list multipart parts")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -220,11 +253,21 @@ class DjangoStorageBackend(RecordingStorage):
             storage.delete(key)
 
     # Synthetic multipart: one part is a plain PUT. ``upload_id`` == key.
-    def create_multipart_upload(self, key, content_type=None):
+    # No checksum binding, so a verified upload works here only for a file
+    # that fits one part.
+    def create_multipart_upload(self, key, content_type=None, *, checksum_algorithm=None):
         return key
 
-    def presigned_upload_part_url(self, key, upload_id, part_number, *, expires_seconds=3600):
+    def presigned_upload_part_url(
+        self, key, upload_id, part_number, *, expires_seconds=3600, sha256_b64=None
+    ):
         return self.presigned_put_url(key, expires_seconds=expires_seconds)
+
+    def list_parts(self, key, upload_id):
+        exists, size = self.head_object(key)
+        if not exists or not size:
+            return []
+        return [{"part_number": 1, "etag": "", "size": int(size), "sha256": None}]
 
     def complete_multipart_upload(self, key, upload_id, parts):
         return None
@@ -359,23 +402,65 @@ class S3Backend(RecordingStorage):
     def delete_object(self, key):
         self._client(False).delete_object(Bucket=self._bucket(), Key=key)
 
-    def create_multipart_upload(self, key, content_type=None):
+    def create_multipart_upload(self, key, content_type=None, *, checksum_algorithm=None):
         params = {"Bucket": self._bucket(), "Key": key}
         if content_type:
             params["ContentType"] = content_type
+        if checksum_algorithm:
+            # Verified mode: the store refuses a part without the header.
+            params["ChecksumAlgorithm"] = checksum_algorithm
         return self._client(False).create_multipart_upload(**params)["UploadId"]
 
-    def presigned_upload_part_url(self, key, upload_id, part_number, *, expires_seconds=3600):
+    def presigned_upload_part_url(
+        self, key, upload_id, part_number, *, expires_seconds=3600, sha256_b64=None
+    ):
+        params = {
+            "Bucket": self._bucket(),
+            "Key": key,
+            "UploadId": upload_id,
+            "PartNumber": part_number,
+        }
+        if sha256_b64:
+            # Signed over x-amz-checksum-sha256 + x-amz-sdk-checksum-algorithm:
+            # the URL admits only the bytes it was minted for.
+            params["ChecksumAlgorithm"] = "SHA256"
+            params["ChecksumSHA256"] = sha256_b64
         return self._client(True).generate_presigned_url(
-            "upload_part",
-            Params={
-                "Bucket": self._bucket(),
-                "Key": key,
-                "UploadId": upload_id,
-                "PartNumber": part_number,
-            },
-            ExpiresIn=expires_seconds,
+            "upload_part", Params=params, ExpiresIn=expires_seconds
         )
+
+    def part_checksum_headers(self, sha256_b64):
+        return {
+            "x-amz-checksum-sha256": sha256_b64,
+            "x-amz-sdk-checksum-algorithm": "SHA256",
+        }
+
+    def list_parts(self, key, upload_id):
+        client = self._client(False)
+        parts: list[dict] = []
+        marker = 0
+        while True:
+            answer = client.list_parts(
+                Bucket=self._bucket(), Key=key, UploadId=upload_id, PartNumberMarker=marker
+            )
+            for part in answer.get("Parts") or []:
+                b64 = part.get("ChecksumSHA256")
+                parts.append(
+                    {
+                        "part_number": int(part["PartNumber"]),
+                        "etag": str(part.get("ETag") or "").strip('"'),
+                        "size": int(part.get("Size") or 0),
+                        "sha256": _b64_to_hex(b64) if b64 else None,
+                    }
+                )
+            if not answer.get("IsTruncated"):
+                break
+            next_marker = int(answer.get("NextPartNumberMarker") or 0)
+            if next_marker <= marker:
+                break
+            marker = next_marker
+        parts.sort(key=lambda p: p["part_number"])
+        return parts
 
     def complete_multipart_upload(self, key, upload_id, parts):
         self._client(False).complete_multipart_upload(
@@ -392,6 +477,16 @@ class S3Backend(RecordingStorage):
             )
         except Exception:
             pass
+
+
+def _b64_to_hex(value: str) -> str | None:
+    """A store's base64 SHA-256 as lower-case hex; ``None`` for anything
+    that is not a single 32-byte digest (a composite ``…-N`` checksum)."""
+    try:
+        raw = base64.b64decode(str(value), validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return raw.hex() if len(raw) == 32 else None
 
 
 # ─────────────────────────────────────────────────────────────────────

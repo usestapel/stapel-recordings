@@ -87,6 +87,12 @@ _MACHINE_RU = {
         "в {limit} байт",
     "error.400.recording_upload_size_invalid":
         "Размер загрузки должен быть положительным числом байт, не более {limit}",
+    "error.409.recording_upload_parts_missing":
+        "Ещё не получено частей загрузки: {count} ({missing})",
+    "error.409.recording_upload_part_mismatch":
+        "Часть загрузки {part_number} не совпадает со своей контрольной суммой",
+    "error.409.recording_upload_expired":
+        "Срок этой загрузки истёк — начните её заново",
     "error.400.recording_multipart_parts_invalid":
         "Список частей составной загрузки некорректен или превышает {max_parts} частей",
     "error.415.recording_unsupported_media":
@@ -129,6 +135,12 @@ _MACHINE_ES = {
         "La subida de {size} bytes supera el tamaño máximo permitido de {limit} bytes",
     "error.400.recording_upload_size_invalid":
         "El tamaño de la subida debe ser un número positivo de bytes, como máximo {limit}",
+    "error.409.recording_upload_parts_missing":
+        "Aún no han llegado {count} partes de la subida: {missing}",
+    "error.409.recording_upload_part_mismatch":
+        "La parte {part_number} de la subida no coincide con su suma de comprobación",
+    "error.409.recording_upload_expired":
+        "Esta subida ha caducado — vuelve a empezarla",
     "error.400.recording_multipart_parts_invalid":
         "La lista de partes de la subida multiparte es incorrecta o supera las "
         "{max_parts} partes",

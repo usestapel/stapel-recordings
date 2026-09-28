@@ -234,6 +234,286 @@
         }
       }
     },
+    "/recordings/api/v1/recordings/{recording_id}/multipart": {
+      "post": {
+        "operationId": "recordings_api_v1_recordings_multipart_create",
+        "description": "Start a multipart upload.\n\nWithout ``fingerprint``: every part URL comes back in ``parts`` (legacy).\nWith ``fingerprint`` (v1): a VERIFIED upload — ``parts`` is empty; mint\npart URLs bound to each part's SHA-256 with ``POST …/parts``.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartStartRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartStartRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultipartStartDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/multipart/{upload_id}/abort": {
+      "delete": {
+        "operationId": "recordings_api_v1_recordings_multipart_abort_destroy",
+        "description": "Abort a multipart upload and drop its stored parts.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No response body"
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/multipart/{upload_id}/complete": {
+      "post": {
+        "operationId": "recordings_api_v1_recordings_multipart_complete_create",
+        "description": "Complete a multipart upload and enqueue the pipeline.\n\nBody ``{parts: [{part_number, etag, sha256?}]}``. A verified upload is\nchecked against the store first: ``409 recording_upload_parts_missing``\n(``{count, missing}``) or ``409 recording_upload_part_mismatch``\n(``{part_number}``, 0 = the whole-file fingerprint) leave the upload\nopen to re-send and complete again. Idempotent: a completed upload\nanswers 200 with its recording.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartCompleteRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartCompleteRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/multipart/{upload_id}/parts": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_multipart_parts_retrieve",
+        "description": "Part URLs and the store's manifest for one multipart upload.\n\n``POST`` (verified uploads): ``{parts: [{part_number, sha256}]}``, at\nmost 100 per call → URLs signed over each hash plus the exact\n``headers`` the PUT must send.\n\n``GET``: what the store holds (``uploaded_parts``) and what is\n``missing``. ``?mint=none`` returns the manifest alone; for a legacy\nupload ``mint=missing`` (default) or ``mint=1,2`` also mints unbound URLs.\nFor a verified upload ``parts`` is always empty.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mint",
+            "schema": {
+              "type": "string"
+            },
+            "description": "none | missing (default) | comma list of part numbers. Legacy uploads only; a verified upload never mints here."
+          },
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultipartManifestDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      },
+      "post": {
+        "operationId": "recordings_api_v1_recordings_multipart_parts_create",
+        "description": "Part URLs and the store's manifest for one multipart upload.\n\n``POST`` (verified uploads): ``{parts: [{part_number, sha256}]}``, at\nmost 100 per call → URLs signed over each hash plus the exact\n``headers`` the PUT must send.\n\n``GET``: what the store holds (``uploaded_parts``) and what is\n``missing``. ``?mint=none`` returns the manifest alone; for a legacy\nupload ``mint=missing`` (default) or ``mint=1,2`` also mints unbound URLs.\nFor a verified upload ``parts`` is always empty.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartMintRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartMintRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartMintRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultipartMintDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
     "/recordings/api/v1/recordings/{recording_id}/reprocess": {
       "post": {
         "operationId": "recordings_api_v1_recordings_reprocess_create",
@@ -401,6 +681,50 @@
         }
       }
     },
+    "/recordings/api/v1/recordings/uploads/lookup": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_uploads_lookup_retrieve",
+        "description": "Is this file already here? Looked up by its fingerprint v1.\n\n``found: false`` — start a new upload. ``state: complete`` — the\nrecording already holds this file (``upload_id`` is null).\n``state: in_progress`` — resume ``upload_id``; ``uploaded_parts`` and\n``missing`` are what the STORE holds. Workspace members only, and only\nrecordings the caller may open are considered.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "fingerprint",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadLookupDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
     "/recordings/api/v1/shares/{link_token}": {
       "get": {
         "operationId": "recordings_api_v1_shares_retrieve",
@@ -533,6 +857,27 @@
   },
   "components": {
     "schemas": {
+      "CompletedPart": {
+        "type": "object",
+        "properties": {
+          "part_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "etag": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "etag",
+          "part_number"
+        ]
+      },
       "CreateRecordingRequest": {
         "type": "object",
         "description": "Incoming payload to create a recording + open an upload session.",
@@ -645,6 +990,205 @@
           "expires_at",
           "expires_in",
           "url"
+        ]
+      },
+      "MultipartCompleteRequest": {
+        "type": "object",
+        "properties": {
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletedPart"
+            }
+          }
+        },
+        "required": [
+          "parts"
+        ]
+      },
+      "MultipartManifestDTO": {
+        "type": "object",
+        "description": "What the store holds for an upload, and what is still missing.",
+        "properties": {
+          "upload_id": {
+            "type": "string"
+          },
+          "recording_id": {
+            "type": "string"
+          },
+          "part_size_bytes": {
+            "type": "integer"
+          },
+          "total_parts": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "uploaded_parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoredPartDTO"
+            }
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MultipartPartURLDTO"
+            }
+          }
+        },
+        "required": [
+          "expires_at",
+          "missing",
+          "part_size_bytes",
+          "parts",
+          "recording_id",
+          "total_parts",
+          "upload_id",
+          "uploaded_parts"
+        ]
+      },
+      "MultipartMintDTO": {
+        "type": "object",
+        "description": "MultipartMintDTO(parts: 'list[MultipartPartURLDTO]', expires_at: 'str')",
+        "properties": {
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MultipartPartURLDTO"
+            }
+          },
+          "expires_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "parts"
+        ]
+      },
+      "MultipartMintRequest": {
+        "type": "object",
+        "properties": {
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartHash"
+            }
+          }
+        },
+        "required": [
+          "parts"
+        ]
+      },
+      "MultipartPartURLDTO": {
+        "type": "object",
+        "description": "A presigned part URL. ``headers`` are the headers the PUT must send\nexactly (the checksum a verified part URL is signed over); empty for a\nlegacy part.",
+        "properties": {
+          "part_number": {
+            "type": "integer"
+          },
+          "presigned_url": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "headers",
+          "part_number",
+          "presigned_url"
+        ]
+      },
+      "MultipartStartDTO": {
+        "type": "object",
+        "description": "A started multipart upload. ``parts`` carries every part URL for a\nlegacy upload and is empty for a verified (fingerprint) one — those are\nminted bound to each part's hash.",
+        "properties": {
+          "upload_id": {
+            "type": "string"
+          },
+          "recording_id": {
+            "type": "string"
+          },
+          "storage_key": {
+            "type": "string"
+          },
+          "part_size_bytes": {
+            "type": "integer"
+          },
+          "total_parts": {
+            "type": "integer"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MultipartPartURLDTO"
+            }
+          },
+          "expires_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "part_size_bytes",
+          "parts",
+          "recording_id",
+          "storage_key",
+          "total_parts",
+          "upload_id"
+        ]
+      },
+      "MultipartStartRequest": {
+        "type": "object",
+        "properties": {
+          "file_size_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "filename": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "file_size_bytes"
+        ]
+      },
+      "PartHash": {
+        "type": "object",
+        "properties": {
+          "part_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "part_number",
+          "sha256"
         ]
       },
       "RecordingDTO": {
@@ -820,6 +1364,31 @@
           "title"
         ]
       },
+      "StoredPartDTO": {
+        "type": "object",
+        "description": "A part the STORE holds; ``sha256`` is the store's own digest (hex),\n``None`` on a backend that does not report one.",
+        "properties": {
+          "part_number": {
+            "type": "integer"
+          },
+          "etag": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "etag",
+          "part_number",
+          "sha256",
+          "size"
+        ]
+      },
       "TranscriptPage": {
         "type": "object",
         "description": "The anchor-paginated envelope one transcript page arrives in.\n\nWritten out rather than left to the paginator's generic schema so the\ngenerated client gets a *typed* page: without it ``items`` emits as an\nuntyped list and every consumer re-declares the segment shape by hand,\nwhich is how the two ends drift.",
@@ -937,6 +1506,62 @@
           "stored_audio_codec",
           "stored_audio_sample_rate",
           "stored_bytes_per_hour"
+        ]
+      },
+      "UploadLookupDTO": {
+        "type": "object",
+        "description": "Is this file (by fingerprint) already here?\n\n``found`` false: nothing to resume, start a new upload. ``state``\n``complete``: the recording already has it. ``in_progress``: resume\n``upload_id`` — ``uploaded_parts`` / ``missing`` are the store's view.",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string",
+            "nullable": true
+          },
+          "recording_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "upload_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "part_size_bytes": {
+            "type": "integer",
+            "nullable": true
+          },
+          "total_parts": {
+            "type": "integer",
+            "nullable": true
+          },
+          "uploaded_parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoredPartDTO"
+            }
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "expires_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "expires_at",
+          "found",
+          "missing",
+          "part_size_bytes",
+          "recording_id",
+          "state",
+          "total_parts",
+          "upload_id",
+          "uploaded_parts"
         ]
       },
       "UploadSessionDTO": {

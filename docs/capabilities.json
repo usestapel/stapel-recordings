@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.33.0",
+  "version": "0.34.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -57,6 +57,66 @@
     }
   ],
   "surface": [
+    {
+      "name": "expected_part_size",
+      "kind": "factory",
+      "path": "stapel_recordings.chunked.expected_part_size",
+      "intent": "Byte length of part n of a size-byte file cut at part_size; the last part is the remainder. The size a stored part must have to count."
+    },
+    {
+      "name": "fingerprint_bytes",
+      "kind": "factory",
+      "path": "stapel_recordings.chunked.fingerprint_bytes",
+      "intent": "fingerprint_of over in-memory bytes, returning the part digests too — for tests and server-side producers, never for a multi-gigabyte upload."
+    },
+    {
+      "name": "fingerprint_of",
+      "kind": "factory",
+      "path": "stapel_recordings.chunked.fingerprint_of",
+      "intent": "Fingerprint v1 of a file from its part SHA-256s — the same bytes the client computes, so one file is recognised wherever it was hashed. Never invent another file identity: lookup and verify_manifest both key on this one."
+    },
+    {
+      "name": "hex_to_b64",
+      "kind": "factory",
+      "path": "stapel_recordings.chunked.hex_to_b64",
+      "intent": "Hex digest to the base64 form object stores want in x-amz-checksum-sha256."
+    },
+    {
+      "name": "is_sha256_hex",
+      "kind": "predicate",
+      "path": "stapel_recordings.chunked.is_sha256_hex",
+      "intent": "True for a 64-char lower-case hex digest — the wire form of every part hash and fingerprint."
+    },
+    {
+      "name": "lookup",
+      "kind": "gate_function",
+      "path": "stapel_recordings.chunked.lookup",
+      "intent": "Find the newest recording in a workspace carrying a fingerprint: complete (already uploaded) or in_progress (resume its session). Pass the caller's visible queryset so a lookup never names a recording the caller cannot open."
+    },
+    {
+      "name": "manifest",
+      "kind": "gate_function",
+      "path": "stapel_recordings.chunked.manifest",
+      "intent": "What the STORE holds for a verified session and which parts are missing — the only source a resume may trust; a part of the wrong size counts as missing."
+    },
+    {
+      "name": "mint_part_urls",
+      "kind": "gate_function",
+      "path": "stapel_recordings.chunked.mint_part_urls",
+      "intent": "Part URLs for a verified session, each signed over the part's SHA-256 plus the exact headers the PUT must send; the store refuses any other bytes. Also slides the session deadline — minting proves the upload is alive."
+    },
+    {
+      "name": "total_parts_for",
+      "kind": "factory",
+      "path": "stapel_recordings.chunked.total_parts_for",
+      "intent": "How many parts a size-byte file has at part_size (at least one)."
+    },
+    {
+      "name": "verify_manifest",
+      "kind": "gate_function",
+      "path": "stapel_recordings.chunked.verify_manifest",
+      "intent": "The completion check of a verified upload: every part present at its size, stored digests equal the declared ones, and together they hash to the session fingerprint; raises the 409 parts_missing / part_mismatch refusals and returns the store's own part list to complete with."
+    },
     {
       "name": "erase",
       "kind": "gate_function",
@@ -258,7 +318,7 @@
       "name": "start_multipart_upload",
       "kind": "factory",
       "path": "stapel_recordings.services.start_multipart_upload",
-      "intent": "The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects.",
+      "intent": "The multipart counterpart of create_upload_session: one call returns the session, the per-part presigned URLs and the part size the client must cut at. Use it for anything large enough to need parts — the part size is configuration, and a client that picks its own produces parts the completion step rejects. Pass fingerprint= (chunked.fingerprint_of) for a VERIFIED upload: no URLs at start, parts minted bound to their SHA-256 and checked by the store.",
       "instead_of": [
         "stapel_recordings.storage.RecordingStorage.create_multipart_upload"
       ]
@@ -503,7 +563,7 @@
       "intent": "The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever."
     }
   ],
-  "operations_total": 12,
+  "operations_total": 18,
   "requires": [
     {
       "module": "stapel-core",

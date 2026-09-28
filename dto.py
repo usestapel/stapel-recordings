@@ -91,6 +91,82 @@ class UploadLimitsDTO:
 
 
 @dataclass
+class MultipartPartURLDTO:
+    """A presigned part URL. ``headers`` are the headers the PUT must send
+    exactly (the checksum a verified part URL is signed over); empty for a
+    legacy part."""
+
+    part_number: int
+    presigned_url: str
+    headers: dict[str, str]
+
+
+@dataclass
+class StoredPartDTO:
+    """A part the STORE holds; ``sha256`` is the store's own digest (hex),
+    ``None`` on a backend that does not report one."""
+
+    part_number: int
+    etag: str
+    size: int
+    sha256: Optional[str]
+
+
+@dataclass
+class MultipartStartDTO:
+    """A started multipart upload. ``parts`` carries every part URL for a
+    legacy upload and is empty for a verified (fingerprint) one — those are
+    minted bound to each part's hash."""
+
+    upload_id: str
+    recording_id: str
+    storage_key: str
+    part_size_bytes: int
+    total_parts: int
+    parts: list[MultipartPartURLDTO]
+    expires_at: str
+
+
+@dataclass
+class MultipartMintDTO:
+    parts: list[MultipartPartURLDTO]
+    expires_at: str
+
+
+@dataclass
+class MultipartManifestDTO:
+    """What the store holds for an upload, and what is still missing."""
+
+    upload_id: str
+    recording_id: str
+    part_size_bytes: int
+    total_parts: int
+    expires_at: str
+    uploaded_parts: list[StoredPartDTO]
+    missing: list[int]
+    parts: list[MultipartPartURLDTO]
+
+
+@dataclass
+class UploadLookupDTO:
+    """Is this file (by fingerprint) already here?
+
+    ``found`` false: nothing to resume, start a new upload. ``state``
+    ``complete``: the recording already has it. ``in_progress``: resume
+    ``upload_id`` — ``uploaded_parts`` / ``missing`` are the store's view."""
+
+    found: bool
+    state: Optional[str]
+    recording_id: Optional[str]
+    upload_id: Optional[str]
+    part_size_bytes: Optional[int]
+    total_parts: Optional[int]
+    uploaded_parts: list[StoredPartDTO]
+    missing: list[int]
+    expires_at: Optional[str]
+
+
+@dataclass
 class CreateRecordingResponse:  # noqa: R004
     recording: RecordingDTO
     upload: UploadSessionDTO

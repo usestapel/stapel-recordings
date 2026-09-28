@@ -1,6 +1,46 @@
 # Changelog
 
 
+## [0.34.0] — 2026-09-28
+
+### Added — verified, resumable large uploads keyed by a file fingerprint
+
+A 7.1 GB upload was lost at 100%: nothing on the server knew which parts had
+arrived, so an interruption meant starting over. A multipart upload can now
+be VERIFIED and resumed from whatever the store already holds.
+
+- Fingerprint v1 (`stapel_recordings.chunked.fingerprint_of`): SHA-256 over
+  `"stapel-upload-v1\n" + size + "\n" + part_size + "\n"` and the raw
+  per-part SHA-256s. Client and server compute the same bytes; test vectors
+  pinned in `tests/test_chunked_upload.py`.
+- Storage seam: `create_multipart_upload(..., checksum_algorithm="SHA256")`
+  (the store refuses a part without its checksum),
+  `presigned_upload_part_url(..., sha256_b64=)` (signature binds
+  `x-amz-checksum-sha256` + `x-amz-sdk-checksum-algorithm`),
+  `part_checksum_headers(b64)`, `list_parts(key, upload_id)` (paginated,
+  store digests as hex). Checksum keywords are passed only for verified
+  uploads, so an existing host backend keeps working; `list_parts` is not
+  abstract (the base raises `NotImplementedError`).
+- `UploadSession.fingerprint` / `part_size_bytes` / `total_parts`
+  (migration 0008, nullable, expand-only).
+- `start_multipart_upload(..., fingerprint=)`: verified mode, no part URLs at
+  start. `chunked.mint_part_urls` (≤100 per call, URLs bound to each part's
+  hash, slides the session deadline), `chunked.manifest` (the store's view,
+  wrong-sized parts count as missing), `chunked.lookup` (complete /
+  in_progress by fingerprint within a workspace),
+  `chunked.verify_manifest` (run by `finalize_upload` for verified sessions;
+  completes with the store's own ETags and checksums).
+- New 409 keys, both leaving the session open to re-send and complete again:
+  `error.409.recording_upload_parts_missing` `{count, missing}` (first 50,
+  comma list) and `error.409.recording_upload_part_mismatch`
+  `{part_number}` (0 = the whole-file fingerprint). Plus
+  `error.409.recording_upload_expired` for a session past its deadline.
+- HTTP (`/recordings/api/v1/…`): `GET recordings/uploads/lookup`,
+  `POST recordings/{id}/multipart`, `POST|GET recordings/{id}/multipart/{upload_id}/parts`,
+  `POST …/complete` (idempotent), `DELETE …/abort`.
+
+Legacy multipart (no fingerprint) behaves exactly as before.
+
 ## [0.33.0] — 2026-09-25
 
 ### Fixed — Retry on an upload that never finished ran the pipeline anyway

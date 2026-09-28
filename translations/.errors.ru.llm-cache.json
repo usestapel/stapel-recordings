@@ -51,6 +51,18 @@
     "hash": "02d5b727487e0e6f",
     "text": "У этой записи пока нет расшифровки для краткого пересказа"
   },
+  "error.409.recording_upload_expired": {
+    "hash": "7b61b392774f0f30",
+    "text": "Срок этой загрузки истёк — начните её заново"
+  },
+  "error.409.recording_upload_part_mismatch": {
+    "hash": "a39dbdfdb8c30a52",
+    "text": "Часть загрузки {part_number} не совпадает со своей контрольной суммой"
+  },
+  "error.409.recording_upload_parts_missing": {
+    "hash": "c00a2d860ffa971a",
+    "text": "Ещё не получено частей загрузки: {count} ({missing})"
+  },
   "error.413.recording_too_large": {
     "hash": "f8e714642bbd3e2a",
     "text": "Загрузка объёмом {size} байт превышает максимально допустимый размер в {limit} байт"

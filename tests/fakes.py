@@ -1,18 +1,24 @@
 """In-memory test doubles for the storage seam and pipeline stages."""
 from __future__ import annotations
 
+import base64
+import hashlib
+
 from stapel_recordings.stages import Stage
 from stapel_recordings.storage import RecordingStorage
 
 # Shared object store so every FakeStorage() instance (get_storage() builds a
 # fresh one per resolved class) sees the same bytes.
 _STORE: dict[str, bytes] = {}
-_MULTIPART: dict[str, list] = {}
+_MULTIPART: dict[str, dict] = {}
+#: complete_multipart_upload calls, in order: {key, upload_id, parts}.
+COMPLETED: list[dict] = []
 
 
 def reset_fake_storage() -> None:
     _STORE.clear()
     _MULTIPART.clear()
+    COMPLETED.clear()
 
 
 class FakeStorage(RecordingStorage):
@@ -60,21 +66,68 @@ class FakeStorage(RecordingStorage):
     def delete_object(self, key):
         _STORE.pop(key, None)
 
-    def create_multipart_upload(self, key, content_type=None):
+    def create_multipart_upload(self, key, content_type=None, *, checksum_algorithm=None):
         upload_id = f"upload-{key}"
-        _MULTIPART[upload_id] = []
+        _MULTIPART[upload_id] = {"key": key, "verified": bool(checksum_algorithm), "parts": {}}
         return upload_id
 
-    def presigned_upload_part_url(self, key, upload_id, part_number, *, expires_seconds=3600):
-        return f"memory://part/{upload_id}/{part_number}"
+    def presigned_upload_part_url(
+        self, key, upload_id, part_number, *, expires_seconds=3600, sha256_b64=None
+    ):
+        suffix = f"?sha256={sha256_b64}" if sha256_b64 else ""
+        return f"memory://part/{upload_id}/{part_number}{suffix}"
+
+    def part_checksum_headers(self, sha256_b64):
+        return {"x-amz-checksum-sha256": sha256_b64, "x-amz-sdk-checksum-algorithm": "SHA256"}
+
+    def list_parts(self, key, upload_id):
+        state = _MULTIPART.get(upload_id)
+        if state is None:
+            return []
+        out = []
+        for n in sorted(state["parts"]):
+            data = state["parts"][n]
+            out.append(
+                {
+                    "part_number": n,
+                    "etag": hashlib.md5(data).hexdigest(),
+                    "size": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest() if state["verified"] else None,
+                }
+            )
+        return out
 
     def complete_multipart_upload(self, key, upload_id, parts):
-        _STORE.setdefault(key, b"assembled")
-        _MULTIPART.pop(upload_id, None)
+        state = _MULTIPART.pop(upload_id, None)
+        stored = (state or {}).get("parts") or {}
+        if stored:
+            numbers = sorted(int(p["PartNumber"]) for p in parts)
+            _STORE[key] = b"".join(stored[n] for n in numbers)
+        else:
+            _STORE.setdefault(key, b"assembled")
+        COMPLETED.append({"key": key, "upload_id": upload_id, "parts": list(parts)})
 
     def abort_multipart_upload(self, key, upload_id):
         _MULTIPART.pop(upload_id, None)
         _STORE.pop(key, None)
+
+
+def put_part(upload_id: str, part_number: int, data: bytes, *, sha256_b64: str | None = None) -> None:
+    """A client PUT of one part. A verified upload refuses a part without
+    the checksum header or with a digest other than the bytes' (as MinIO
+    does); returns normally when the store accepted it."""
+    state = _MULTIPART[upload_id]
+    if state["verified"]:
+        if not sha256_b64:
+            raise ValueError("MissingChecksum")
+        if base64.b64encode(hashlib.sha256(data).digest()).decode() != sha256_b64:
+            raise ValueError("XAmzContentChecksumMismatch")
+    state["parts"][int(part_number)] = bytes(data)
+
+
+def put_raw_part(upload_id: str, part_number: int, data: bytes) -> None:
+    """Place a part bypassing the checksum gate (a store gone wrong)."""
+    _MULTIPART[upload_id]["parts"][int(part_number)] = bytes(data)
 
 
 class NoRangedReadStorage(FakeStorage):
