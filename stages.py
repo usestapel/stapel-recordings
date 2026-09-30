@@ -999,6 +999,17 @@ class MergeStage(Stage):
             logger.warning(
                 "merge: summary for %s not produced: %.200s", recording.id, result
             )
+            from . import summary_repair
+
+            if summary_repair.enabled() and summary_repair.is_retryable(result):
+                # Owed, not forgotten: the watchdog asks again once the
+                # provider can answer. The driver saves workflow_state.
+                summary_repair.mark_pending(
+                    recording,
+                    reason=",".join(result.get("provider_reasons") or []) or "provider",
+                    detail=result.get("reason"),
+                    save=False,
+                )
         else:
             store_summary(recording, summary)
         return ctx
@@ -1198,7 +1209,12 @@ def store_summary(recording, summary: str, *, transcript=None) -> None:
 
     recording.summary = summary
     recording.metadata = metadata
-    recording.save(update_fields=["summary", "metadata", "updated_at"])
+    fields = ["summary", "metadata", "updated_at"]
+    from .summary_repair import clear_pending
+
+    if clear_pending(recording):
+        fields.append("workflow_state")
+    recording.save(update_fields=fields)
 
 
 # ─── summarize-only: one recording, no STT, no diarize ─────────────────
@@ -1251,8 +1267,15 @@ def _inflight_summarize_jobs(recording_id):
     )
 
 
-def start_resummarize(recording, *, user=None):
+def start_resummarize(recording, *, user=None, origin=None, reason=None):
     """Re-run summarization for ONE recording. Returns ``(job, started)``.
+
+    *origin* says whose request this is — ``user`` (the default, the only
+    kind before 0.35.0), ``pipeline_repair`` (the watchdog re-asking for a
+    summary the provider refused) or ``staff``. It rides on the Job and on
+    ``recording.resummarized`` so a host that charges for a re-summary can
+    tell a customer's purchase from our own repair. The library never
+    decides what an origin costs.
 
     ``started`` is False when an identical run is already in flight: a second
     request joins the first job instead of paying for a second summary. That
@@ -1277,6 +1300,12 @@ def start_resummarize(recording, *, user=None):
     from . import transcript_schema
     from .conf import flag
     from .models import Job, JobStatus, JobType, Recording
+
+    from .summary_repair import ORIGIN_USER, ORIGINS
+
+    origin = origin or ORIGIN_USER
+    if origin not in ORIGINS:
+        raise ValueError(f"unknown re-summary origin {origin!r}")
 
     if not flag("SUMMARIZE_ENABLED"):
         raise SummarizationUnavailable("summarize_disabled")
@@ -1306,6 +1335,7 @@ def start_resummarize(recording, *, user=None):
             type=JobType.SUMMARIZE,
             status=JobStatus.QUEUED,
             current_step="summarize",
+            options={"origin": origin, **({"reason": str(reason)[:120]} if reason else {})},
         )
 
         try:
@@ -1412,6 +1442,18 @@ def _apply_summary_result(recording, job, result) -> bool:
             "resummarize: summary for %s not produced: %.200s", recording.id, result
         )
         _fail_job(job, "summary_not_produced", str(result)[:500])
+        from . import summary_repair
+
+        if summary_repair.pending(recording) is not None:
+            summary_repair.note_repair_failure(recording, result)
+            recording.save(update_fields=["workflow_state", "updated_at"])
+        elif summary_repair.enabled() and summary_repair.is_retryable(result):
+            # A customer's own re-summary the provider refused: owed too.
+            summary_repair.mark_pending(
+                recording,
+                reason=",".join(result.get("provider_reasons") or []) or "provider",
+                detail=result.get("reason"),
+            )
         return False
 
     store_summary(recording, summary)
@@ -1423,7 +1465,8 @@ def _apply_summary_result(recording, job, result) -> bool:
     # Emitted INSIDE the same transaction as the write (outbox discipline):
     # a host that debits for this must never be told about a summary that
     # rolled back, and must always be told about one that did not.
-    events.emit_resummarized(recording, job_id=job.id, user_id=job.owner_id)  # emit-check: ok — every caller (start_resummarize / resume_resummarize) holds the atomic block
+    options = job.options or {}
+    events.emit_resummarized(recording, job_id=job.id, user_id=job.owner_id, origin=options.get("origin"), reason=options.get("reason"))  # emit-check: ok — every caller (start_resummarize / resume_resummarize) holds the atomic block
     return True
 
 

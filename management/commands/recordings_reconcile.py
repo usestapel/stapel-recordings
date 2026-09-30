@@ -8,7 +8,8 @@ crash mid-stage, or a stage parked for retry. Idempotency is the driver's
 job (status guards + stale-index drop), so a duplicate re-drive is cheap.
 
 Also marks abandoned uploads (stuck ``uploading`` with no stored object)
-as ``error``.
+as ``error``, and re-asks for summaries the provider refused
+(:mod:`stapel_recordings.summary_repair`).
 
     python manage.py recordings_reconcile --once
     python manage.py recordings_reconcile --poll-interval 300
@@ -56,6 +57,7 @@ class Command(BaseCommand):
                 m = self.cleanup_abandoned_uploads()
                 if n or m:
                     self.stdout.write(f"recordings_reconcile: re-drove {n}, abandoned {m}")
+                self.repair_summaries()
             except Exception:
                 logger.exception("recordings_reconcile: pass failed")
                 # Drop whatever is left of a possibly-broken connection so
@@ -127,6 +129,18 @@ class Command(BaseCommand):
                 exhausted,
             )
         return count
+
+    def repair_summaries(self) -> dict:
+        """Re-ask for summaries the provider refused (summary_repair)."""
+        from ...summary_repair import repair_due
+
+        counts = repair_due()
+        if counts["started"] or counts["exhausted"]:
+            self.stdout.write(
+                f"recordings_reconcile: summary repair started {counts['started']}, "
+                f"exhausted {counts['exhausted']}"
+            )
+        return counts
 
     def cleanup_abandoned_uploads(self) -> int:
         from ...conf import recordings_settings

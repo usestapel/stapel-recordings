@@ -1,6 +1,36 @@
 # Changelog
 
 
+## [0.35.0] — 2026-10-01
+
+### Added — a summary the provider refused is owed, and the watchdog pays it
+
+Measured on a client fleet (2026-09-29 00:34Z..09-30 04:59Z): the LLM
+provider answered 402 for 28 hours. `MergeStage` treats the summary as
+best-effort — correctly, the transcript is the product — so 23 recordings
+reached `completed` without one, and nothing ever asked again. Every repair a
+person could reach re-bought something: a reprocess is a new, billed run; a
+re-summary is the customer's paid action.
+
+- `stapel_recordings.summary_repair`. When `llm.summarize` fails with
+  `failure_class=provider` (stapel-agent >= 0.33.0), the merge stage writes
+  `workflow_state["summary_pending"]`. `recordings_reconcile` re-asks through
+  the summarize-only path, backoff doubling from
+  `SUMMARY_REPAIR_FIRST_DELAY_SECONDS` (15 min) to
+  `SUMMARY_REPAIR_MAX_DELAY_SECONDS` (2 h) until
+  `SUMMARY_REPAIR_DEADLINE_SECONDS` (72 h), then `exhausted_at` and the host's
+  sentinel owns it. While a repair is in flight a tick waits; after a failed
+  repair it sends ONE probe; after a success, `SUMMARY_REPAIR_BATCH` (10). An
+  outage costs one refused call per tick, not one per recording. An
+  `input`-class answer is not retried (`gave_up`). `SUMMARY_REPAIR_ENABLED`
+  (default True) switches it off. A stored summary clears the marker whoever
+  asked for it.
+- `start_resummarize(..., origin=, reason=)`. `origin` is `user` (default),
+  `pipeline_repair` or `staff`; it rides on `Job.options` and on
+  `recording.resummarized` (`origin`, `reason`; schema widened). The library
+  never decides what an origin costs — a host that charges for re-summaries
+  should charge `user` only.
+
 ## [0.34.0] — 2026-09-28
 
 ### Added — verified, resumable large uploads keyed by a file fingerprint

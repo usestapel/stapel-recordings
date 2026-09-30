@@ -135,13 +135,18 @@ def emit_completed(recording, *, run_id=None, attempt=None) -> None:
     )
 
 
-def emit_resummarized(recording, *, job_id, user_id=None) -> None:
+def emit_resummarized(recording, *, job_id, user_id=None, origin=None, reason=None) -> None:
     """A standalone re-summary finished and its summary is stored.
 
     ``job_id`` travels with it as the idempotency key: delivery is
     at-least-once, so a host that debits credits for this needs something
     that identifies THIS re-summary and not merely this recording, which can
     be re-summarized any number of times.
+
+    ``origin`` (``user`` | ``pipeline_repair`` | ``staff``) is whose request
+    it was; a host decides what each costs. ``pipeline_repair`` is the
+    watchdog finishing a summary the provider refused during the original
+    run — work the customer already paid for.
     """
     emit(
         ACTION_RESUMMARIZED,
@@ -150,6 +155,8 @@ def emit_resummarized(recording, *, job_id, user_id=None) -> None:
             "workspace_id": str(recording.workspace_id),
             "user_id": str(user_id) if user_id is not None else None,
             "job_id": str(job_id),
+            "origin": origin or "user",
+            "reason": str(reason) if reason else None,
         },
         key=str(recording.id),
     )

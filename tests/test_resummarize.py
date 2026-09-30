@@ -444,6 +444,8 @@ def test_exactly_one_event_per_produced_summary(
         "workspace_id": str(transcribed.workspace_id),
         "user_id": str(user.pk),
         "job_id": response.data["id"],
+        "origin": "user",
+        "reason": None,
     }
 
 

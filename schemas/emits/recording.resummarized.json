@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "recording.resummarized",
-  "description": "A summary was regenerated for one recording on request, outside the pipeline. job_id identifies this re-summary (the idempotency key for a metering/billing consumer); user_id is who asked, when it is known.",
+  "description": "A summary was regenerated for one recording on request, outside the pipeline. job_id identifies this re-summary (the idempotency key for a metering/billing consumer); user_id is who asked, when it is known; origin is whose request it was (user | pipeline_repair | staff, absent = user) — a host decides what each costs.",
   "type": "object",
   "additionalProperties": false,
   "required": ["recording_id", "workspace_id", "job_id"],
@@ -9,6 +9,8 @@
     "recording_id": {"type": "string"},
     "workspace_id": {"type": "string"},
     "user_id": {"type": ["string", "null"]},
-    "job_id": {"type": "string"}
+    "job_id": {"type": "string"},
+    "origin": {"type": "string", "enum": ["user", "pipeline_repair", "staff"]},
+    "reason": {"type": ["string", "null"]}
   }
 }

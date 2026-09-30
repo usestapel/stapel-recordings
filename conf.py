@@ -516,6 +516,19 @@ DEFAULTS = {
         # second attempt re-buys nothing it already has. Raising this
         # without that checkpoint raises the bill by the same factor.
         "SUMMARIZE_TASK_MAX_ATTEMPTS": 2,
+        # ── Summary repair (stapel_recordings.summary_repair) ────────
+        # A summary the PROVIDER refused (failure_class=provider: out of
+        # credits, rate, outage) is owed, and the reconcile watchdog asks
+        # again through the summarize-only path, origin=pipeline_repair,
+        # doubling from FIRST_DELAY to MAX_DELAY until DEADLINE. One probe
+        # per tick while the last repair failed; BATCH after a success.
+        # A client fleet, 2026-09-29: 23 summaries lost to a 28-hour 402 that
+        # nothing ever retried. False turns the watchdog half off.
+        "SUMMARY_REPAIR_ENABLED": True,
+        "SUMMARY_REPAIR_FIRST_DELAY_SECONDS": 15 * 60,
+        "SUMMARY_REPAIR_MAX_DELAY_SECONDS": 2 * 60 * 60,
+        "SUMMARY_REPAIR_DEADLINE_SECONDS": 72 * 60 * 60,
+        "SUMMARY_REPAIR_BATCH": 10,
         # Slack between "one attempt's budget × the attempts it declares"
         # and the task's DEADLINE. Without it the two were the same
         # number, so the first timeout already left the row past its
