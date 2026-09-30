@@ -201,3 +201,26 @@ def test_an_unknown_origin_is_refused(refused):
 
     with pytest.raises(ValueError):
         start_resummarize(refused, origin="free")
+
+
+def test_the_warning_names_the_class_not_the_reply(
+    ready_recording, stub_transcribe, stub_summarize, drain, caplog
+):
+    """One outage, one alert-store issue: the WARNING line carries no id and
+    no provider reply (those differ per recording and per request)."""
+    import logging
+
+    stub_summarize.result = OUT_OF_CREDITS
+    with caplog.at_level(logging.INFO, logger="stapel_recordings.stages"):
+        events.emit_stage(ready_recording.id, 0)
+        drain()
+
+    (warning,) = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "not produced" in r.getMessage()
+    ]
+    assert warning.getMessage() == "merge: summary not produced (failure_class=provider)"
+    assert any(
+        str(ready_recording.id) in r.getMessage() and "402" in r.getMessage()
+        for r in caplog.records if r.levelno == logging.INFO
+    )

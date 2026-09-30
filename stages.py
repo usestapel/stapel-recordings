@@ -996,9 +996,7 @@ class MergeStage(Stage):
         # failure is also wrong — that used to be exactly what happened.
         summary = summary_from_result(result)
         if summary is None:
-            logger.warning(
-                "merge: summary for %s not produced: %.200s", recording.id, result
-            )
+            _log_summary_not_produced("merge", recording, result)
             from . import summary_repair
 
             if summary_repair.enabled() and summary_repair.is_retryable(result):
@@ -1161,6 +1159,26 @@ def _record_derived_hash(recording, kind: str, transcript_hash: str) -> None:
     metadata["derived"] = derived
     recording.metadata = metadata
     recording.save(update_fields=["metadata", "updated_at"])
+
+
+def _log_summary_not_produced(where: str, recording, result) -> None:
+    """One WARNING per failure CLASS, the particulars at INFO.
+
+    The line used to carry the recording id and the provider's reply, and an
+    alert store groups by the line: one 28-hour provider outage became a new
+    issue for every distinct reply (a client fleet, 2026-09-29). The class
+    (``failure_class`` from stapel-agent >= 0.33.0) is what an operator acts
+    on; the id and the reply are one INFO line away.
+    """
+    failure_class = (
+        result.get("failure_class") if isinstance(result, dict) else None
+    ) or ("empty" if isinstance(result, dict) and result.get("status") == "ok" else "unknown")
+    logger.warning(
+        "%s: summary not produced (failure_class=%s)", where, failure_class
+    )
+    logger.info(
+        "%s: summary for %s not produced: %.300s", where, recording.id, result
+    )
 
 
 def summary_from_result(result):
@@ -1438,9 +1456,7 @@ def _apply_summary_result(recording, job, result) -> bool:
 
     summary = summary_from_result(result)
     if summary is None:
-        logger.warning(
-            "resummarize: summary for %s not produced: %.200s", recording.id, result
-        )
+        _log_summary_not_produced("resummarize", recording, result)
         _fail_job(job, "summary_not_produced", str(result)[:500])
         from . import summary_repair
 

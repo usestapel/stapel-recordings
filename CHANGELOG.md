@@ -1,6 +1,15 @@
 # Changelog
 
 
+## [0.35.1] — 2026-10-01
+
+### Fixed — "summary not produced" is one alert-store issue per class
+
+The WARNING carried the recording id and the provider's reply, and an alert
+store groups by the line: one provider outage became an issue per distinct
+reply. It now reads `merge: summary not produced (failure_class=<class>)`
+(also for `resummarize`); the id and the reply are on the INFO line after it.
+
 ## [0.35.0] — 2026-10-01
 
 ### Added — a summary the provider refused is owed, and the watchdog pays it
