@@ -93,11 +93,50 @@ def _parse(value) -> Optional[datetime]:
         return None
 
 
-def mark_pending(recording, *, reason: str, detail=None, now=None, save: bool = True) -> dict:
+def providers_of(result) -> list[str]:
+    """The provider names a failed llm.summarize result says it tried, in order.
+
+    stapel-agent >= 0.34.0 sends ``provider_attempts``; older agents send
+    none, and an empty list says "unknown" rather than guessing.
+    """
+    attempts = result.get("provider_attempts") if isinstance(result, dict) else None
+    names: list[str] = []
+    for row in attempts or []:
+        name = row.get("provider") if isinstance(row, dict) else None
+        if name and str(name) not in names:
+            names.append(str(name)[:60])
+    return names
+
+
+def mark_pending_from(recording, result, *, now=None, save: bool = True) -> dict:
+    """:func:`mark_pending` with everything a refused *result* says about itself."""
+    return mark_pending(
+        recording,
+        reason=",".join(result.get("provider_reasons") or []) or "provider",
+        detail=result.get("reason"),
+        failure_class=result.get("failure_class"),
+        providers=providers_of(result),
+        now=now,
+        save=save,
+    )
+
+
+def mark_pending(
+    recording,
+    *,
+    reason: str,
+    detail=None,
+    failure_class=None,
+    providers=None,
+    now=None,
+    save: bool = True,
+) -> dict:
     """Record that this recording is owed a summary. Idempotent.
 
     A second mark keeps ``since`` and ``attempts``: the deadline counts from
-    the first refusal, not the latest.
+    the first refusal, not the latest. ``failure_class`` and ``providers``
+    are what an alert about the marker names: whose failure, and who was
+    asked.
     """
     now = now or timezone.now()
     state = dict(recording.workflow_state or {})
@@ -106,6 +145,10 @@ def mark_pending(recording, *, reason: str, detail=None, now=None, save: bool = 
     block.setdefault("attempts", 0)
     block["reason"] = str(reason)[:120]
     block["detail"] = str(detail)[:300] if detail else None
+    if failure_class:
+        block["failure_class"] = str(failure_class)[:40]
+    if providers:
+        block["providers"] = [str(p)[:60] for p in providers][:8]
     block.setdefault("next_at", (now + timedelta(seconds=_delay_seconds(0))).isoformat())
     state[PENDING_KEY] = block
     recording.workflow_state = state
@@ -137,6 +180,12 @@ def note_repair_failure(recording, result) -> None:
     block = dict(block)
     reason = result.get("reason") if isinstance(result, dict) else str(result)
     block["last_failure"] = str(reason)[:300] if reason else None
+    if isinstance(result, dict):
+        if result.get("failure_class"):
+            block["failure_class"] = str(result["failure_class"])[:40]
+        providers = providers_of(result)
+        if providers:
+            block["providers"] = providers[:8]
     if isinstance(result, dict) and not is_retryable(result):
         block["gave_up"] = str(result.get("failure_class") or "not_retryable")
     state = dict(recording.workflow_state or {})

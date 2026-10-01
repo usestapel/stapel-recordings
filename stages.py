@@ -1002,12 +1002,7 @@ class MergeStage(Stage):
             if summary_repair.enabled() and summary_repair.is_retryable(result):
                 # Owed, not forgotten: the watchdog asks again once the
                 # provider can answer. The driver saves workflow_state.
-                summary_repair.mark_pending(
-                    recording,
-                    reason=",".join(result.get("provider_reasons") or []) or "provider",
-                    detail=result.get("reason"),
-                    save=False,
-                )
+                summary_repair.mark_pending_from(recording, result, save=False)
         else:
             store_summary(recording, summary)
         return ctx
@@ -1465,11 +1460,7 @@ def _apply_summary_result(recording, job, result) -> bool:
             recording.save(update_fields=["workflow_state", "updated_at"])
         elif summary_repair.enabled() and summary_repair.is_retryable(result):
             # A customer's own re-summary the provider refused: owed too.
-            summary_repair.mark_pending(
-                recording,
-                reason=",".join(result.get("provider_reasons") or []) or "provider",
-                detail=result.get("reason"),
-            )
+            summary_repair.mark_pending_from(recording, result)
         return False
 
     store_summary(recording, summary)

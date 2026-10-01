@@ -24,6 +24,7 @@ OUT_OF_CREDITS = {
     "reason": "OpenAI-compatible endpoint returned HTTP 402 (quota)",
     "failure_class": "provider",
     "provider_reasons": ["quota"],
+    "provider_attempts": [{"provider": "primary-llm", "reason": "quota"}],
 }
 REFUSED_INPUT = {
     "status": "failure",
@@ -63,6 +64,9 @@ def test_a_provider_refusal_leaves_the_summary_owed(refused):
     assert block is not None
     assert block["reason"] == "quota"
     assert block["attempts"] == 0
+    # What an alert about this marker names: whose failure, and who was asked.
+    assert block["failure_class"] == "provider"
+    assert block["providers"] == ["primary-llm"]
 
 
 def test_an_input_refusal_is_not_owed(ready_recording, stub_transcribe, stub_summarize, drain):
@@ -224,3 +228,19 @@ def test_the_warning_names_the_class_not_the_reply(
         str(ready_recording.id) in r.getMessage() and "402" in r.getMessage()
         for r in caplog.records if r.levelno == logging.INFO
     )
+
+
+def test_an_agent_without_provider_attempts_leaves_providers_unknown():
+    assert summary_repair.providers_of({"status": "failure", "failure_class": "provider"}) == []
+    assert summary_repair.providers_of(None) == []
+
+
+def test_providers_are_named_once_in_order():
+    result = {
+        "provider_attempts": [
+            {"provider": "a", "reason": "quota"},
+            {"provider": "b", "reason": "server"},
+            {"provider": "a", "reason": "quota"},
+        ]
+    }
+    assert summary_repair.providers_of(result) == ["a", "b"]

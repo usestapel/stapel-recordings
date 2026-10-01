@@ -1,6 +1,18 @@
 # Changelog
 
 
+## [0.36.0] — 2026-10-01
+
+### Added — the summary debt says whose failure it is and who was asked
+
+`workflow_state["summary_pending"]` now carries `failure_class` and
+`providers` (the provider names the agent tried, in order, from
+stapel-agent >= 0.34.0's `provider_attempts`; empty with an older agent).
+A host's alert about owed summaries can name both instead of parsing the
+reply text. New helpers: `summary_repair.mark_pending_from(recording,
+result)` and `summary_repair.providers_of(result)`; a failed repair
+refreshes both fields.
+
 ## [0.35.1] — 2026-10-01
 
 ### Fixed — "summary not produced" is one alert-store issue per class
