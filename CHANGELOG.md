@@ -1,6 +1,11 @@
 # Changelog
 
 
+## [0.36.1] — 2026-10-01
+
+0.36.0 was tagged with its contract artifacts (docs/capabilities.json,
+README, llms.txt) still at 0.35.1. Code is 0.36.0's.
+
 ## [0.36.0] — 2026-10-01
 
 ### Added — the summary debt says whose failure it is and who was asked
