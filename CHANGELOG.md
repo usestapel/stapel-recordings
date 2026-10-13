@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.37.1] — 2026-10-14
+
+0.37.0 was tagged with two CONFIG.MD rows the config manifest refuses and
+never published; the code is 0.37.0's.
+
 ## [0.37.0] — 2026-10-14
 
 - `SUMMARY_PURPOSE_PROVIDER` (dotted path, default None): `fn(recording)` →
