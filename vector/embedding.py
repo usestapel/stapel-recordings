@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,12 @@ def chunk_text(text: str | None, chunk_chars: int, overlap: int = 0) -> list[str
 
 
 def embed_texts(
-    texts: list[str], cfg: dict, *, identity: dict | None = None
+    texts: list[str],
+    cfg: dict,
+    *,
+    identity: dict | None = None,
+    context: dict | None = None,
+    on_metering: Callable[[dict], object] | None = None,
 ) -> tuple[str, list]:
     """Embed *texts* via ``llm.embed`` in ``BATCH_SIZE`` batches.
 
@@ -117,6 +123,10 @@ def embed_texts(
     also runs on paths with no obvious subject — a reindex command, an
     admin search — and an unattributed row is better than a fabricated
     owner.
+
+    ``context`` (``stages.llm_context``) rides on every batch; each reply is
+    handed to ``on_metering`` before it is judged, so a stage can keep what
+    every batch cost.
     """
     from stapel_core.comm import call
     from stapel_core.comm.exceptions import CommError
@@ -133,6 +143,8 @@ def embed_texts(
             "timeout_seconds": int(cfg["TIMEOUT_SECONDS"]),
             **(identity or {}),
         }
+        if context:
+            payload["context"] = dict(context)
         if cfg.get("MODEL"):
             payload["model"] = cfg["MODEL"]
         if cfg.get("PROVIDER"):
@@ -143,6 +155,8 @@ def embed_texts(
         except CommError as exc:
             raise StageRetryable("embed_call_failed", str(exc)) from exc
 
+        if on_metering is not None:
+            on_metering(result)
         if not isinstance(result, dict) or result.get("status") != "ok":
             reason = (
                 result.get("reason", "embed_failed")
@@ -321,7 +335,13 @@ def segment_units(recording, cfg: dict, scheme: str) -> list[tuple]:
 
 
 def embed_recording(
-    recording, store=None, *, force: bool = False, scheme: str | None = None
+    recording,
+    store=None,
+    *,
+    force: bool = False,
+    scheme: str | None = None,
+    context: dict | None = None,
+    on_metering: Callable[[dict], object] | None = None,
 ) -> dict:
     """Embed all missing segment units + summary chunks for *recording*.
 
@@ -341,7 +361,10 @@ def embed_recording(
     row) or ``"window"`` (:mod:`.chunking`). It defaults to
     ``VECTOR["SEGMENT_SCHEME"]``, i.e. the pipeline keeps whatever scheme
     search is currently reading, and building the other one ahead of a
-    switch is an explicit argument (``recordings_reembed --scheme``)."""
+    switch is an explicit argument (``recordings_reembed --scheme``).
+
+    ``context`` / ``on_metering`` are passed to every :func:`embed_texts`
+    batch (EmbedStage sets both)."""
     from ..conf import vector_config
     from ..stages import identity_payload
 
@@ -366,7 +389,11 @@ def embed_recording(
     segments_embedded = 0
     if pending:
         model, vectors = embed_texts(
-            [text for _, text, _, _, _ in pending], cfg, identity=identity
+            [text for _, text, _, _, _ in pending],
+            cfg,
+            identity=identity,
+            context=context,
+            on_metering=on_metering,
         )
         for (seg, text, span, index, h), vec in zip(pending, vectors):
             store.upsert_segment(
@@ -401,7 +428,11 @@ def embed_recording(
         ]
         if pending_chunks:
             model, vectors = embed_texts(
-                [c for _, c, _ in pending_chunks], cfg, identity=identity
+                [c for _, c, _ in pending_chunks],
+                cfg,
+                identity=identity,
+                context=context,
+                on_metering=on_metering,
             )
             for (idx, _, h), vec in zip(pending_chunks, vectors):
                 store.upsert_summary_chunk(

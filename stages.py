@@ -78,6 +78,10 @@ logger = logging.getLogger(__name__)
 #: it (nor should it — ``additionalProperties: false`` would refuse it).
 TASK_TIMEOUT_KEY = "task_timeout_seconds"
 
+#: The ``context.stage`` / ``workflow_state["metering"]`` key of a
+#: standalone re-summary (it is not a pipeline stage).
+RESUMMARIZE_STAGE = "resummarize"
+
 
 # ─── Stage contract + signals ──────────────────────────────────────────
 
@@ -299,6 +303,114 @@ def identity_payload(recording) -> dict:
     )
 
 
+def llm_context(recording, stage: str) -> dict:
+    """The ``context`` block an ``llm.*`` call carries (stapel-agent >= the
+    release that accepts it): the agent stores it on every ledger row the
+    call writes, so a row names its recording, stage, run and attempt.
+
+    Public for the same reason as :func:`identity_payload`: a host stage
+    delegating to ``llm.*`` (a dedicated diarizer) sends the same block.
+    """
+    from .pipeline import run_identity
+
+    run = run_identity(recording)
+    context = {
+        "recording_id": str(recording.id),
+        "stage": str(stage),
+        "attempt": int(run.get("attempt") or 1),
+    }
+    if run.get("run_id"):
+        context["run_id"] = str(run["run_id"])
+    return context
+
+
+_METERING_SUMMED = (
+    "input_tokens",
+    "output_tokens",
+    "thinking_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "audio_duration_ms",
+    "duration_ms",
+    "calls",
+)
+
+
+def _sum_cost(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return round(float(a) + float(b), 8)
+
+
+def _combined_basis(a, b):
+    """Same rule as the agent's: all cached is cached, any unpriced part
+    makes the sum unpriced, cached parts are true zeros."""
+    seen = {x for x in (a, b) if x}
+    if not seen:
+        return None
+    if seen == {"cached"}:
+        return "cached"
+    seen.discard("cached")
+    if "unpriced" in seen:
+        return "unpriced"
+    return seen.pop() if len(seen) == 1 else "pricing_estimate"
+
+
+def _merge_metering(previous: dict | None, new: dict) -> dict:
+    """*new* added onto *previous*: cost and counters summed, ``calls``
+    counted, provider/model/priced_by from the latest call."""
+    if not previous:
+        return dict(new)
+    merged = dict(previous)
+    for field in _METERING_SUMMED:
+        a, b = previous.get(field), new.get(field)
+        merged[field] = b if a is None else a if b is None else int(a) + int(b)
+    merged["cost_usd"] = _sum_cost(previous.get("cost_usd"), new.get("cost_usd"))
+    merged["cost_basis"] = _combined_basis(
+        previous.get("cost_basis"), new.get("cost_basis")
+    )
+    for field in ("provider", "model", "priced_by"):
+        if new.get(field) is not None:
+            merged[field] = new[field]
+    merged["fallback_used"] = bool(
+        previous.get("fallback_used") or new.get("fallback_used")
+    )
+    return merged
+
+
+def record_metering(recording, stage: str, result, *, save: bool = False) -> bool:
+    """Keep an ``llm.*`` reply's ``metering`` in
+    ``workflow_state["metering"][stage]``.
+
+    Server state, never ``metadata``: a client writes that half. Several
+    calls of one stage within one run are merged (:func:`_merge_metering`);
+    a new run replaces the stage's entry. A reply without ``metering`` (an
+    older agent) changes nothing. Pipeline stages leave ``save`` off — the
+    driver saves ``workflow_state`` on every outcome.
+    """
+    metering = result.get("metering") if isinstance(result, dict) else None
+    if not isinstance(metering, dict):
+        return False
+    from .pipeline import run_identity
+
+    run_id = run_identity(recording).get("run_id")
+    state = dict(recording.workflow_state or {})
+    meters = dict(state.get("metering") or {})
+    previous = meters.get(stage)
+    if not isinstance(previous, dict) or previous.get("run_id") != run_id:
+        previous = None
+    entry = _merge_metering(previous, {k: v for k, v in metering.items() if k != "run_id"})
+    entry["run_id"] = run_id
+    meters[stage] = entry
+    state["metering"] = meters
+    recording.workflow_state = state
+    if save:
+        recording.save(update_fields=["workflow_state", "updated_at"])
+    return True
+
+
 class ConvertStage(Stage):
     """Extract the upload's audio track at the configured profile, store
     that one object, and delete the container it came from.
@@ -372,6 +484,27 @@ class ConvertStage(Stage):
         """
         return False
 
+    def probe_source(self, recording, path: str) -> dict | None:  # noqa: ARG002
+        """The summary of the uploaded file kept as ``metadata["probe"]``.
+
+        A hook: the default is :func:`normalize.probe_summary` (ffprobe); a
+        host with another prober overrides it. ``None`` stores nothing.
+        """
+        from .normalize import probe_summary
+
+        return probe_summary(path)
+
+    def _store_probe(self, recording, path: str) -> None:
+        try:
+            probe = self.probe_source(recording, path)
+        except Exception:  # noqa: BLE001 — diagnostics never fail a stage
+            logger.warning("convert: probe failed for %s", recording.id, exc_info=True)
+            return
+        if not probe:
+            return
+        recording.metadata = {**(recording.metadata or {}), "probe": probe}
+        recording.save(update_fields=["metadata", "updated_at"])
+
     def run(self, recording, ctx):
         from .normalize import NormalizeFatal, NormalizePaymentRequired, audio_profile
 
@@ -401,6 +534,11 @@ class ConvertStage(Stage):
                 storage.download_to_file(recording.file_storage_key, raw_path)
             except Exception as exc:  # transient object-store failure
                 raise StageRetryable("download_failed", str(exc)) from exc
+
+            # Saved BEFORE the conversion: with audio-only ingest the source
+            # is deleted below, and a conversion that fails is exactly the
+            # case where what was sent matters most.
+            self._store_probe(recording, raw_path)
 
             try:
                 duration = normalizer(raw_path, out_path)
@@ -767,6 +905,7 @@ class TranscribeStage(Stage):
             "diarization": bool(recording.diarization_enabled),
             "timeout_seconds": int(recordings_settings.TRANSCRIBE_TIMEOUT_SECONDS),
             **identity_payload(recording),
+            "context": llm_context(recording, self.name),
         }
 
         # THE IDENTITY OF THE MEDIA, and HOW MUCH OF IT THERE IS. Both are
@@ -876,6 +1015,8 @@ class TranscribeStage(Stage):
         # earlier, different input are what this result replaces.
         if recording.segments.exists() and not self.is_stale(recording, ctx):
             return ctx
+        # Before the verdict: a failed call may still have been paid for.
+        record_metering(recording, self.name, result)
         if not isinstance(result, dict) or result.get("status") != "ok":
             reason = (
                 (result or {}).get("reason", "transcribe_failed")
@@ -995,7 +1136,8 @@ class MergeStage(Stage):
         result = submit_task(
             "llm.summarize",
             _summarize_payload(
-                recording, transcript, budget_seconds=budget, purpose=purpose
+                recording, transcript, budget_seconds=budget, purpose=purpose,
+                stage=self.name,
             ),
             recording=recording,
             # Sized to the meeting, and big enough for the attempts this
@@ -1011,6 +1153,7 @@ class MergeStage(Stage):
         # The summary is best-effort: the transcript already exists, and the
         # recording must not fail because of it. But staying SILENT about a
         # failure is also wrong — that used to be exactly what happened.
+        record_metering(recording, self.name, result)
         summary = summary_from_result(result)
         if summary is None:
             _log_summary_not_produced("merge", recording, result)
@@ -1056,7 +1199,11 @@ class EmbedStage(Stage):
 
         from .vector.embedding import embed_recording
 
-        embed_recording(recording)
+        embed_recording(
+            recording,
+            context=llm_context(recording, self.name),
+            on_metering=lambda reply: record_metering(recording, self.name, reply),
+        )
         return ctx
 
 
@@ -1064,7 +1211,12 @@ class EmbedStage(Stage):
 
 
 def _summarize_payload(
-    recording, transcript, *, budget_seconds=None, purpose: SummaryPurpose | None = None
+    recording,
+    transcript,
+    *,
+    budget_seconds=None,
+    purpose: SummaryPurpose | None = None,
+    stage: str = "merge",
 ) -> dict:
     """Payload for ``llm.summarize``.
 
@@ -1091,6 +1243,9 @@ def _summarize_payload(
     under another. The agent splits the one call into single shot or
     chunks + merge, and every part derives its key from this one. Without
     it the payload is exactly the pre-purpose one.
+
+    *stage* names the caller in the ``context`` block (``merge`` or
+    ``resummarize``).
     """
     from . import transcript_schema
 
@@ -1102,6 +1257,7 @@ def _summarize_payload(
         "model": recordings_settings.SUMMARIZE_MODEL,
         "idempotency_key": key,
         **identity_payload(recording),
+        "context": llm_context(recording, stage),
     }
     if purpose is not None:
         payload["purpose_guidance"] = purpose.guidance
@@ -1543,7 +1699,9 @@ def start_resummarize(recording, *, user=None, origin=None, reason=None):
         try:
             result = submit_task(
                 "llm.summarize",
-                _summarize_payload(locked, transcript, purpose=purpose),
+                _summarize_payload(
+                    locked, transcript, purpose=purpose, stage=RESUMMARIZE_STAGE
+                ),
                 recording=locked,
                 deadline_seconds=int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
                 stage="summarize",
@@ -1638,6 +1796,7 @@ def _apply_summary_result(recording, job, result) -> bool:
     from . import events
     from .models import JobStatus
 
+    record_metering(recording, RESUMMARIZE_STAGE, result, save=True)
     summary = summary_from_result(result)
     if summary is None:
         _log_summary_not_produced("resummarize", recording, result)

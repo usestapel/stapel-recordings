@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.38.0] — 2026-10-14
+
+Paired release: requires the stapel-agent release that accepts `context`
+on `llm.*` (the release after 0.35.0). The agent schemas are
+`additionalProperties: false`, so deploy the agent first, then this.
+
+- Every `llm.*` payload the library sends (transcribe, merge summary,
+  re-summary, every embed batch) carries `context: {recording_id, stage,
+  run_id, attempt}` — `stages.llm_context(recording, stage)`, run identity
+  from `workflow_state["pipeline"]`. The agent stores it on each PromptLog
+  row.
+- A reply's `metering` is kept in `workflow_state["metering"][<stage>]`
+  (`transcribe`, `merge`, `embed`, `resummarize`) via
+  `stages.record_metering`: calls of one stage within one run are summed
+  (cost, tokens, durations) and `calls` counted, the entry carries the
+  `run_id`, a new run replaces it. Failed replies are kept too. A reply
+  without `metering` (an older agent) leaves the key absent.
+- Convert keeps the ffprobe summary of the upload in `metadata["probe"] =
+  {format_name, duration, bit_rate, streams: [{codec_type, codec_name,
+  sample_rate, channels, bit_rate}]}` (`normalize.probe_summary`, hook
+  `ConvertStage.probe_source`; numbers coerced, at most 8 streams), saved
+  before the conversion. A failed probe writes nothing and never fails the
+  stage. `probe` joins the library-reserved metadata keys: a client
+  metadata write naming `probe` at any depth is now refused.
+
 ## [0.37.1] — 2026-10-14
 
 0.37.0 was tagged with two CONFIG.MD rows the config manifest refuses and

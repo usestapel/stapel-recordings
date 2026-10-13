@@ -55,6 +55,7 @@ never a decode.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import threading
@@ -315,6 +316,65 @@ def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = N
     if proc.returncode != 0:
         stderr = (proc.stderr or b"").decode(errors="replace")[:500]
         raise NormalizeFatal("ffmpeg_failed", f"rc={proc.returncode}: {stderr}")
+
+
+PROBE_MAX_STREAMS = 8
+
+
+def _number(value, kind=float):
+    """A finite number from ffprobe's string fields, else ``None``."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return int(number) if kind is int else number
+
+
+def _text(value, limit: int = 64) -> Optional[str]:
+    return str(value)[:limit] if value not in (None, "") else None
+
+
+def probe_summary(path: str) -> Optional[dict]:
+    """What the uploaded file WAS, from one ffprobe over every stream.
+
+    ``{format_name, duration, bit_rate, streams: [{codec_type, codec_name,
+    sample_rate, channels, bit_rate}]}`` — numbers coerced, strings
+    capped, at most :data:`PROBE_MAX_STREAMS` streams. Diagnostics only:
+    any failure (no ffprobe, a timeout, unparseable output) returns
+    ``None`` and never raises.
+    """
+    cmd = [
+        _ffprobe_bin(), "-v", "error", "-print_format", "json",
+        "-show_format", "-show_streams", path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=30)
+        if proc.returncode != 0:
+            return None
+        payload = json.loads(proc.stdout.decode("utf-8") or "{}")
+    except Exception:  # noqa: BLE001 — a probe never fails the conversion
+        return None
+    if not isinstance(payload, dict):
+        return None
+    fmt = payload.get("format") if isinstance(payload.get("format"), dict) else {}
+    streams = [s for s in payload.get("streams") or [] if isinstance(s, dict)]
+    return {
+        "format_name": _text(fmt.get("format_name")),
+        "duration": _number(fmt.get("duration")),
+        "bit_rate": _number(fmt.get("bit_rate"), int),
+        "streams": [
+            {
+                "codec_type": _text(s.get("codec_type"), 16),
+                "codec_name": _text(s.get("codec_name"), 32),
+                "sample_rate": _number(s.get("sample_rate"), int),
+                "channels": _number(s.get("channels"), int),
+                "bit_rate": _number(s.get("bit_rate"), int),
+            }
+            for s in streams[:PROBE_MAX_STREAMS]
+        ],
+    }
 
 
 def _probe_audio(path: str) -> tuple[bool, Optional[float]]:

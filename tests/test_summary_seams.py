@@ -102,6 +102,7 @@ def test_no_purpose_payload_is_byte_identical(transcribed):
         "model": "medium",
         "idempotency_key": f"summary:{transcript_schema.transcript_hash(transcript)}",
         **stages.identity_payload(transcribed),
+        "context": stages.llm_context(transcribed, "merge"),
     }
     language = stages._transcript_language(transcribed, transcript)
     if language:

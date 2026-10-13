@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.37.1",
+  "version": "0.38.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -396,7 +396,19 @@
       "name": "identity_payload",
       "kind": "factory",
       "path": "stapel_recordings.stages.identity_payload",
-      "intent": "The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording being processed. Reach for it in every custom stage that calls the agent: a stage runs on a queue long after the request that created the recording, so there is no current user to read, and the agent writes one billable ledger row per provider call. Omit it and that row is unattributable — the spend is recorded and belongs to nobody. Hand-rolling the dict instead is how the two spellings drift and half the ledger goes dark."
+      "intent": "The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording: a queued stage has no current user, and the agent bills one ledger row per provider call. Omit it and the spend belongs to nobody; hand-rolling it is how the spellings drift."
+    },
+    {
+      "name": "llm_context",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.llm_context",
+      "intent": "The context block for an llm.* payload; the agent stamps it on each ledger row."
+    },
+    {
+      "name": "record_metering",
+      "kind": "gate_function",
+      "path": "stapel_recordings.stages.record_metering",
+      "intent": "Keep an llm.* reply's metering in workflow_state['metering'][stage]."
     },
     {
       "name": "refuse_empty_transcript",

@@ -197,7 +197,7 @@
     },
     "identity_payload": {
       "kind": "factory",
-      "intent": "The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording being processed. Reach for it in every custom stage that calls the agent: a stage runs on a queue long after the request that created the recording, so there is no current user to read, and the agent writes one billable ledger row per provider call. Omit it and that row is unattributable — the spend is recorded and belongs to nobody. Hand-rolling the dict instead is how the two spellings drift and half the ledger goes dark.",
+      "intent": "The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording: a queued stage has no current user, and the agent bills one ledger row per provider call. Omit it and the spend belongs to nobody; hand-rolling it is how the spellings drift.",
       "instead_of": []
     },
     "invalidate_from": {
@@ -480,6 +480,16 @@
     "verify_manifest": {
       "kind": "gate_function",
       "intent": "The completion check of a verified upload: every part present at its size, stored digests equal the declared ones, and together they hash to the session fingerprint; raises the 409 parts_missing / part_mismatch refusals and returns the store's own part list to complete with."
+    },
+    "llm_context": {
+      "kind": "factory",
+      "intent": "The context block for an llm.* payload; the agent stamps it on each ledger row.",
+      "instead_of": []
+    },
+    "record_metering": {
+      "kind": "gate_function",
+      "intent": "Keep an llm.* reply's metering in workflow_state['metering'][stage].",
+      "instead_of": []
     }
   }
 }

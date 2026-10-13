@@ -286,6 +286,16 @@ budget) rather than returning `None` forever. `ffmpeg_normalize()` returns
 the duration of what it actually WROTE — a header-probe of `dst_path` after
 encoding, not a `min(source, cap)` guess.
 
+`probe_summary(path)` is what the UPLOAD was: one `ffprobe -show_format
+-show_streams` over every stream, kept by the convert stage (hook
+`ConvertStage.probe_source`) as `metadata["probe"] = {format_name, duration,
+bit_rate, streams: [{codec_type, codec_name, sample_rate, channels,
+bit_rate}]}` — numbers coerced, at most 8 streams, saved BEFORE the
+conversion so a failed one still has it. With audio-only ingest the source
+is purged, so this is the only record of what was sent. `probe` is a
+library-reserved metadata key (a client cannot write it); a probe that fails
+writes nothing and never fails the stage.
+
 `audio_profile()` is what the stored object IS — codec, channels, sample
 rate, object extension, content type and `bytes_per_hour`, the number the
 upload-limits read publishes and a host sizes a bucket with.
@@ -478,6 +488,21 @@ under `schemas/emits/`, validated in tests.
 | Function (**call**) | `llm.transcribe` | STT | provided by **stapel-agent** |
 | Function (**call**) | `llm.summarize` | summary | provided by **stapel-agent** |
 | Function (**call**) | `llm.embed` | embeddings (opt-in vector layer only) | provided by **stapel-agent** ≥ 0.4 |
+
+**Per-stage telemetry (paired with stapel-agent).** Every `llm.*` payload
+the library sends carries `context: {recording_id, stage, run_id, attempt}`
+(`stages.llm_context`; `run_id`/`attempt` from `workflow_state["pipeline"]`;
+stage `transcribe`, `merge`, `embed`, or `resummarize` for a standalone
+re-summary). The agent stamps it on each ledger row. A reply's `metering`
+(`{provider, model, cost_usd, cost_basis, priced_by, *_tokens,
+audio_duration_ms, duration_ms, fallback_used, calls}`) is kept in
+`workflow_state["metering"][<stage>]` by `stages.record_metering` — never in
+`metadata` — with the run's `run_id`; several calls of one stage in one run
+(embed batches, retries) are summed and `calls` counted, a new run replaces
+the entry, a reply without `metering` writes nothing. Failed replies are
+kept too (a failed STT chain may have been paid for). A host stage that
+calls `llm.*` (a dedicated diarizer) sends `llm_context(recording, name)`
+and passes each reply to `record_metering(recording, name, reply)`.
 
 ### Reliability primitives
 

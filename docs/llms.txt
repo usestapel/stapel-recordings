@@ -1,8 +1,8 @@
-# stapel-recordings 0.37.1
+# stapel-recordings 0.38.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 71 · extension points 7 · operations 18 · error codes 64.
+Contract: axes 1 · surface 73 · extension points 7 · operations 18 · error codes 64.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -39,6 +39,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Count one watchdog re-drive of a recording and answer whether it may be re-driven at all; False means it has just been failed with reason=reconcile_exhausted. Call it in any custom watchdog that re-emits recording.stage, because a re-drive does not consume retry_count and an uncounted one repeats for the life of the recording.
 - purge_soft_deleted_recordings — stapel_recordings.tasks.purge_soft_deleted_recordings
   The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever.
+- record_metering — stapel_recordings.stages.record_metering
+  Keep an llm.* reply's metering in workflow_state['metering'][stage].
 - refuse_empty_transcript — stapel_recordings.stages.refuse_empty_transcript
   StageFatal('empty_transcript') for a transcript with no words over audio of at least EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS. A host stage that persists an llm.transcribe result calls it first.
 - reprocess_recording — stapel_recordings.pipeline.reprocess_recording
@@ -120,7 +122,9 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - identity_fields — stapel_recordings.stages.identity_fields
   The same attribution block built from raw ids, for callers that have them without a Recording — a live question, a search, a host view that knows its request.user. Absent ids are omitted rather than sent as null, which matters because the llm.* schemas type both as strings and reject unknown or ill-typed properties outright.
 - identity_payload — stapel_recordings.stages.identity_payload
-  The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording being processed. Reach for it in every custom stage that calls the agent: a stage runs on a queue long after the request that created the recording, so there is no current user to read, and the agent writes one billable ledger row per provider call. Omit it and that row is unattributable — the spend is recorded and belongs to nobody. Hand-rolling the dict instead is how the two spellings drift and half the ledger goes dark.
+  The {user_id, workspace_id} block to merge into any llm.* payload a stage delegates, read off the recording: a queued stage has no current user, and the agent bills one ledger row per provider call. Omit it and the spend belongs to nobody; hand-rolling it is how the spellings drift.
+- llm_context — stapel_recordings.stages.llm_context
+  The context block for an llm.* payload; the agent stamps it on each ledger row.
 - register_stage — stapel_recordings.stages.register_stage
   instead of: stapel_recordings.stages.BUILTIN_STAGES
   Add, replace or (with None) remove a pipeline stage at runtime — a Stage subclass, an instance, or a plain callable(recording, ctx) -> ctx, adapted automatically. The fork-free way for a plugin, an AppConfig.ready() or a test to contribute a stage when a dotted path in the STAGES setting is not an option; mutating BUILTIN_STAGES reaches the same map from the wrong side and loses to both the setting overlay and this registry.

@@ -62,6 +62,9 @@ LIBRARY_RESERVED_KEYS = frozenset(
         # recording's paid transcript by naming its hash — the same class
         # of hole as forging a freshness stamp, one table over.
         "audio_content_hash",
+        # ConvertStage's ffprobe summary of the uploaded file: a server
+        # record of what was sent, the only one once the source is purged.
+        "probe",
     }
 )
 
