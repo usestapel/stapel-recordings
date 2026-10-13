@@ -136,10 +136,14 @@ def mark_pending(
     A second mark keeps ``since`` and ``attempts``: the deadline counts from
     the first refusal, not the latest. ``failure_class`` and ``providers``
     are what an alert about the marker names: whose failure, and who was
-    asked.
+    asked. A recording with a stored skip outcome is never marked.
     """
+    from .stages import SUMMARY_SKIPPED_KEY
+
     now = now or timezone.now()
     state = dict(recording.workflow_state or {})
+    if SUMMARY_SKIPPED_KEY in state:
+        return {}  # a skip is an outcome, never owed
     block = dict(state.get(PENDING_KEY) or {})
     block.setdefault("since", now.isoformat())
     block.setdefault("attempts", 0)

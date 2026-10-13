@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.37.0] — 2026-10-14
+
+- `SUMMARY_PURPOSE_PROVIDER` (dotted path, default None): `fn(recording)` →
+  None or `{guidance, label, version}`. With both texts, `llm.summarize` gets
+  `purpose_guidance` + `purpose_label` and the idempotency key becomes
+  `summary:<transcript hash>:<digest>` (sha256 hex[:16] of guidance + "\n" +
+  label); the stored summary records
+  `purpose_prompt_version` / `purpose_prompt_digest` in
+  `metadata["derived"]["summary"]`. Merge stage and re-summary alike. Without
+  a purpose the payload and key are unchanged. Needs a stapel-agent that
+  accepts the two inputs.
+- `SUMMARY_SKIP_POLICY` (dotted path, default None): `fn(recording,
+  transcript)` → None or a reason. On a reason no summary is requested; the
+  merge stage stores `workflow_state["summary_skipped"] = {reason, at}` and
+  completes; a non-staff re-summary completes its Job with `{"skipped": true,
+  "reason": ...}` and emits no `recording.resummarized`. A stored skip is
+  never marked `summary_pending`; a produced summary clears it.
 
 ## [0.36.1] — 2026-10-01
 
@@ -746,7 +763,7 @@ All notable changes to stapel-recordings are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0 semver: **minor = breaking**, patch = compatible.
 
-## [Unreleased]
+## [0.37.0] — 2026-10-14
 
 ## [0.22.0] — 2026-09-07
 
@@ -2358,7 +2375,7 @@ per the frontend-pair regen schedule (schema changes → pair minor).
 - Re-release of 0.2.0: its publish gate failed on CI missing stapel-tools
   (contract-emission dependency); no code changes beyond the CI fix.
 
-## [Unreleased]
+## [0.37.0] — 2026-10-14
 
 ## [0.3.2] — 2026-07-16
 

@@ -516,6 +516,18 @@ DEFAULTS = {
         # second attempt re-buys nothing it already has. Raising this
         # without that checkpoint raises the bill by the same factor.
         "SUMMARIZE_TASK_MAX_ATTEMPTS": 2,
+        # ── Host seams around the summary call (stages.py) ───────────
+        # SUMMARY_PURPOSE_PROVIDER: dotted path to ``fn(recording)`` that
+        # returns None or {guidance, label, version} (a mapping or an object
+        # with those attributes). With both texts, llm.summarize gets
+        # purpose_guidance + purpose_label and the idempotency key gains
+        # ``:<purpose_prompt_digest>``. None: payload unchanged.
+        "SUMMARY_PURPOSE_PROVIDER": None,
+        # SUMMARY_SKIP_POLICY: dotted path to ``fn(recording, transcript)``
+        # that returns None (summarize) or a reason string (no summarize
+        # call; the outcome lands in workflow_state["summary_skipped"]).
+        # Asked by the merge stage and by every non-staff re-summary.
+        "SUMMARY_SKIP_POLICY": None,
         # ── Summary repair (stapel_recordings.summary_repair) ────────
         # A summary the PROVIDER refused (failure_class=provider: out of
         # credits, rate, outage) is owed, and the reconcile watchdog asks
@@ -596,7 +608,7 @@ recordings_settings = AppSettings(
     defaults=DEFAULTS,
     import_strings=(
         "STORAGE", "NORMALIZER", "PIPELINE_RESOLVER", "RECORDING_POLICY",
-        "ERASURE_CLIENT",
+        "ERASURE_CLIENT", "SUMMARY_PURPOSE_PROVIDER", "SUMMARY_SKIP_POLICY",
     ),
     # Keys that must NOT fall back to an environment variable. AppSettings
     # reads os.environ for every key not listed here, and these names are
@@ -632,6 +644,8 @@ recordings_settings = AppSettings(
         "PIPELINE_RESOLVER",
         "RECORDING_POLICY",
         "ERASURE_CLIENT",
+        "SUMMARY_PURPOSE_PROVIDER",
+        "SUMMARY_SKIP_POLICY",
         "UPLOAD_CONTENT_POLICY",
         "AUDIO_ONLY_INGEST",
         "STORAGE_SIGNS_GET_URLS",

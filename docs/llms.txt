@@ -1,8 +1,8 @@
-# stapel-recordings 0.36.1
+# stapel-recordings 0.37.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 70 · extension points 7 · operations 18 · error codes 64.
+Contract: axes 1 · surface 71 · extension points 7 · operations 18 · error codes 64.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -82,6 +82,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Is a completed stage's stored result unusable because it was computed from a different input? The question every 'already done' guard has to ask before returning early — artifact-exists is the cheap half, and it is the half that hands a paying customer the previous answer. True when the input fingerprint moved or invalidate_from declared the stage stale; false when nothing is recorded, so an upgrade never re-pays for history.
 - summary_from_result — stapel_recordings.stages.summary_from_result
   Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure.
+- summary_skipped — stapel_recordings.stages.summary_skipped
+  The stored SUMMARY_SKIP_POLICY outcome {reason, at}, or None.
 - transcript_handoff_enabled — stapel_recordings.stages.transcript_handoff_enabled
   Whether this deployment asks llm.transcribe to WRITE the transcript to storage and answer with a key instead of the body. Reach for it when a host stage builds its own transcribe payload: 'auto' (default) answers from the storage backend's signs_put_urls, so the question is settled by configuration once, never by how big a given transcript came out.
 ### factory

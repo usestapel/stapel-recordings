@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.36.1",
+  "version": "0.37.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -503,6 +503,12 @@
       "kind": "predicate",
       "path": "stapel_recordings.stages.summary_from_result",
       "intent": "Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure."
+    },
+    {
+      "name": "summary_skipped",
+      "kind": "predicate",
+      "path": "stapel_recordings.stages.summary_skipped",
+      "intent": "The stored SUMMARY_SKIP_POLICY outcome {reason, at}, or None."
     },
     {
       "name": "task_deadline_seconds",

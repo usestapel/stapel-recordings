@@ -62,6 +62,7 @@ import logging
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
 from typing import Callable
 
 from .conf import recordings_settings
@@ -969,7 +970,18 @@ class MergeStage(Stage):
         if recording.summary and _recorded_derived_hash(recording, DERIVED_SUMMARY) == current:
             return ctx  # the summary already belongs to THIS transcript
 
-        if not (recordings_settings.SUMMARIZE_ENABLED and transcript.segments):
+        if not recordings_settings.SUMMARIZE_ENABLED:
+            return ctx
+
+        # Asked before the segment check: "no speech" is a host's skip reason
+        # too, and it must land as a stored outcome, not as silence. The
+        # driver saves workflow_state.
+        skip = _summary_skip_reason(recording, transcript)
+        if skip:
+            _record_summary_skipped(recording, skip, save=False)
+            return ctx
+
+        if not transcript.segments:
             return ctx
 
         # The transcript is already saved — it's the main artifact. The
@@ -977,9 +989,14 @@ class MergeStage(Stage):
         # there's no reason to hold a worker for it.
         budget = summarize_budget_seconds(recording, transcript)
         attempts = int(recordings_settings.SUMMARIZE_TASK_MAX_ATTEMPTS)
+        purpose = _summary_purpose(recording)
+        if _remember_purpose(recording, purpose):
+            recording.save(update_fields=["workflow_state", "updated_at"])
         result = submit_task(
             "llm.summarize",
-            _summarize_payload(recording, transcript, budget_seconds=budget),
+            _summarize_payload(
+                recording, transcript, budget_seconds=budget, purpose=purpose
+            ),
             recording=recording,
             # Sized to the meeting, and big enough for the attempts this
             # declares — see task_deadline_seconds() for what happened
@@ -1004,7 +1021,7 @@ class MergeStage(Stage):
                 # provider can answer. The driver saves workflow_state.
                 summary_repair.mark_pending_from(recording, result, save=False)
         else:
-            store_summary(recording, summary)
+            store_summary(recording, summary, purpose=_sent_purpose(recording))
         return ctx
 
 
@@ -1046,7 +1063,9 @@ class EmbedStage(Stage):
 # ─── stage helpers ─────────────────────────────────────────────────────
 
 
-def _summarize_payload(recording, transcript, *, budget_seconds=None) -> dict:
+def _summarize_payload(
+    recording, transcript, *, budget_seconds=None, purpose: SummaryPurpose | None = None
+) -> dict:
     """Payload for ``llm.summarize``.
 
     Language comes from the recording, or from what STT detected when
@@ -1065,17 +1084,28 @@ def _summarize_payload(recording, transcript, *, budget_seconds=None) -> dict:
     stripped before the call — it is how long this particular meeting's
     summary may take, and the agent's contract has no business carrying
     our executor's budget.
+
+    *purpose* (from :func:`_summary_purpose`, resolved once by the caller)
+    adds ``purpose_guidance`` / ``purpose_label`` and suffixes the key with
+    its digest, so a part checkpointed under one purpose is never served
+    under another. The agent splits the one call into single shot or
+    chunks + merge, and every part derives its key from this one. Without
+    it the payload is exactly the pre-purpose one.
     """
     from . import transcript_schema
 
+    key = f"summary:{transcript_schema.transcript_hash(transcript)}"
+    if purpose is not None:
+        key = f"{key}:{purpose.digest}"
     payload = {
         "text": transcript_schema.render_markdown(transcript),
         "model": recordings_settings.SUMMARIZE_MODEL,
-        "idempotency_key": (
-            f"summary:{transcript_schema.transcript_hash(transcript)}"
-        ),
+        "idempotency_key": key,
         **identity_payload(recording),
     }
+    if purpose is not None:
+        payload["purpose_guidance"] = purpose.guidance
+        payload["purpose_label"] = purpose.label
     if budget_seconds:
         payload[TASK_TIMEOUT_KEY] = int(budget_seconds)
     payload_language = _transcript_language(recording, transcript)
@@ -1100,6 +1130,145 @@ def _transcript_language(recording, transcript) -> str:
         or getattr(meta, "detected", None)
         or ""
     )
+
+
+# ─── host seams around the summary call ────────────────────────────────
+
+#: ``workflow_state`` key: the purpose ``{version, digest}`` sent with the
+#: latest ``llm.summarize`` call, copied onto the summary record when its
+#: answer is stored. Absent when the call carried no purpose.
+SUMMARY_PURPOSE_KEY = "summary_purpose"
+
+#: ``workflow_state`` key: ``{reason, at}`` when the host's
+#: ``SUMMARY_SKIP_POLICY`` declined the summary. The transcript is the
+#: product then; a host treats the skip as a delivered outcome.
+SUMMARY_SKIPPED_KEY = "summary_skipped"
+
+#: Caps of the llm.summarize inputs (stapel-agent's schema).
+PURPOSE_GUIDANCE_MAX_CHARS = 2000
+PURPOSE_LABEL_MAX_CHARS = 64
+
+
+@dataclass(frozen=True)
+class SummaryPurpose:
+    """The recording type texts one summary is asked under."""
+
+    guidance: str
+    label: str
+    version: str
+    digest: str
+
+    def record(self) -> dict:
+        return {
+            "purpose_prompt_version": self.version,
+            "purpose_prompt_digest": self.digest,
+        }
+
+
+def _purpose_prompt_digest(guidance: str, label: str) -> str:
+    """sha256 hex[:16] of ``guidance + "\\n" + label`` — of the texts, never of
+    the prompt the agent renders from them."""
+    return hashlib.sha256(f"{guidance}\n{label}".encode("utf-8")).hexdigest()[:16]
+
+
+def _summary_purpose(recording) -> SummaryPurpose | None:
+    """Ask ``SUMMARY_PURPOSE_PROVIDER`` for this recording's purpose texts.
+
+    The hook returns None or ``{guidance, label, version}`` (a mapping or an
+    object with those attributes). Both texts or nothing: the agent ignores
+    half a pair, so half a pair must not change the key either. A hook that
+    raises or returns over-length texts is logged and treated as None — a
+    summary without the purpose beats no summary.
+    """
+    hook = recordings_settings.SUMMARY_PURPOSE_PROVIDER
+    if not hook:
+        return None
+    try:
+        raw = hook(recording)
+    except Exception:
+        logger.exception("SUMMARY_PURPOSE_PROVIDER failed for %s", recording.id)
+        return None
+    if raw is None:
+        return None
+
+    def field(name):
+        value = raw.get(name) if isinstance(raw, dict) else getattr(raw, name, None)
+        return value if isinstance(value, str) else ""
+
+    guidance, label, version = field("guidance"), field("label"), field("version")
+    if not guidance.strip() or not label.strip():
+        return None
+    if len(guidance) > PURPOSE_GUIDANCE_MAX_CHARS or len(label) > PURPOSE_LABEL_MAX_CHARS:
+        logger.error(
+            "SUMMARY_PURPOSE_PROVIDER: texts over the cap (guidance %d/%d, label %d/%d); "
+            "summarizing without them",
+            len(guidance), PURPOSE_GUIDANCE_MAX_CHARS, len(label), PURPOSE_LABEL_MAX_CHARS,
+        )
+        return None
+    return SummaryPurpose(
+        guidance=guidance,
+        label=label,
+        version=version[:64],
+        digest=_purpose_prompt_digest(guidance, label),
+    )
+
+
+def _remember_purpose(recording, purpose: SummaryPurpose | None) -> bool:
+    """Stash what the call about to be submitted carries. True if changed."""
+    state = dict(recording.workflow_state or {})
+    if purpose is None:
+        if SUMMARY_PURPOSE_KEY not in state:
+            return False
+        state.pop(SUMMARY_PURPOSE_KEY)
+    else:
+        state[SUMMARY_PURPOSE_KEY] = purpose.record()
+    recording.workflow_state = state
+    return True
+
+
+def _sent_purpose(recording) -> dict | None:
+    """The ``{purpose_prompt_version, purpose_prompt_digest}`` of the latest
+    submitted summarize call, or None."""
+    block = (recording.workflow_state or {}).get(SUMMARY_PURPOSE_KEY)
+    return dict(block) if isinstance(block, dict) else None
+
+
+def _summary_skip_reason(recording, transcript) -> str | None:
+    """Ask ``SUMMARY_SKIP_POLICY`` whether to skip the summary. None = summarize.
+
+    A policy that raises is logged and read as "summarize": a wrong summary
+    call costs less than a wrongly withheld one.
+    """
+    policy = recordings_settings.SUMMARY_SKIP_POLICY
+    if not policy:
+        return None
+    try:
+        reason = policy(recording, transcript)
+    except Exception:
+        logger.exception("SUMMARY_SKIP_POLICY failed for %s", recording.id)
+        return None
+    return str(reason)[:120] if reason else None
+
+
+def _record_summary_skipped(recording, reason: str, *, save: bool = True) -> None:
+    """Store the skip as the recording's summary outcome; drop any
+    ``summary_pending`` so the repair watchdog never re-asks it."""
+    from django.utils import timezone
+
+    from .summary_repair import clear_pending
+
+    clear_pending(recording)
+    state = dict(recording.workflow_state or {})
+    state[SUMMARY_SKIPPED_KEY] = {"reason": reason, "at": timezone.now().isoformat()}
+    recording.workflow_state = state
+    if save:
+        recording.save(update_fields=["workflow_state", "updated_at"])
+
+
+def summary_skipped(recording) -> dict | None:
+    """The stored skip outcome ``{reason, at}``, or None."""
+    block = (recording.workflow_state or {}).get(SUMMARY_SKIPPED_KEY)
+    return dict(block) if isinstance(block, dict) else None
 
 
 # ─── the summary as a derived artifact ─────────────────────────────────
@@ -1190,7 +1359,9 @@ def summary_from_result(result):
     return summary if summary else None
 
 
-def store_summary(recording, summary: str, *, transcript=None) -> None:
+def store_summary(
+    recording, summary: str, *, transcript=None, purpose: dict | None = None
+) -> None:
     """Persist a produced summary AND pin it to the transcript behind it.
 
     The sanctioned write: setting ``recording.summary`` alone leaves the
@@ -1201,6 +1372,10 @@ def store_summary(recording, summary: str, *, transcript=None) -> None:
     *transcript* is an already-built :class:`~stapel_recordings.transcript_schema.UnifiedTranscript`
     when the caller has one (the merge stage does); otherwise it is rebuilt
     from the persisted rows.
+
+    *purpose* (``{purpose_prompt_version, purpose_prompt_digest}``, see
+    :func:`_sent_purpose`) is recorded beside the version key. A produced
+    summary also replaces a stored skip outcome.
     """
     from . import transcript_schema
 
@@ -1210,7 +1385,8 @@ def store_summary(recording, summary: str, *, transcript=None) -> None:
     metadata = dict(recording.metadata or {})
     derived = dict(metadata.get("derived") or {})
     derived[DERIVED_SUMMARY] = {
-        "transcript_hash": transcript_schema.transcript_hash(transcript)
+        "transcript_hash": transcript_schema.transcript_hash(transcript),
+        **(purpose or {}),
     }
     metadata["derived"] = derived
     staleness = dict(metadata.get("staleness") or {})
@@ -1225,7 +1401,12 @@ def store_summary(recording, summary: str, *, transcript=None) -> None:
     fields = ["summary", "metadata", "updated_at"]
     from .summary_repair import clear_pending
 
-    if clear_pending(recording):
+    cleared = clear_pending(recording)
+    state = dict(recording.workflow_state or {})
+    if state.pop(SUMMARY_SKIPPED_KEY, None) is not None:
+        recording.workflow_state = state
+        cleared = True
+    if cleared:
         fields.append("workflow_state")
     recording.save(update_fields=fields)
 
@@ -1314,7 +1495,7 @@ def start_resummarize(recording, *, user=None, origin=None, reason=None):
     from .conf import flag
     from .models import Job, JobStatus, JobType, Recording
 
-    from .summary_repair import ORIGIN_USER, ORIGINS
+    from .summary_repair import ORIGIN_STAFF, ORIGIN_USER, ORIGINS
 
     origin = origin or ORIGIN_USER
     if origin not in ORIGINS:
@@ -1341,6 +1522,14 @@ def start_resummarize(recording, *, user=None, origin=None, reason=None):
             # summary of nothing.
             raise NoTranscriptToSummarize("no_transcript")
 
+        skip = None if origin == ORIGIN_STAFF else _summary_skip_reason(locked, transcript)
+        if skip:
+            return _skipped_resummary(locked, skip, user=user, origin=origin, reason=reason), True
+
+        purpose = _summary_purpose(locked)
+        if _remember_purpose(locked, purpose):
+            locked.save(update_fields=["workflow_state", "updated_at"])
+
         job = Job.objects.create(
             workspace_id=locked.workspace_id,
             owner=user if getattr(user, "is_authenticated", False) else locked.owner,
@@ -1354,7 +1543,7 @@ def start_resummarize(recording, *, user=None, origin=None, reason=None):
         try:
             result = submit_task(
                 "llm.summarize",
-                _summarize_payload(locked, transcript),
+                _summarize_payload(locked, transcript, purpose=purpose),
                 recording=locked,
                 deadline_seconds=int(recordings_settings.SUMMARIZE_TIMEOUT_SECONDS),
                 stage="summarize",
@@ -1463,7 +1652,7 @@ def _apply_summary_result(recording, job, result) -> bool:
             summary_repair.mark_pending_from(recording, result)
         return False
 
-    store_summary(recording, summary)
+    store_summary(recording, summary, purpose=_sent_purpose(recording))
     job.status = JobStatus.COMPLETED
     job.progress_percent = 100
     job.completed_at = timezone.now()
@@ -1475,6 +1664,41 @@ def _apply_summary_result(recording, job, result) -> bool:
     options = job.options or {}
     events.emit_resummarized(recording, job_id=job.id, user_id=job.owner_id, origin=options.get("origin"), reason=options.get("reason"))  # emit-check: ok — every caller (start_resummarize / resume_resummarize) holds the atomic block
     return True
+
+
+def _skipped_resummary(recording, skip: str, *, user, origin, reason):
+    """A re-summary the skip policy declined: a completed Job, no call, no event.
+
+    A previous summary stays and stays shown, so nothing is stored over it;
+    a recording with no summary gets the skip outcome. Either way any
+    ``summary_pending`` goes, or the watchdog would re-ask a skip forever.
+    ``recording.resummarized`` is not emitted: no summary was produced.
+    """
+    from django.utils import timezone
+
+    from .models import Job, JobStatus, JobType
+    from .summary_repair import clear_pending
+
+    now = timezone.now()
+    job = Job.objects.create(
+        workspace_id=recording.workspace_id,
+        owner=user if getattr(user, "is_authenticated", False) else recording.owner,
+        recording=recording,
+        type=JobType.SUMMARIZE,
+        status=JobStatus.COMPLETED,
+        progress_percent=100,
+        current_step="summarize",
+        options={"origin": origin, **({"reason": str(reason)[:120]} if reason else {})},
+        result={"skipped": True, "reason": skip},
+        started_at=now,
+        completed_at=now,
+    )
+    if recording.summary:
+        if clear_pending(recording):
+            recording.save(update_fields=["workflow_state", "updated_at"])
+    else:
+        _record_summary_skipped(recording, skip)
+    return job
 
 
 def _fail_job(job, reason: str, detail=None) -> None:
@@ -1935,6 +2159,10 @@ __all__ = [
     "SummarizationUnavailable",
     "DERIVED_SUMMARY",
     "DERIVED_TRANSCRIPT",
+    "SUMMARY_PURPOSE_KEY",
+    "SUMMARY_SKIPPED_KEY",
+    "SummaryPurpose",
+    "summary_skipped",
     "stage_dedupe_key",
     "stage_input_dedupe_key",
     "summary_from_result",

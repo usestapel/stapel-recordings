@@ -158,6 +158,8 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 | `TRANSCRIBE_TIMEOUT_SECONDS` | `1800` | value | Passed to `llm.transcribe` |
 | `SUMMARIZE_ENABLED` | `True` | value | Toggle the summarize step |
 | `SUMMARIZE_MODEL` | `"medium"` | value | Model size for `llm.summarize` |
+| `SUMMARY_PURPOSE_PROVIDER` | `None` | **replace** (dotted path, `no_env`) | Per-recording purpose texts for `llm.summarize` — see "Summary seams" below |
+| `SUMMARY_SKIP_POLICY` | `None` | **replace** (dotted path, `no_env`) | Decline a summary with a stored reason — see "Summary seams" below |
 | `UPLOAD_SESSION_TTL_SECONDS` | `900` | value | Single-PUT session TTL |
 | `MULTIPART_SESSION_TTL_SECONDS` | `86400` | value | Multipart session TTL |
 | `MULTIPART_PART_SIZE` | `10 MiB` | value | Multipart part size |
@@ -554,6 +556,52 @@ under `schemas/emits/`, validated in tests.
   edit path that never heard of staleness still invalidates the summary.
   Both keys are in `metadata.LIBRARY_RESERVED_KEYS`: a client can neither
   forge freshness nor drop the receipt by writing metadata.
+- **Summary seams** — two optional host hooks around the one `llm.summarize`
+  call (merge stage and re-summary alike):
+  - `SUMMARY_PURPOSE_PROVIDER(recording)` → `None` or `{guidance, label,
+    version}` (a dict or an object with those attributes). Resolved once per
+    summarize request. With both texts non-blank
+    (guidance ≤2000, label ≤64 — stapel-agent's caps) the payload gains
+    `purpose_guidance` + `purpose_label` and the key becomes
+    `summary:<transcript hash>:<digest>`, digest =
+    sha256 hex[:16] of
+    `guidance + "\n" + label`. The agent derives every part key (single
+    shot, each chunk, the merge) from that one key, so one digest covers
+    every call of the recording; it puts the full block in the single-shot
+    and merge prompts and only the label line in chunk prompts. The sent
+    `{purpose_prompt_version, purpose_prompt_digest}` is stashed in
+    `workflow_state["summary_purpose"]` at submit and copied into
+    `metadata["derived"]["summary"]` beside `transcript_hash` when the
+    summary is stored. `None`, half a pair, over-length texts or a raising
+    hook: the payload and key are exactly the pre-hook ones (the last three
+    are logged).
+  - `SUMMARY_SKIP_POLICY(recording, transcript)` → `None` (summarize) or a
+    reason string (≤120 chars kept). `transcript` is the
+    `UnifiedTranscript` (`duration_ms`, `segments`). Asked by the merge stage
+    before the segment check (so "no speech" is a stored outcome too) and by
+    every re-summary whose origin is not `staff`. On a reason no
+    `llm.summarize` call is made:
+    - merge stage: `workflow_state["summary_skipped"] = {reason, at}`
+      (`stages.SUMMARY_SKIPPED_KEY`, read with `stages.summary_skipped`),
+      `summary_pending` is dropped, the pipeline completes normally;
+    - re-summary: the Job completes with `result = {"skipped": true,
+      "reason": ...}`, `recording.resummarized` is not emitted (no summary,
+      no charge), `summary_pending` is dropped; a previous summary stays and
+      nothing is stored over it, a recording with no summary gets the skip
+      outcome.
+    `summary_repair.mark_pending` never marks a recording with a stored skip,
+    and `store_summary` drops the skip when a summary is produced. A host
+    whose "delivered" predicate should count a skip reads
+    `stages.summary_skipped(recording)`. Example (the rules are the host's):
+
+    ```python
+    def skip_short_or_silent(recording, transcript):
+        if not any(s.text.strip() for s in transcript.segments):
+            return "no_speech"
+        if 0 < (transcript.duration_ms or 0) < 30_000:
+            return "too_short"
+        return None
+    ```
 - **Reconcile** — `python manage.py recordings_reconcile [--once]` re-emits
   `recording.stage` for recordings stuck past `STUCK_THRESHOLD_SECONDS` in
   any non-terminal, non-upload status (custom stage statuses included;
