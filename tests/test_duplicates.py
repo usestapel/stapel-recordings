@@ -329,3 +329,15 @@ def test_the_verdict_key_is_reserved():
     from stapel_recordings.metadata import reserved_keys
 
     assert duplicates.METADATA_KEY in reserved_keys()
+
+
+def test_a_recording_created_with_the_request_stays_allowed(small_parts, make_recording):
+    first = _uploaded(make_recording)
+    second = make_recording(status=RecordingStatus.CREATED)
+    duplicates.note_requested(second, first)
+    assert duplicates.was_requested(second)
+    session, _, _ = _start(second)  # no allow_duplicate on this call
+    assert session.fingerprint == FP
+    third = make_recording(status=RecordingStatus.CREATED)
+    with pytest.raises(duplicates.UploadDuplicate):
+        _start(third)

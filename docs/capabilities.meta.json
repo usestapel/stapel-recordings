@@ -526,6 +526,10 @@
     "tolerance_seconds": {
       "kind": "factory",
       "intent": "The duration tolerance of the size+duration match (DUPLICATE_DURATION_TOLERANCE_SECONDS)."
+    },
+    "was_requested": {
+      "kind": "predicate",
+      "intent": "True when the owner knowingly asked to process this recording's already-uploaded file again; such a recording's own upload calls are not refused."
     }
   }
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.39.1] — 2026-10-14
+
+- A recording created with `allow_duplicate` stays allowed for its own
+  upload calls (`duplicates.was_requested`): a client whose chunked
+  transport cannot add the flag to multipart start is not refused after the
+  owner chose to process the file again.
+
 ## [0.39.0] — 2026-10-14
 
 The same owner uploading the same file again (`duplicates.py`).

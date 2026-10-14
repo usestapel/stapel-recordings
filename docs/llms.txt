@@ -1,8 +1,8 @@
-# stapel-recordings 0.39.0
+# stapel-recordings 0.39.1
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 81 · extension points 7 · operations 18 · error codes 65.
+Contract: axes 1 · surface 82 · extension points 7 · operations 18 · error codes 65.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -98,6 +98,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The stored SUMMARY_SKIP_POLICY outcome {reason, at}, or None.
 - transcript_handoff_enabled — stapel_recordings.stages.transcript_handoff_enabled
   Whether this deployment asks llm.transcribe to WRITE the transcript to storage and answer with a key instead of the body. Reach for it when a host stage builds its own transcribe payload: 'auto' (default) answers from the storage backend's signs_put_urls, so the question is settled by configuration once, never by how big a given transcript came out.
+- was_requested — stapel_recordings.duplicates.was_requested
+  True when the owner knowingly asked to process this recording's already-uploaded file again; such a recording's own upload calls are not refused.
 ### factory
 - accepted_upload_limit — stapel_recordings.services.accepted_upload_limit
   The single source of the 413 line: the size this deployment will accept for one upload, which is MAX_CONTAINER_UPLOAD_BYTES while audio-only ingest really runs (the container is transport, deleted once its audio track is out) and MAX_UPLOAD_BYTES otherwise. Read it instead of either setting — it fails safe on its own when a host drops the convert stage or points NORMALIZER at the passthrough, so the accepted size cannot outlive the promise that made it large.

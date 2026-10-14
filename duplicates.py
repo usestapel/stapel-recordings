@@ -118,8 +118,10 @@ def refuse_duplicate(
     With ``allow_duplicate`` nothing is raised; when a duplicate exists and
     *recording* (the upload's target) is given, the explicit request is
     recorded on it (``metadata["duplicate_run"]["requested_by_user"]``) so
-    :func:`judge_run` charges that run. Returns the existing recording or
-    ``None``."""
+    :func:`judge_run` charges that run. A *recording* that was created
+    with the request already recorded stays allowed for its own upload, so
+    a client that said ``allow_duplicate`` at create need not repeat it at
+    every upload call. Returns the existing recording or ``None``."""
     existing = find_upload_duplicate(
         owner_id,
         fingerprint,
@@ -127,11 +129,17 @@ def refuse_duplicate(
     )
     if existing is None:
         return None
-    if not allow_duplicate:
+    if not allow_duplicate and not (recording is not None and was_requested(recording)):
         raise UploadDuplicate(existing.pk)
     if recording is not None:
         note_requested(recording, existing)
     return existing
+
+
+def was_requested(recording: Recording) -> bool:
+    """Did the owner knowingly ask to process this recording's file again?"""
+    block = (recording.metadata or {}).get(METADATA_KEY)
+    return isinstance(block, dict) and block.get("requested_by_user") is True
 
 
 def note_requested(recording: Recording, existing: Recording) -> None:
@@ -280,6 +288,7 @@ __all__ = [
     "find_upload_duplicate",
     "refuse_duplicate",
     "note_requested",
+    "was_requested",
     "find_prior_copy",
     "judge_run",
     "completed_fields",
