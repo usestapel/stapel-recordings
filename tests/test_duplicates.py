@@ -267,12 +267,44 @@ def test_legacy_match_by_size_and_duration(make_recording):
     first = make_recording(status=RecordingStatus.COMPLETED, duration_seconds=1800.0, file_size_bytes=12345678)
     near = make_recording(status=RecordingStatus.QUEUED, duration_seconds=1800.3, file_size_bytes=12345678)
     block = duplicates.judge_run(near, run_id="r")
+    # Size and duration are attacker-choosable: a suspected repeat is
+    # recorded, never waived (2026-10-15).
     assert block == {**block, "of": str(first.pk), "match": duplicates.MATCH_SIZE_DURATION,
-                     "charge": duplicates.CHARGE_WAIVED}
+                     "charge": duplicates.CHARGE_CHARGED}
     far = make_recording(status=RecordingStatus.QUEUED, duration_seconds=1801.0, file_size_bytes=12345678)
     assert duplicates.judge_run(far, run_id="r") is None
     other_size = make_recording(status=RecordingStatus.QUEUED, duration_seconds=1800.0, file_size_bytes=12345679)
     assert duplicates.judge_run(other_size, run_id="r") is None
+
+
+def test_a_size_and_duration_match_never_waives(make_recording):
+    """Same size and duration is not the same file: a different meeting
+    padded to the size of a paid one used to ride free."""
+    make_recording(status=RecordingStatus.COMPLETED, duration_seconds=1800.0, file_size_bytes=12345678)
+    other = make_recording(status=RecordingStatus.QUEUED, duration_seconds=1800.0, file_size_bytes=12345678)
+    block = duplicates.judge_run(other, run_id="r")
+    assert block["charge"] == duplicates.CHARGE_CHARGED
+    assert duplicates.completed_fields(other, "r")["charge_waived"] is False
+
+
+def test_a_host_verified_content_match_waives(make_recording):
+    first = make_recording(status=RecordingStatus.COMPLETED, duration_seconds=60.0, file_size_bytes=1)
+    r = make_recording(status=RecordingStatus.QUEUED, duration_seconds=60.0, file_size_bytes=2)
+    block = duplicates.judge_run(r, run_id="r", verified_original=first)
+    assert block["of"] == str(first.pk)
+    assert block["match"] == duplicates.MATCH_CONTENT
+    assert block["charge"] == duplicates.CHARGE_WAIVED
+
+
+def test_a_host_match_of_another_owner_is_ignored(make_recording, django_user_model):
+    stranger = django_user_model.objects.create_user(
+        username="stranger", email="stranger@example.com", password="x-1234567890"
+    )
+    first = make_recording(
+        status=RecordingStatus.COMPLETED, duration_seconds=60.0, file_size_bytes=1, owner=stranger
+    )
+    r = make_recording(status=RecordingStatus.QUEUED, duration_seconds=60.0, file_size_bytes=2)
+    assert duplicates.judge_run(r, run_id="r", verified_original=first) is None
 
 
 def test_legacy_match_ignores_deleted_and_unfinished(make_recording):
@@ -305,7 +337,7 @@ def test_completed_event_carries_the_verdict(make_recording):
 
     first = make_recording(status=RecordingStatus.COMPLETED, duration_seconds=60.0, file_size_bytes=999)
     r = make_recording(status=RecordingStatus.COMPLETED, duration_seconds=60.0, file_size_bytes=999)
-    duplicates.judge_run(r, run_id="run-a")
+    duplicates.judge_run(r, run_id="run-a", verified_original=first)
     events.emit_completed(r, run_id="run-a", attempt=1)
     payload = json.loads(
         OutboxEvent.objects.filter(topic=events.ACTION_COMPLETED).latest("pk").event_json

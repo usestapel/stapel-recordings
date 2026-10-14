@@ -71,6 +71,17 @@ def test_cap_placed_after_input(run):
     )
 
 
+def test_the_encoded_stream_is_the_measured_stream(run):
+    """The duration fallback walks ``a:0``; ffmpeg's default stream choice
+    is the "best" audio stream, which may be a longer one. Encoding a stream
+    other than the one measured let a short first stream carry a long second
+    one past a cap (2026-10-15)."""
+    normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600)
+    cmd = run["cmd"]
+    assert cmd[cmd.index("-map") + 1] == "0:a:0"
+    assert cmd.index("-map") > cmd.index("in.mp4")
+
+
 def test_returns_written_duration(run):
     """The header-probe of what ffmpeg wrote, not a source/cap computation."""
     run["written_duration"] = 600.0

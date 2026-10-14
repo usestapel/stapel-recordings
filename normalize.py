@@ -286,9 +286,14 @@ def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = N
     # -vn is the whole audio-only promise in one flag: no video stream is
     # decoded, so none can reach the output object, and the container that
     # carried it is deleted by the caller.
+    # -map 0:a:0: the FIRST audio stream, the one the duration fallback
+    # (``_scan_duration_by_packets``) measures. Left to itself ffmpeg picks
+    # the "best" audio stream, so a file whose first stream is short and
+    # second is long was measured short and encoded long — past any cap a
+    # caller derived from the measurement.
     cmd = [
         _ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y",
-        "-i", src, "-vn", "-map_metadata", "-1",
+        "-i", src, "-map", "0:a:0", "-vn", "-map_metadata", "-1",
     ]
     if max_duration_seconds is not None:
         # After -i: the limit applies to OUTPUT. Before -i it would cap

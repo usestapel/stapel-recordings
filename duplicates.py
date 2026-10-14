@@ -14,14 +14,17 @@ Two questions, asked at two moments:
 * **Before paid work** (:func:`judge_run`) — is this run a repeat of a
   completed recording the owner already has? Matched by a server-verified
   fingerprint (both uploads multipart-verified) with the earlier run
-  covering at least this run's length, or — for uploads without one — by
-  the same stored byte size and a duration within
-  ``DUPLICATE_DURATION_TOLERANCE_SECONDS``. The verdict is written to the
-  library-reserved ``metadata["duplicate_run"]`` and travels on
-  ``recording.completed`` as ``duplicate_of`` + ``charge_waived``, so a
-  metering consumer can decline to bill the same file twice. A run the
-  owner explicitly asked for (``allow_duplicate``) is marked but not
-  waived.
+  covering at least this run's length, or by a content match the HOST
+  verified server-side (``judge_run(verified_original=...)``, e.g. a hash of
+  the stored audio). Only those two waive the charge. For uploads without
+  either, the same stored byte size and a duration within
+  ``DUPLICATE_DURATION_TOLERANCE_SECONDS`` is recorded as a suspected repeat
+  and still charged: size and duration are attacker-choosable, so they may
+  flag but never waive. The verdict is written to the library-reserved
+  ``metadata["duplicate_run"]`` and travels on ``recording.completed`` as
+  ``duplicate_of`` + ``charge_waived``, so a metering consumer can decline
+  to bill the same file twice. A run the owner explicitly asked for
+  (``allow_duplicate``) is marked but not waived.
 
 The host decides when to call :func:`judge_run` (after the duration is
 measured, before the paid stage); this module only answers.
@@ -42,7 +45,11 @@ from .models import Recording, RecordingStatus, UploadSession
 METADATA_KEY = "duplicate_run"
 
 MATCH_FINGERPRINT = "fingerprint"
+MATCH_CONTENT = "content"
 MATCH_SIZE_DURATION = "size_duration"
+
+#: Matches that prove the same bytes server-side and so may waive a charge.
+WAIVING_MATCHES = frozenset({MATCH_FINGERPRINT, MATCH_CONTENT})
 
 CHARGE_WAIVED = "waived"
 CHARGE_CHARGED = "charged"
@@ -223,19 +230,36 @@ def find_prior_copy(recording: Recording) -> Optional[tuple[Recording, str]]:
     return None
 
 
-def judge_run(recording: Recording, *, run_id: Optional[str]) -> Optional[dict]:
+def judge_run(
+    recording: Recording,
+    *,
+    run_id: Optional[str],
+    verified_original: Optional[Recording] = None,
+) -> Optional[dict]:
     """Decide whether this run repeats a completed recording, and record it.
 
     Writes ``metadata["duplicate_run"] = {of, match, charge, run_id, at}``
-    (and keeps ``requested_by_user``) when this run repeats one; ``charge``
-    is ``charged`` when the owner explicitly asked for the re-run, else
-    ``waived``. A run that repeats nothing clears a stale verdict of an
-    earlier run. Returns the stored block or ``None``.
+    (and keeps ``requested_by_user``) when this run repeats one. ``charge``
+    is ``waived`` only for a server-verified match (:data:`WAIVING_MATCHES`)
+    the owner did not explicitly ask to re-run; a size+duration match and a
+    requested re-run are ``charged``. *verified_original* is a completed
+    recording of the same owner the HOST proved holds the same content
+    (for example by a hash of the stored audio it computed itself); it is
+    used when the library's own verified fingerprint finds nothing. A run
+    that repeats nothing clears a stale verdict of an earlier run. Returns
+    the stored block or ``None``.
     """
     metadata = dict(recording.metadata or {})
     previous = metadata.get(METADATA_KEY) if isinstance(metadata.get(METADATA_KEY), dict) else {}
     requested = bool(previous.get("requested_by_user"))
     found = find_prior_copy(recording)
+    if (
+        verified_original is not None
+        and (found is None or found[1] not in WAIVING_MATCHES)
+        and verified_original.pk != recording.pk
+        and verified_original.owner_id == recording.owner_id
+    ):
+        found = (verified_original, MATCH_CONTENT)
     if found is None:
         if requested:
             block = {**previous, "charge": CHARGE_CHARGED, "run_id": run_id}
@@ -250,7 +274,11 @@ def judge_run(recording: Recording, *, run_id: Optional[str]) -> Optional[dict]:
         block = {
             "of": str(original.pk),
             "match": match,
-            "charge": CHARGE_CHARGED if requested else CHARGE_WAIVED,
+            "charge": (
+                CHARGE_WAIVED
+                if match in WAIVING_MATCHES and not requested
+                else CHARGE_CHARGED
+            ),
             "run_id": run_id,
             "at": timezone.now().isoformat(),
         }
@@ -281,7 +309,9 @@ def completed_fields(recording: Recording, run_id) -> dict:
 __all__ = [
     "METADATA_KEY",
     "MATCH_FINGERPRINT",
+    "MATCH_CONTENT",
     "MATCH_SIZE_DURATION",
+    "WAIVING_MATCHES",
     "CHARGE_WAIVED",
     "CHARGE_CHARGED",
     "UploadDuplicate",

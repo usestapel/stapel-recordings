@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.40.0] — 2026-10-15
+
+- **Duplicate charge waiver needs a server-verified match.** `judge_run`
+  waives only on a verified multipart fingerprint or a content match the
+  host proved itself (new `verified_original=` argument, match `content`).
+  A same-size, same-duration match is still recorded (`size_duration`) but
+  is `charged`: both numbers are attacker-choosable. New constants
+  `MATCH_CONTENT`, `WAIVING_MATCHES`.
+- **The encoder converts the stream the duration was measured on.**
+  `ffmpeg_normalize` maps `0:a:0` explicitly. ffmpeg's default picks the
+  "best" audio stream while the duration fallback walks the first one, so a
+  file with a short first stream and a long second one was measured short
+  and encoded long, past any cap a caller derived from the measurement.
+
 ## [0.39.1] — 2026-10-14
 
 - A recording created with `allow_duplicate` stays allowed for its own
