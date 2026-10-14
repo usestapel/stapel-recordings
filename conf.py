@@ -283,6 +283,10 @@ DEFAULTS = {
         "UPLOAD_SESSION_TTL_SECONDS": 15 * 60,
         "MULTIPART_SESSION_TTL_SECONDS": 24 * 60 * 60,
         "MULTIPART_PART_SIZE": 10 * 1024 * 1024,
+        # The same owner uploading the same file again (duplicates.py): two
+        # completed runs with the same stored size whose durations differ by
+        # at most this many seconds are the same file for the charge guard.
+        "DUPLICATE_DURATION_TOLERANCE_SECONDS": 0.5,
         # Two ceilings, because with AUDIO_ONLY_INGEST on they answer two
         # different questions and one number cannot answer both:
         #

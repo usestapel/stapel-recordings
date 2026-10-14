@@ -73,6 +73,10 @@
     },
     {
       "select": "functions",
+      "path": "duplicates.py"
+    },
+    {
+      "select": "functions",
       "path": "storage.py"
     },
     {
@@ -490,6 +494,38 @@
       "kind": "gate_function",
       "intent": "Keep an llm.* reply's metering in workflow_state['metering'][stage].",
       "instead_of": []
+    },
+    "is_verified": {
+      "kind": "predicate",
+      "intent": "True for a verified multipart session; a single-PUT session may carry the client's fingerprint for duplicate detection but has no parts to mint, list or resume."
+    },
+    "find_upload_duplicate": {
+      "kind": "gate_function",
+      "intent": "The newest live recording of an owner (any workspace) whose finished upload carries a fingerprint. Owner-wide on purpose: the person paying is the owner, not the workspace; an unfinished upload is resumed through lookup, never matched here."
+    },
+    "refuse_duplicate": {
+      "kind": "gate_function",
+      "intent": "Raise UploadDuplicate (409 recording_upload_duplicate, {recording_id}) when the owner already holds this file; with allow_duplicate it records the explicit request on the target recording instead. start_multipart_upload, create_upload_session and the create view already call it — a host upload view gets it by calling those."
+    },
+    "note_requested": {
+      "kind": "factory",
+      "intent": "Record on a recording that its owner knowingly asked to process an already-uploaded file again; judge_run then charges that run."
+    },
+    "find_prior_copy": {
+      "kind": "gate_function",
+      "intent": "Before paid work: a completed live recording of the same owner holding the same file — a server-verified fingerprint whose earlier run covers this one's length, else the same stored size with a duration within DUPLICATE_DURATION_TOLERANCE_SECONDS. No measured duration, no match."
+    },
+    "judge_run": {
+      "kind": "gate_function",
+      "intent": "Write this run's duplicate verdict to metadata['duplicate_run'] (charge waived, or charged when the owner asked) for recording.completed to carry. Call it after the duration is measured and before the paid stage; the billing decision stays with the metering consumer."
+    },
+    "completed_fields": {
+      "kind": "factory",
+      "intent": "duplicate_of + charge_waived for recording.completed, only from a verdict written for that same run_id."
+    },
+    "tolerance_seconds": {
+      "kind": "factory",
+      "intent": "The duration tolerance of the size+duration match (DUPLICATE_DURATION_TOLERANCE_SECONDS)."
     }
   }
 }

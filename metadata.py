@@ -65,6 +65,9 @@ LIBRARY_RESERVED_KEYS = frozenset(
         # ConvertStage's ffprobe summary of the uploaded file: a server
         # record of what was sent, the only one once the source is purged.
         "probe",
+        # The duplicate verdict (duplicates.py): a metering consumer declines
+        # to bill a run marked as a repeat, so a client must not write it.
+        "duplicate_run",
     }
 )
 

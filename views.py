@@ -68,7 +68,7 @@ from stapel_core.django.api.errors import StapelErrorResponse, StapelResponse, S
 from stapel_core.django.api.pagination import AnchorPagination
 from stapel_core.django.api.permissions import IsNotAnonymousUser
 
-from . import chunked, media, pipeline, services, shares, stages
+from . import chunked, duplicates, media, pipeline, services, shares, stages
 from .conf import flag, recordings_settings
 from .dto import (
     CreateRecordingResponse,
@@ -419,6 +419,15 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
             user_id=getattr(request.user, "pk", None), workspace_id=workspace_id
         ):
             return StapelErrorResponse(403, ERR_403_WORKSPACE_FORBIDDEN)
+        fingerprint = data.get("fingerprint")
+        allow_duplicate = bool(data.get("allow_duplicate"))
+        owner_id = getattr(request.user, "pk", None) if request.user.is_authenticated else None
+        try:
+            duplicates.refuse_duplicate(
+                owner_id=owner_id, fingerprint=fingerprint, allow_duplicate=allow_duplicate
+            )
+        except StapelServiceError as exc:
+            return _service_error(exc)
         recording = Recording.objects.create(
             workspace_id=workspace_id,
             owner=request.user if request.user.is_authenticated else None,
@@ -427,8 +436,13 @@ class RecordingListCreateView(SerializerSeamMixin, APIView):
             language=data.get("language"),
             diarization_enabled=data.get("diarization_enabled", True),
         )
+        # Checked above; with a duplicate allowed, the session records the
+        # explicit request on the new row.
         session = services.create_upload_session(
-            recording=recording, filename=data["filename"]
+            recording=recording,
+            filename=data["filename"],
+            fingerprint=fingerprint,
+            allow_duplicate=True,
         )
         payload = CreateRecordingResponse(
             recording=recording_to_dto(recording),
@@ -654,6 +668,7 @@ class MultipartStartView(SerializerSeamMixin, APIView):
                 content_type=content_type,
                 filename=_start_filename(request, recording),
                 fingerprint=data.get("fingerprint"),
+                allow_duplicate=bool(data.get("allow_duplicate")),
             )
         except StapelServiceError as exc:
             return _service_error(exc)

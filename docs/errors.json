@@ -390,6 +390,14 @@
     "owner": "stapel_recordings"
   },
   {
+    "code": "error.409.recording_upload_duplicate",
+    "status": 409,
+    "params": [],
+    "remediation": "fix_input",
+    "en": "You already uploaded this file",
+    "owner": "stapel_recordings"
+  },
+  {
     "code": "error.409.recording_upload_expired",
     "status": 409,
     "params": [],

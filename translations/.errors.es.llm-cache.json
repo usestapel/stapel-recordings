@@ -51,6 +51,10 @@
     "hash": "02d5b727487e0e6f",
     "text": "Esta grabación todavía no tiene transcripción que resumir"
   },
+  "error.409.recording_upload_duplicate": {
+    "hash": "ef638efa8f72891c",
+    "text": "Ya subiste este archivo"
+  },
   "error.409.recording_upload_expired": {
     "hash": "7b61b392774f0f30",
     "text": "Esta subida ha caducado — vuelve a empezarla"

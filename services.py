@@ -39,7 +39,7 @@ from django.db import transaction
 from django.utils import timezone
 from stapel_core.django.api.errors import ERR_500_INTERNAL, StapelServiceError
 
-from . import chunked, events, media_types
+from . import chunked, duplicates, events, media_types
 from .conf import recordings_settings
 from .errors import (
     ERR_400_MULTIPART_PARTS_INVALID,
@@ -378,6 +378,8 @@ def create_upload_session(
     filename: str,
     declared_size_bytes: int | None = None,
     content_type: str | None = None,
+    fingerprint: str | None = None,
+    allow_duplicate: bool = False,
 ) -> UploadSession:
     """Create a single-PUT presigned upload session.
 
@@ -390,7 +392,23 @@ def create_upload_session(
     ceiling — finalize rejects an object measured above it. Without it the
     ceiling is ``MAX_UPLOAD_BYTES``. *content_type* is bound into the
     presigned URL where the backend supports it, so the signature only
-    admits an upload declaring that type."""
+    admits an upload declaring that type.
+
+    *fingerprint* (fingerprint v1 of the whole file, as the client computed
+    it) is kept on the session so a later upload of the same file by the
+    same owner is recognised; it is the client's claim, not verified, and
+    only ever refuses that owner's own uploads. A live recording of the
+    owner already holding it raises :class:`.duplicates.UploadDuplicate`
+    unless *allow_duplicate*."""
+    if fingerprint is not None and not chunked.is_sha256_hex(fingerprint):
+        raise InvalidMultipartParts("fingerprint must be 64 lower-case hex chars")
+    if fingerprint is not None:
+        duplicates.refuse_duplicate(
+            owner_id=recording.owner_id,
+            fingerprint=fingerprint,
+            allow_duplicate=allow_duplicate,
+            recording=recording,
+        )
     max_size = _checked_declared_size(declared_size_bytes, required=False)
     storage = get_storage()
     key = _storage_key(recording, filename=filename, content_type=content_type)
@@ -405,6 +423,7 @@ def create_upload_session(
         storage_key=key,
         max_size_bytes=max_size,
         expires_at=timezone.now() + timedelta(seconds=ttl),
+        fingerprint=fingerprint,
     )
     if recording.status == RecordingStatus.CREATED:
         recording.status = RecordingStatus.UPLOADING
@@ -419,6 +438,7 @@ def start_multipart_upload(
     content_type: str | None = None,
     filename: str,
     fingerprint: str | None = None,
+    allow_duplicate: bool = False,
 ) -> tuple[UploadSession, list[dict], int]:
     """Initiate a multipart upload. Returns (session, parts, part_size).
 
@@ -432,9 +452,21 @@ def start_multipart_upload(
     VERIFIED: the store refuses a part without its SHA-256, the session
     freezes fingerprint / part size / part count, and ``parts`` is empty —
     part URLs are minted later, bound to each part's hash
-    (:func:`.chunked.mint_part_urls`)."""
+    (:func:`.chunked.mint_part_urls`).
+
+    A live recording of the same owner already holding *fingerprint* raises
+    :class:`.duplicates.UploadDuplicate` (409) before any storage state
+    exists, unless *allow_duplicate* — then the explicit request is recorded
+    on *recording* (:func:`.duplicates.judge_run` charges that run)."""
     if fingerprint is not None and not chunked.is_sha256_hex(fingerprint):
         raise InvalidMultipartParts("fingerprint must be 64 lower-case hex chars")
+    if fingerprint is not None:
+        duplicates.refuse_duplicate(
+            owner_id=recording.owner_id,
+            fingerprint=fingerprint,
+            allow_duplicate=allow_duplicate,
+            recording=recording,
+        )
     max_size = _checked_declared_size(file_size_bytes, required=True)
     part_size = int(recordings_settings.MULTIPART_PART_SIZE)
     num_parts = max(1, (max_size + part_size - 1) // part_size)

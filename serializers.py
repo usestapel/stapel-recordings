@@ -50,6 +50,12 @@ class CreateRecordingRequestSerializer(serializers.Serializer):
     # The client's original filename. Its extension is validated against
     # UPLOAD_EXTENSION_ALLOWLIST and used to build the upload object key.
     filename = serializers.CharField(max_length=512)
+    # Fingerprint v1 of the file (stapel_recordings.chunked), as the client
+    # computed it: the same owner holding it already answers 409
+    # recording_upload_duplicate before any row exists, unless
+    # allow_duplicate.
+    fingerprint = serializers.RegexField(r"^[0-9a-f]{64}$", required=False)
+    allow_duplicate = serializers.BooleanField(required=False, default=False)
 
     def validate_source_type(self, value):
         from .sources import is_valid_source_type, registered_source_types
@@ -83,6 +89,9 @@ class MultipartStartRequestSerializer(serializers.Serializer):
     # Fingerprint v1 of the whole file (stapel_recordings.chunked). Present =
     # a verified upload: parts are minted later, bound to their hashes.
     fingerprint = serializers.RegexField(_SHA256_HEX, required=False)
+    # The owner already holds this file (409 recording_upload_duplicate):
+    # true processes it again, knowingly.
+    allow_duplicate = serializers.BooleanField(required=False, default=False)
 
 
 class MultipartStartResponseSerializer(StapelDataclassSerializer):

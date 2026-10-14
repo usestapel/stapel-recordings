@@ -24,6 +24,9 @@ ERR_409_UPLOAD_PARTS_MISSING = "error.409.recording_upload_parts_missing"
 ERR_409_UPLOAD_PART_MISMATCH = "error.409.recording_upload_part_mismatch"
 # The upload session's deadline passed before it was completed: start again.
 ERR_409_UPLOAD_EXPIRED = "error.409.recording_upload_expired"
+# The owner already has a live recording holding this exact file (by
+# fingerprint v1). Carries {recording_id}; repeat with allow_duplicate.
+ERR_409_UPLOAD_DUPLICATE = "error.409.recording_upload_duplicate"
 ERR_415_UNSUPPORTED_MEDIA = "error.415.recording_unsupported_media"
 # Share links. Unknown / revoked / expired / deleted all answer the same
 # 404: telling them apart tells a probing client which guessed links exist.
@@ -68,6 +71,7 @@ STAPEL_RECORDINGS_ERRORS = {
     ERR_409_UPLOAD_PARTS_MISSING: "{count} upload parts have not arrived yet: {missing}",
     ERR_409_UPLOAD_PART_MISMATCH: "Upload part {part_number} does not match its checksum",
     ERR_409_UPLOAD_EXPIRED: "This upload has expired — start it again",
+    ERR_409_UPLOAD_DUPLICATE: "You already uploaded this file",
     ERR_415_UNSUPPORTED_MEDIA: "Upload file type is not supported",
     ERR_404_SHARE_NOT_FOUND: "Share link not found",
     ERR_401_SHARE_PASSCODE_REQUIRED: "This share link requires a passcode",
@@ -107,6 +111,7 @@ __all__ = [
     "ERR_409_UPLOAD_PARTS_MISSING",
     "ERR_409_UPLOAD_PART_MISMATCH",
     "ERR_409_UPLOAD_EXPIRED",
+    "ERR_409_UPLOAD_DUPLICATE",
     "ERR_415_UNSUPPORTED_MEDIA",
     "ERR_404_SHARE_NOT_FOUND",
     "ERR_401_SHARE_PASSCODE_REQUIRED",

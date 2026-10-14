@@ -15,6 +15,8 @@
     "word_count": {"type": "integer"},
     "provider_used": {"type": ["string", "null"]},
     "run_id": {"type": "string"},
-    "attempt": {"type": "integer", "minimum": 1}
+    "attempt": {"type": "integer", "minimum": 1},
+    "duplicate_of": {"type": "string", "description": "Present when this run repeats a completed recording of the same owner (same file): that recording's id."},
+    "charge_waived": {"type": "boolean", "description": "With duplicate_of: true when the run was not asked for explicitly, so a metering consumer does not bill the same file twice; false when the owner chose to process it again."}
   }
 }

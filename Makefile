@@ -36,11 +36,13 @@ PYTHON ?= python3
 # sentence wrong is what let a paid re-run reuse a trimmed result)
 # landed at 8382/8000, so it moves to 9000 — and 0.33.0's retry_refusal
 # (a retry that cannot produce a source says so) landed at 9135/9000, so it
-# moves to 10000. Raise the ceiling, do NOT
+# moves to 10000 — and 0.39.0's duplicate guard (owner-wide refusal plus
+# the charge verdict, eight entries) landed at 10518/10000, so it moves to
+# 11000. Raise the ceiling, do NOT
 # shorten `intent` lines in docs/capabilities.meta.json to fit — a trimmed
 # context file is indistinguishable from a complete one at the point of use,
 # which is the failure mode the budget gate exists to prevent.
-# contract-check below enforces the same 10000 ceiling.
+# contract-check below enforces the same 11000 ceiling.
 #
 # README.md is the SIXTH artifact (tracker #257): assembled by
 # stapel_tools.readme from docs/readme.md (the human half — what this module
@@ -50,7 +52,7 @@ PYTHON ?= python3
 contract:
 	$(PYTHON) -m stapel_recordings._codegen --out docs
 	$(PYTHON) -m stapel_recordings._capabilities --out docs
-	$(PYTHON) -m stapel_tools.llms_txt . --out docs --budget 10000
+	$(PYTHON) -m stapel_tools.llms_txt . --out docs --budget 11000
 	$(PYTHON) -m stapel_tools.readme .
 
 # Drift gate: regenerate into a temp dir and diff against the committed docs/*.json
@@ -59,7 +61,7 @@ contract-check:
 	@tmp=$$(mktemp -d); \
 	$(PYTHON) -m stapel_recordings._codegen --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
 	$(PYTHON) -m stapel_recordings._capabilities --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
-	$(PYTHON) -m stapel_tools.llms_txt . --out "$$tmp" --budget 10000 || { rm -rf "$$tmp"; exit 1; }; \
+	$(PYTHON) -m stapel_tools.llms_txt . --out "$$tmp" --budget 11000 || { rm -rf "$$tmp"; exit 1; }; \
 	rc=0; \
 	for f in schema.json flows.json errors.json capabilities.json llms.txt; do \
 		if ! diff -q "docs/$$f" "$$tmp/$$f" >/dev/null 2>&1; then \

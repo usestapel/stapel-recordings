@@ -168,8 +168,8 @@ def hex_to_b64(digest_hex: str) -> str:
 
 
 def _require_open_verified(session: UploadSession) -> None:
-    if not session.fingerprint:
-        raise NotAVerifiedUpload(f"session {session.pk} has no fingerprint")
+    if not is_verified(session):
+        raise NotAVerifiedUpload(f"session {session.pk} is not a verified upload")
     if session.finalized_at:
         raise NotAVerifiedUpload(f"session {session.pk} is already finalized")
     if session.expires_at <= timezone.now():
@@ -268,8 +268,8 @@ def manifest(session: UploadSession) -> dict:
 
     ``uploaded_parts`` lists only parts with the expected size; a part of
     any other size is reported missing, so a resume re-sends it."""
-    if not session.fingerprint:
-        raise NotAVerifiedUpload(f"session {session.pk} has no fingerprint")
+    if not is_verified(session):
+        raise NotAVerifiedUpload(f"session {session.pk} is not a verified upload")
     good = _good_parts(session, _stored_parts(session))
     total = int(session.total_parts)
     return {
@@ -278,6 +278,16 @@ def manifest(session: UploadSession) -> dict:
         "uploaded_parts": [good[n] for n in sorted(good)],
         "missing": [n for n in range(1, total + 1) if n not in good],
     }
+
+
+def is_verified(session: UploadSession) -> bool:
+    """A verified multipart session (fingerprint + frozen part layout).
+
+    A single-PUT session may carry the client's fingerprint too (so the same
+    file is recognised later), but it has no parts to mint or resume."""
+    return bool(
+        session.fingerprint and session.is_multipart and session.part_size_bytes
+    )
 
 
 def lookup(workspace_id, fingerprint: str, *, queryset=None) -> dict | None:
@@ -307,7 +317,7 @@ def lookup(workspace_id, fingerprint: str, *, queryset=None) -> dict | None:
         recording = session.recording
         if session.finalized_at or recording.file_storage_key or recording.normalized_storage_key:
             return {"state": "complete", "recording": recording, "session": session}
-        if session.expires_at > now:
+        if session.expires_at > now and is_verified(session):
             return {"state": "in_progress", "recording": recording, "session": session}
     return None
 
@@ -388,6 +398,7 @@ __all__ = [
     "mint_part_urls",
     "manifest",
     "lookup",
+    "is_verified",
     "verify_manifest",
     "UploadPartsMissing",
     "UploadPartMismatch",

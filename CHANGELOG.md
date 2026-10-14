@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.39.0] — 2026-10-14
+
+The same owner uploading the same file again (`duplicates.py`).
+
+- Upload refusal: a fingerprint v1 that a live recording of the same owner
+  already holds (any workspace, finished uploads only, deleted ones
+  ignored) answers `409 error.409.recording_upload_duplicate` with
+  `{recording_id}` — from `services.start_multipart_upload`,
+  `services.create_upload_session` and the create view (before any row
+  exists). `allow_duplicate: true` (body, or the keyword) processes it
+  anyway and records the request in `metadata["duplicate_run"]`.
+- `create_upload_session(fingerprint=…)`: a single-PUT session keeps the
+  client's fingerprint (unverified) so a later upload of the same small
+  file is recognised. `chunked.is_verified(session)`; lookup offers only
+  verified multipart sessions for resume, and the fingerprint-only verbs
+  refuse a single-PUT session.
+- Charge guard: `duplicates.judge_run(recording, run_id=…)` writes
+  `metadata["duplicate_run"] = {of, match, charge, run_id, at}` when this
+  run repeats a completed recording of the same owner (server-verified
+  fingerprint whose earlier run covers this length, else the same stored
+  size and a duration within `DUPLICATE_DURATION_TOLERANCE_SECONDS`, default
+  0.5). `charge` is `waived`, or `charged` when the owner asked for the
+  re-run. `recording.completed` carries `duplicate_of` + `charge_waived` for
+  a verdict of that same run (schema: two optional properties).
+- `duplicate_run` joins the library-reserved metadata keys.
+
 ## [0.38.0] — 2026-10-14
 
 Paired release: requires the stapel-agent release that accepts `context`

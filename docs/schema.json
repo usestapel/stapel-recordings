@@ -906,6 +906,14 @@
           "filename": {
             "type": "string",
             "maxLength": 512
+          },
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "allow_duplicate": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
@@ -1168,6 +1176,10 @@
           "fingerprint": {
             "type": "string",
             "pattern": "^[0-9a-f]{64}$"
+          },
+          "allow_duplicate": {
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [

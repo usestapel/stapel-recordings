@@ -52,6 +52,10 @@
       "hash": "02d5b727487e0e6f",
       "origin": "llm"
     },
+    "error.409.recording_upload_duplicate": {
+      "hash": "ef638efa8f72891c",
+      "origin": "llm"
+    },
     "error.409.recording_upload_expired": {
       "hash": "7b61b392774f0f30",
       "origin": "llm"
@@ -140,6 +144,10 @@
     },
     "error.409.recording_no_transcript": {
       "hash": "02d5b727487e0e6f",
+      "origin": "llm"
+    },
+    "error.409.recording_upload_duplicate": {
+      "hash": "ef638efa8f72891c",
       "origin": "llm"
     },
     "error.409.recording_upload_expired": {

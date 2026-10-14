@@ -33,6 +33,7 @@ for the keys marked `no_env`, which skip the environment step entirely (see
 | UPLOAD_SESSION_TTL_SECONDS | env | single-shot upload session lifetime. | no | 900 |
 | MULTIPART_SESSION_TTL_SECONDS | env | multipart upload session lifetime. | no | 86400 |
 | MULTIPART_PART_SIZE | env | multipart part size (bytes). | no | 10485760 |
+| DUPLICATE_DURATION_TOLERANCE_SECONDS | env | two completed runs of one owner with the same stored size and durations this close are the same file (`duplicates.judge_run`). | no | 0.5 |
 | MAX_CONTAINER_UPLOAD_BYTES | env | ceiling on what we **receive** while audio-only ingest runs (the container is discarded after extraction, so this bounds bandwidth and ffmpeg time). | no | 17179869184 |
 | MAX_STORED_BYTES | env | ceiling on what we **keep** — enforced on the extracted audio by the convert stage (≈47 h at the Opus profile). | no | 536870912 |
 | MAX_UPLOAD_BYTES | env | ceiling when nothing is extracted (`AUDIO_ONLY_INGEST` off), where received and stored are the same object. | no | 2147483648 |

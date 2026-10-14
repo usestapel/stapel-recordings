@@ -475,7 +475,7 @@ under `schemas/emits/`, validated in tests.
 | Action (emit) | `recording.uploaded` | public entry | `schemas/emits/recording.uploaded.json` |
 | Action (emit+consume) | `recording.stage` | internal driver step | `schemas/emits/recording.stage.json` |
 | Action (emit) | `recording.stage_completed` | public, per-stage; carries `run_id` + `attempt` | `schemas/emits/recording.stage_completed.json` |
-| Action (emit) | `recording.completed` | public terminal; carries `run_id` + `attempt` (the metering key) | `schemas/emits/recording.completed.json` |
+| Action (emit) | `recording.completed` | public terminal; carries `run_id` + `attempt` (the metering key), and `duplicate_of` + `charge_waived` when this run repeats a completed recording of the same owner (`duplicates.judge_run`) | `schemas/emits/recording.completed.json` |
 | Action (emit) | `recording.failed` | public DLQ terminal; carries `run_id` + `attempt` | `schemas/emits/recording.failed.json` |
 | Action (emit) | `recording.resummarized` | public — a summary was regenerated on request (a host meters/bills on this; `job_id` is the idempotency key) | `schemas/emits/recording.resummarized.json` |
 | Action (consume) | `recording.uploaded` | start the pipeline | — |
@@ -488,6 +488,20 @@ under `schemas/emits/`, validated in tests.
 | Function (**call**) | `llm.transcribe` | STT | provided by **stapel-agent** |
 | Function (**call**) | `llm.summarize` | summary | provided by **stapel-agent** |
 | Function (**call**) | `llm.embed` | embeddings (opt-in vector layer only) | provided by **stapel-agent** ≥ 0.4 |
+
+**The same file twice (`duplicates.py`).** Upload: a fingerprint v1 that a
+live recording of the same owner (any workspace) already holds — finished
+uploads only — is refused with `409 error.409.recording_upload_duplicate`
+`{recording_id}` by `start_multipart_upload`, `create_upload_session` (which
+now keeps the client's fingerprint on single-PUT sessions too, unverified)
+and the create view, unless the body says `allow_duplicate: true`; then the
+request is recorded in the reserved `metadata["duplicate_run"]`. Charge: a
+host calls `duplicates.judge_run(recording, run_id=…)` after the duration is
+measured and before its paid stage; the verdict (`waived`, or `charged` when
+the owner asked) rides `recording.completed`. Matching: verified fingerprint
+with the earlier run covering this length, else same stored size and
+duration within `DUPLICATE_DURATION_TOLERANCE_SECONDS`. Billing stays the
+consumer's decision.
 
 **Per-stage telemetry (paired with stapel-agent).** Every `llm.*` payload
 the library sends carries `context: {recording_id, stage, run_id, attempt}`

@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.38.0",
+  "version": "0.39.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -88,6 +88,12 @@
       "intent": "True for a 64-char lower-case hex digest — the wire form of every part hash and fingerprint."
     },
     {
+      "name": "is_verified",
+      "kind": "predicate",
+      "path": "stapel_recordings.chunked.is_verified",
+      "intent": "True for a verified multipart session; a single-PUT session may carry the client's fingerprint for duplicate detection but has no parts to mint, list or resume."
+    },
+    {
       "name": "lookup",
       "kind": "gate_function",
       "path": "stapel_recordings.chunked.lookup",
@@ -116,6 +122,48 @@
       "kind": "gate_function",
       "path": "stapel_recordings.chunked.verify_manifest",
       "intent": "The completion check of a verified upload: every part present at its size, stored digests equal the declared ones, and together they hash to the session fingerprint; raises the 409 parts_missing / part_mismatch refusals and returns the store's own part list to complete with."
+    },
+    {
+      "name": "completed_fields",
+      "kind": "factory",
+      "path": "stapel_recordings.duplicates.completed_fields",
+      "intent": "duplicate_of + charge_waived for recording.completed, only from a verdict written for that same run_id."
+    },
+    {
+      "name": "find_prior_copy",
+      "kind": "gate_function",
+      "path": "stapel_recordings.duplicates.find_prior_copy",
+      "intent": "Before paid work: a completed live recording of the same owner holding the same file — a server-verified fingerprint whose earlier run covers this one's length, else the same stored size with a duration within DUPLICATE_DURATION_TOLERANCE_SECONDS. No measured duration, no match."
+    },
+    {
+      "name": "find_upload_duplicate",
+      "kind": "gate_function",
+      "path": "stapel_recordings.duplicates.find_upload_duplicate",
+      "intent": "The newest live recording of an owner (any workspace) whose finished upload carries a fingerprint. Owner-wide on purpose: the person paying is the owner, not the workspace; an unfinished upload is resumed through lookup, never matched here."
+    },
+    {
+      "name": "judge_run",
+      "kind": "gate_function",
+      "path": "stapel_recordings.duplicates.judge_run",
+      "intent": "Write this run's duplicate verdict to metadata['duplicate_run'] (charge waived, or charged when the owner asked) for recording.completed to carry. Call it after the duration is measured and before the paid stage; the billing decision stays with the metering consumer."
+    },
+    {
+      "name": "note_requested",
+      "kind": "factory",
+      "path": "stapel_recordings.duplicates.note_requested",
+      "intent": "Record on a recording that its owner knowingly asked to process an already-uploaded file again; judge_run then charges that run."
+    },
+    {
+      "name": "refuse_duplicate",
+      "kind": "gate_function",
+      "path": "stapel_recordings.duplicates.refuse_duplicate",
+      "intent": "Raise UploadDuplicate (409 recording_upload_duplicate, {recording_id}) when the owner already holds this file; with allow_duplicate it records the explicit request on the target recording instead. start_multipart_upload, create_upload_session and the create view already call it — a host upload view gets it by calling those."
+    },
+    {
+      "name": "tolerance_seconds",
+      "kind": "factory",
+      "path": "stapel_recordings.duplicates.tolerance_seconds",
+      "intent": "The duration tolerance of the size+duration match (DUPLICATE_DURATION_TOLERANCE_SECONDS)."
     },
     {
       "name": "erase",

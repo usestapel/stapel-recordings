@@ -117,7 +117,14 @@ def emit_completed(recording, *, run_id=None, attempt=None) -> None:
     metering this event keys its idempotency on (``recording:<id>:<run_id>``),
     because the same recording can be run again and the rest of this payload
     would be identical.
+
+    ``duplicate_of`` + ``charge_waived`` are present only when
+    :func:`.duplicates.judge_run` found THIS run repeating a completed
+    recording of the same owner; ``charge_waived`` false means the owner
+    asked for the re-run explicitly.
     """
+    from .duplicates import completed_fields
+
     emit(
         ACTION_COMPLETED,
         {
@@ -130,6 +137,7 @@ def emit_completed(recording, *, run_id=None, attempt=None) -> None:
             "word_count": recording.word_count,
             "provider_used": recording.provider_used,
             **_run_fields(run_id, attempt),
+            **completed_fields(recording, run_id),
         },
         key=str(recording.id),
     )
