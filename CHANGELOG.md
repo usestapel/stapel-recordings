@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.41.0] — 2026-10-15
+
+- **Search sees only finished, live recordings.** `vector.search` (text,
+  vector and hybrid arms, and therefore `vector.qa.answer_question`) scopes
+  every query to `status=completed` and `deleted_at IS NULL`. Segments are
+  written long before a run completes and the transcript endpoints withhold
+  them until then; search no longer hands the same text out as snippets or
+  citations for runs that park for payment, fail, or were deleted.
+- **A failed summary task no longer fails the recording.** New stage hook
+  `Stage.task_failed(recording, ctx, error)` — called by `fail_stage` when
+  the awaited task failed for good; return a ctx to complete the stage,
+  `None` (default) to DLQ as before. `MergeStage` completes without a
+  summary and marks it owed (`summary_pending`, `failure_class: "task"`), so
+  the repair watchdog re-asks summarize-only with `origin=pipeline_repair`.
+- **An input refusal from STT is fatal.** `raise_for_transcribe_failure(result)`
+  (public, used by `TranscribeStage.resume`): `failure_class: "input"` from
+  stapel-agent >= 0.37.0 (every provider returned an empty transcript) is
+  `StageFatal("empty_transcript")` instead of a paid retry per re-drive.
+- **`pipeline.close_recording(recording_id, reason=, detail=)`** takes a
+  recording the pipeline still moves out of it (`error`,
+  `closed:<reason>`, one `recording.failed`) for a decision no retry can
+  change; terminal and client-held recordings are left alone.
+- **A waived duplicate reuses the original's transcript.**
+  `duplicates.reusable_original(recording, run_id)` + `copy_transcript()`:
+  when this run's duplicate verdict waived the charge (server-verified same
+  bytes, not an explicit re-run) and the original is a live completed
+  recording of the same owner transcribed under the same language mode,
+  language, provider override and diarization setting, `TranscribeStage`
+  copies its machine transcript (pre-edit text, provider labels, no display
+  names) instead of calling `llm.transcribe`. Metering records `calls: 0`,
+  `cost_usd: 0`, `cost_basis: "cached"`; `workflow_state.transcript_reused_from`
+  names the source. Host stages that replace `run()` can call
+  `TranscribeStage.reuse_waived_duplicate(recording)` first.
+- **`Recording.confidence_avg` and `processing_latency_ms` are written**:
+  the mean of the provider's segment confidences (null when none reported)
+  and run start → completion.
+
 ## [0.40.0] — 2026-10-15
 
 - **Duplicate charge waiver needs a server-verified match.** `judge_run`

@@ -224,6 +224,18 @@ class Stage:
             f"stage {self.name!r} submitted a task but cannot accept its result"
         )
 
+    def task_failed(self, recording, ctx: dict, error: str):
+        """The task this stage awaited failed for good. Return a ctx to
+        complete the stage anyway, or ``None`` (the default) to fail the
+        recording.
+
+        Called by the driver after the task primitive exhausted its own
+        attempts. A stage whose task produces an optional artifact (the
+        summary) overrides this: the recording is not lost because an extra
+        could not be made.
+        """
+        return None
+
 
 class _CallableStage(Stage):
     """Adapter so a plain function can be registered as a stage."""
@@ -833,6 +845,11 @@ def submit_task(
     raise StageAwaiting(task_id, kind)
 
 
+#: ``workflow_state`` key: ``{of, run_id}`` when this run's transcript was
+#: copied from the completed original it repeats.
+TRANSCRIPT_REUSED_KEY = "transcript_reused_from"
+
+
 class TranscribeStage(Stage):
     """Hand transcription to the ``llm.transcribe`` task (stapel-agent) and
     persist Speaker/Segment from its result. STT provider choice and
@@ -962,9 +979,50 @@ class TranscribeStage(Stage):
             payload["transcript_key"] = key
         return payload
 
+    def reuse_waived_duplicate(self, recording) -> bool:
+        """Copy the transcript of the completed original this run repeats.
+
+        True when it did: a run whose charge the duplicate guard waived
+        (same bytes, server-verified, the owner did not ask for a second
+        run) is given the original's transcript instead of a second paid
+        provider call. The stage's metering says so — no call, zero cost,
+        basis ``cached`` — and ``workflow_state["transcript_reused_from"]``
+        names the source. Public so a host stage that replaces :meth:`run`
+        can ask the same question first.
+        """
+        from . import duplicates
+        from .pipeline import run_identity
+
+        run_id = run_identity(recording).get("run_id")
+        source = duplicates.reusable_original(recording, run_id)
+        if source is None:
+            return False
+        copy_transcript(source, recording)
+        state = dict(recording.workflow_state or {})
+        state[TRANSCRIPT_REUSED_KEY] = {"of": str(source.pk), "run_id": run_id}
+        recording.workflow_state = state
+        record_metering(
+            recording,
+            self.name,
+            {"metering": {
+                "provider": source.provider_used,
+                "cost_usd": 0,
+                "cost_basis": "cached",
+                "calls": 0,
+            }},
+        )
+        logger.info(
+            "transcribe: recording %s reuses the transcript of %s (waived duplicate) "
+            "— no provider call", recording.id, source.pk,
+        )
+        return True
+
     def run(self, recording, ctx):
         if recording.segments.exists() and not self.is_stale(recording, ctx):
             return ctx  # idempotent: already transcribed, from THIS audio
+
+        if self.reuse_waived_duplicate(recording):
+            return ctx
 
         # BEFORE PAYING AGAIN, LOOK WHERE THE LAST ANSWER WOULD BE.
         #
@@ -1017,12 +1075,7 @@ class TranscribeStage(Stage):
             return ctx
         # Before the verdict: a failed call may still have been paid for.
         record_metering(recording, self.name, result)
-        if not isinstance(result, dict) or result.get("status") != "ok":
-            reason = (
-                (result or {}).get("reason", "transcribe_failed")
-                if isinstance(result, dict) else "transcribe_failed"
-            )
-            raise StageRetryable("transcribe_failed", str(reason))
+        raise_for_transcribe_failure(result)
 
         transcript = transcript_from_result(result)
         # A finished stage is one that produced a transcript. "status: ok"
@@ -1148,6 +1201,29 @@ class MergeStage(Stage):
             stage=self,
         )
         return self.resume(recording, ctx, result)
+
+    def task_failed(self, recording, ctx, error):
+        """The summarize task failed for good — a deadline, a crashed worker,
+        an exhausted attempt budget. The transcript is stored and is the
+        product, so the recording completes without a summary, and the
+        summary is owed: the repair watchdog asks again (summarize-only,
+        ``origin=pipeline_repair``) on its backoff. The driver saves
+        ``workflow_state``."""
+        from . import summary_repair
+
+        logger.warning(
+            "merge: summary task for recording %s failed (%s) — completing "
+            "without a summary", recording.id, str(error)[:300],
+        )
+        if summary_repair.enabled() and not recording.summary:
+            summary_repair.mark_pending(
+                recording,
+                reason="task_failed",
+                detail=str(error)[:500],
+                failure_class="task",
+                save=False,
+            )
+        return ctx
 
     def resume(self, recording, ctx, result):
         # The summary is best-effort: the transcript already exists, and the
@@ -2001,6 +2077,36 @@ def transcript_from_result(result: dict) -> dict:
     return transcript
 
 
+def raise_for_transcribe_failure(result) -> None:
+    """Turn a failed ``llm.transcribe`` result into the stage's outcome.
+
+    No-op for ``status: ok``. A failure the agent classifies as
+    ``failure_class: "input"`` is :class:`StageFatal` — the request itself
+    was answered (every provider returned an empty transcript, stapel-agent
+    >= 0.37.0), so the same request gets the same answer again and a retry
+    only pays every provider once more. Measured on a client host
+    (2026-10-13): a ten-minute file of non-speech was re-driven four times,
+    both providers paid on every pass. Anything else stays
+    :class:`StageRetryable`.
+
+    Public so a host stage that calls ``llm.transcribe`` itself (a biased
+    transcription) reaches the same verdict as this module's stage.
+    """
+    if isinstance(result, dict) and result.get("status") == "ok":
+        return
+    reason = (
+        (result or {}).get("reason", "transcribe_failed")
+        if isinstance(result, dict) else "transcribe_failed"
+    )
+    if isinstance(result, dict) and result.get("failure_class") == "input":
+        code = result.get("reason_code")
+        raise StageFatal(
+            "empty_transcript" if code == "empty" else "transcribe_refused",
+            str(reason),
+        )
+    raise StageRetryable("transcribe_failed", str(reason))
+
+
 def refuse_empty_transcript(recording, transcript: dict, result: dict) -> None:
     """An empty transcript over real audio is a failed transcription.
 
@@ -2135,9 +2241,72 @@ def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_
         recording.word_count = word_count
         recording.provider_used = provider_used
         recording.fallback_used = fallback_used
+        recording.confidence_avg = _mean_confidence(o.confidence for o in objs)
         recording.save(update_fields=[
             "language", "duration_seconds", "segments_count", "speakers_count",
-            "word_count", "provider_used", "fallback_used", "updated_at",
+            "word_count", "provider_used", "fallback_used", "confidence_avg",
+            "updated_at",
+        ])
+
+
+def _mean_confidence(values) -> float | None:
+    """Mean of the confidences the provider reported; ``None`` when it
+    reported none (unmeasured is not zero)."""
+    known = [float(v) for v in values if v is not None]
+    return round(sum(known) / len(known), 4) if known else None
+
+
+def copy_transcript(source, recording) -> None:
+    """Give *recording* the transcript *source* holds — rows, not a call.
+
+    For a run that repeats a completed recording of the same owner (see
+    :func:`.duplicates.reusable_original`): the provider would be paid to
+    hear the same bytes again. Copies the MACHINE transcript — an edited
+    segment contributes its ``original_text`` and speakers keep their
+    provider labels without the source's display names — so nothing the
+    owner typed into the source travels with the copy. Replaces atomically,
+    like :func:`_persist_transcript`.
+    """
+    from django.db import transaction
+
+    with transaction.atomic():
+        recording.segments.all().delete()
+        recording.speakers.all().delete()
+        speaker_map = {}
+        for idx, sp in enumerate(source.speakers.order_by("label")):
+            speaker_map[sp.pk] = Speaker.objects.create(
+                recording=recording,
+                label=sp.label,
+                color=Speaker.color_for_index(idx),
+                total_duration_seconds=sp.total_duration_seconds,
+                segment_count=sp.segment_count,
+            )
+        objs = [
+            Segment(
+                recording=recording,
+                speaker=speaker_map.get(seg.speaker_id),
+                sequence_num=seg.sequence_num,
+                start_time=seg.start_time,
+                end_time=seg.end_time,
+                text=(seg.original_text if seg.is_edited and seg.original_text else seg.text),
+                confidence=seg.confidence,
+                word_count=seg.word_count,
+                language=seg.language,
+                words_json=seg.words_json,
+            )
+            for seg in source.segments.order_by("sequence_num")
+        ]
+        Segment.objects.bulk_create(objs)
+        recording.language = source.language or recording.language
+        recording.segments_count = len(objs)
+        recording.speakers_count = len(speaker_map)
+        recording.word_count = sum(o.word_count or 0 for o in objs)
+        recording.provider_used = source.provider_used
+        recording.fallback_used = source.fallback_used
+        recording.confidence_avg = _mean_confidence(o.confidence for o in objs)
+        recording.save(update_fields=[
+            "language", "segments_count", "speakers_count", "word_count",
+            "provider_used", "fallback_used", "confidence_avg", "updated_at",
         ])
 
 
@@ -2309,6 +2478,10 @@ __all__ = [
     "transcript_handoff_enabled",
     "handoff_key",
     "transcript_from_result",
+    "raise_for_transcribe_failure",
+    "copy_transcript",
+    "record_metering",
+    "TRANSCRIPT_REUSED_KEY",
     "StageError",
     "StageRetryable",
     "StageFatal",

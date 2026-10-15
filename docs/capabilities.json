@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.40.0",
+  "version": "0.41.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -160,6 +160,12 @@
       "intent": "Raise UploadDuplicate (409 recording_upload_duplicate, {recording_id}) when the owner already holds this file; with allow_duplicate it records the explicit request on the target recording instead. start_multipart_upload, create_upload_session and the create view already call it — a host upload view gets it by calling those."
     },
     {
+      "name": "reusable_original",
+      "kind": "gate_function",
+      "path": "stapel_recordings.duplicates.reusable_original",
+      "intent": "The completed original whose transcript this run may reuse: only for a charge-waived, server-verified duplicate of the same owner transcribed under the same parameters. None otherwise."
+    },
+    {
       "name": "tolerance_seconds",
       "kind": "factory",
       "path": "stapel_recordings.duplicates.tolerance_seconds",
@@ -200,6 +206,12 @@
       "kind": "predicate",
       "path": "stapel_recordings.erasure.recordings_for",
       "intent": "Turn a gdpr (subject_type, subject_key) pair into the recordings this module owns about that subject — the one place the four subject vocabularies are resolved (owner, workspace, meeting-or-metadata-link, id). Returns an empty queryset for a key that addresses nothing rather than raising, because an owner that cannot find a subject owns nothing about it and a zero-count receipt is the honest answer."
+    },
+    {
+      "name": "close_recording",
+      "kind": "gate_function",
+      "path": "stapel_recordings.pipeline.close_recording",
+      "intent": "Take a recording the pipeline still moves out of it for good (error, closed:<reason>, one recording.failed) when a person decided it cannot be served; a re-drive or a late task result is then a no-op. Terminal and client-held recordings are left alone."
     },
     {
       "name": "default_pipeline_resolver",
@@ -420,6 +432,12 @@
       ]
     },
     {
+      "name": "copy_transcript",
+      "kind": "gate_function",
+      "path": "stapel_recordings.stages.copy_transcript",
+      "intent": "Give one recording the machine transcript another holds (pre-edit text, provider labels, no display names), atomically, instead of paying a provider to hear the same bytes again. Used by TranscribeStage for a waived duplicate."
+    },
+    {
       "name": "fail_resummarize",
       "kind": "gate_function",
       "path": "stapel_recordings.stages.fail_resummarize",
@@ -457,6 +475,12 @@
       "kind": "factory",
       "path": "stapel_recordings.stages.llm_context",
       "intent": "The context block for an llm.* payload; the agent stamps it on each ledger row."
+    },
+    {
+      "name": "raise_for_transcribe_failure",
+      "kind": "gate_function",
+      "path": "stapel_recordings.stages.raise_for_transcribe_failure",
+      "intent": "The stage outcome for a failed llm.transcribe result: an input refusal (every provider returned an empty transcript) is StageFatal, anything else StageRetryable. Call it from a host stage that calls llm.transcribe itself so both paths reach the same verdict."
     },
     {
       "name": "record_metering",

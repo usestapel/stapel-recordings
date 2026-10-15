@@ -290,6 +290,47 @@ def judge_run(
     return block
 
 
+def reusable_original(recording: Recording, run_id) -> Optional[Recording]:
+    """The completed original whose transcript THIS run may reuse, or ``None``.
+
+    Only a verdict written for this run, with the charge waived — a
+    server-verified match of the same bytes the owner did not ask to process
+    again (``allow_duplicate`` buys a real second run). The original must
+    still be a live, completed recording of the same owner with segments,
+    transcribed under the same parameters that change the answer for the
+    same bytes (language mode and hint, provider override, diarization).
+    """
+    block = (recording.metadata or {}).get(METADATA_KEY)
+    if not isinstance(block, dict) or not block.get("of"):
+        return None
+    if block.get("charge") != CHARGE_WAIVED or block.get("requested_by_user"):
+        return None
+    if not run_id or str(block.get("run_id") or "") != str(run_id):
+        return None
+    original = (
+        _live(Recording.objects.filter(
+            pk=block["of"],
+            owner_id=recording.owner_id,
+            status=RecordingStatus.COMPLETED,
+            segments_count__gt=0,
+        ))
+        .exclude(pk=recording.pk)
+        .first()
+    )
+    if original is None:
+        return None
+    same_parameters = (
+        (original.language_mode or "") == (recording.language_mode or "")
+        and (original.provider_override or "") == (recording.provider_override or "")
+        and bool(original.diarization_enabled) == bool(recording.diarization_enabled)
+        and (
+            (recording.language_mode or "") == "auto"
+            or (original.language or "") == (recording.language or "")
+        )
+    )
+    return original if same_parameters else None
+
+
 def completed_fields(recording: Recording, run_id) -> dict:
     """``{duplicate_of, charge_waived}`` for this run's ``recording.completed``.
 
@@ -307,6 +348,7 @@ def completed_fields(recording: Recording, run_id) -> dict:
 
 
 __all__ = [
+    "reusable_original",
     "METADATA_KEY",
     "MATCH_FINGERPRINT",
     "MATCH_CONTENT",

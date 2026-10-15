@@ -68,6 +68,13 @@ class Stage:
     def run(self, recording, ctx: dict) -> dict: ...
 ```
 
+A stage that submits a task may also override
+`task_failed(recording, ctx, error)`: called when the awaited task failed for
+good; return a ctx to complete the stage anyway (`MergeStage` does — the
+summary is optional and becomes owed), or `None` to DLQ. Decisions made
+outside the pipeline that no retry can change go through
+`pipeline.close_recording(recording_id, reason=...)`.
+
 `run` does the work and returns the ctx passed to the next stage. Raise
 `StageRetryable` (transient — the driver counts the attempt and parks the
 recording for `reconcile`) or `StageFatal` (bad input — straight to DLQ).

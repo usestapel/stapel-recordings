@@ -530,6 +530,22 @@
     "was_requested": {
       "kind": "predicate",
       "intent": "True when the owner knowingly asked to process this recording's already-uploaded file again; such a recording's own upload calls are not refused."
+    },
+    "close_recording": {
+      "kind": "gate_function",
+      "intent": "Take a recording the pipeline still moves out of it for good (error, closed:<reason>, one recording.failed) when a person decided it cannot be served; a re-drive or a late task result is then a no-op. Terminal and client-held recordings are left alone."
+    },
+    "copy_transcript": {
+      "kind": "gate_function",
+      "intent": "Give one recording the machine transcript another holds (pre-edit text, provider labels, no display names), atomically, instead of paying a provider to hear the same bytes again. Used by TranscribeStage for a waived duplicate."
+    },
+    "raise_for_transcribe_failure": {
+      "kind": "gate_function",
+      "intent": "The stage outcome for a failed llm.transcribe result: an input refusal (every provider returned an empty transcript) is StageFatal, anything else StageRetryable. Call it from a host stage that calls llm.transcribe itself so both paths reach the same verdict."
+    },
+    "reusable_original": {
+      "kind": "gate_function",
+      "intent": "The completed original whose transcript this run may reuse: only for a charge-waived, server-verified duplicate of the same owner transcribed under the same parameters. None otherwise."
     }
   }
 }

@@ -1,8 +1,8 @@
-# stapel-recordings 0.40.0
+# stapel-recordings 0.41.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 82 · extension points 7 · operations 18 · error codes 65.
+Contract: axes 1 · surface 86 · extension points 7 · operations 18 · error codes 65.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -16,6 +16,10 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
 - abort_multipart_upload_session — stapel_recordings.services.abort_multipart_upload_session
   instead of: stapel_recordings.storage.RecordingStorage.abort_multipart_upload
   Cancel an unfinished multipart upload: aborts it at the object store AND deletes the session row. Aborting at the storage layer alone leaves a live UploadSession pointing at a key that no longer exists, which a retrying client will happily finalize.
+- close_recording — stapel_recordings.pipeline.close_recording
+  Take a recording the pipeline still moves out of it for good (error, closed:<reason>, one recording.failed) when a person decided it cannot be served; a re-drive or a late task result is then a no-op. Terminal and client-held recordings are left alone.
+- copy_transcript — stapel_recordings.stages.copy_transcript
+  Give one recording the machine transcript another holds (pre-edit text, provider labels, no display names), atomically, instead of paying a provider to hear the same bytes again. Used by TranscribeStage for a waived duplicate.
 - erase — stapel_recordings.erasure.erase
   instead of: stapel_recordings.models.Recording.delete
   The ONLY code that destroys a recording, for any subject: account, workspace, meeting or recording. Removes the rows, everything cascading from them (speakers, segments, upload sessions, shares, jobs, embeddings) and every storage object they reference through the STORAGE seam, then returns Django's own per-model tally so a gdpr receipt can carry counts instead of a claim. Idempotent by construction — a redelivered erasure removes nothing and still answers. Hand-rolled deletion is how an object survives its row: the keys live on the row you are about to delete.
@@ -45,6 +49,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Count one watchdog re-drive of a recording and answer whether it may be re-driven at all; False means it has just been failed with reason=reconcile_exhausted. Call it in any custom watchdog that re-emits recording.stage, because a re-drive does not consume retry_count and an uncounted one repeats for the life of the recording.
 - purge_soft_deleted_recordings — stapel_recordings.tasks.purge_soft_deleted_recordings
   The retention job: opens a gdpr erasure for every recording soft-deleted longer than PURGE_AFTER_DAYS ago that has none in flight. It deletes nothing itself — that is the point, since routing the purge through an erasure is what gets a single-recording delete receipted by every owner that claims it. Schedule it (see get_recordings_beat_schedule) or a soft delete is a UI state forever.
+- raise_for_transcribe_failure — stapel_recordings.stages.raise_for_transcribe_failure
+  The stage outcome for a failed llm.transcribe result: an input refusal (every provider returned an empty transcript) is StageFatal, anything else StageRetryable. Call it from a host stage that calls llm.transcribe itself so both paths reach the same verdict.
 - record_metering — stapel_recordings.stages.record_metering
   Keep an llm.* reply's metering in workflow_state['metering'][stage].
 - refuse_duplicate — stapel_recordings.duplicates.refuse_duplicate
@@ -67,6 +73,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The ONLY way back from error: an explicit error -> queued transition that resumes at the first stage whose name has not completed. Expose it from a retry endpoint or admin action instead of setting status and re-emitting recording.stage by hand — a redelivered event deliberately never resurrects a DLQ'd recording, and a hand-reset status without the completed-set cursor re-runs stages whose results were already published.
 - retry_refusal — stapel_recordings.pipeline.retry_refusal
   Why a retry of an errored recording cannot succeed (upload_incomplete: the upload never reached storage; no_source: convert failed for want of a source that is still missing), or None. retry_recording already refuses these; call it in a retry endpoint to answer with 'upload the file again' instead of a generic not-retryable, and to hide a Retry button that would fail the same way.
+- reusable_original — stapel_recordings.duplicates.reusable_original
+  The completed original whose transcript this run may reuse: only for a charge-waived, server-verified duplicate of the same owner transcribed under the same parameters. None otherwise.
 - run_stage — stapel_recordings.pipeline.run_stage
   One step of the generic driver, normally reached only through the recording.stage consumer. Call it directly when you are driving the pipeline synchronously on purpose (a management command, an integration test) — and note the index is a duplicate-delivery hint, not a stage selector: which stage runs is decided by NAME against the currently resolved list, so this cannot be used to skip ahead.
 - start_pipeline — stapel_recordings.pipeline.start_pipeline

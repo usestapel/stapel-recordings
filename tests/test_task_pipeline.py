@@ -193,3 +193,56 @@ class TestTaskFailure:
         # TimeoutError with no word on what actually failed.
         assert r.workflow_state["last_error"]["reason"] == "task_failed"
         assert "provider unavailable" in str(r.workflow_state["last_error"]["detail"])
+
+
+class TestSummaryTaskFailure:
+    """A client host: a summarize task that died (deadline, crashed worker)
+    sent a recording whose transcript was already stored and paid for to
+    ``error``. The summary is the optional artifact; the transcript is the
+    product."""
+
+    def _to_merge(self, recording):
+        rid = str(recording.id)
+        pipeline.run_stage(rid, 0)
+        pipeline.run_stage(rid, 1)
+        task_id = Recording.objects.get(pk=rid).workflow_state["pipeline"]["awaiting"]["task_id"]
+        pipeline.resume_stage(rid, task_id, TRANSCRIPT_OK)
+        pipeline.run_stage(rid, 2)  # diarize (no-op)
+        pipeline.run_stage(rid, 3)  # merge -> awaiting llm.summarize
+        awaiting = Recording.objects.get(pk=rid).workflow_state["pipeline"]["awaiting"]
+        assert awaiting["stage"] == "merge"
+        return awaiting["task_id"]
+
+    def test_the_recording_completes_without_a_summary_and_the_summary_is_owed(
+        self, ready_recording, use_fakes, deferred_tasks
+    ):
+        from stapel_recordings import summary_repair
+
+        task_id = self._to_merge(ready_recording)
+
+        pipeline.fail_stage(str(ready_recording.id), task_id, "deadline_exceeded")
+
+        r = Recording.objects.get(pk=ready_recording.id)
+        assert r.status != RecordingStatus.ERROR
+        assert "merge" in r.workflow_state["pipeline"]["completed"]
+        assert r.transcript_storage_key
+        assert not r.summary
+        owed = summary_repair.pending(r)
+        assert owed["failure_class"] == "task"
+        assert "deadline_exceeded" in owed["detail"]
+
+        pipeline.run_stage(str(ready_recording.id), 4)  # embed (off)
+        pipeline.run_stage(str(ready_recording.id), 5)  # nothing left -> finalize
+        assert Recording.objects.get(pk=ready_recording.id).status == RecordingStatus.COMPLETED
+
+    def test_a_transcribe_task_failure_still_fails_the_recording(
+        self, ready_recording, use_fakes, deferred_tasks
+    ):
+        rid = str(ready_recording.id)
+        pipeline.run_stage(rid, 0)
+        pipeline.run_stage(rid, 1)
+        task_id = Recording.objects.get(pk=rid).workflow_state["pipeline"]["awaiting"]["task_id"]
+
+        pipeline.fail_stage(rid, task_id, "deadline_exceeded")
+
+        assert Recording.objects.get(pk=rid).status == RecordingStatus.ERROR

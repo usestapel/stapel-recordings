@@ -517,6 +517,35 @@ def fail_stage(recording_id: str, task_id: str, error: str) -> None:
         if awaiting.get("task_id") != str(task_id):
             return
         stage_name = awaiting.get("stage") or "<awaiting>"
+        try:
+            stage = get_stage(stage_name)
+        except (KeyError, TypeError, ImportError):
+            stage = None
+        recovered = None
+        if stage is not None:
+            ctx = _pipeline_meta(recording).get("ctx") or {}
+            try:
+                recovered = stage.task_failed(recording, ctx, error)
+            except Exception:  # noqa: BLE001 — a broken hook is the DLQ path
+                logger.exception(
+                    "fail_stage: %s.task_failed raised for %s", stage_name, recording_id
+                )
+                recovered = None
+        if recovered is not None:
+            # The stage absorbed its task's failure: complete it exactly as
+            # resume_stage would, and the pipeline moves on.
+            stage_index = int(awaiting.get("index", 0))
+            recording.retry_count = 0
+            _reset_reconcile_redrives(recording)
+            _clear_awaiting(recording)
+            _clear_last_error(recording)
+            _store_ctx(recording, recovered)
+            _mark_completed(recording, stage_index, stage_name, awaiting.get("fingerprint"))
+            _ensure_run(recording)
+            recording.save(update_fields=["retry_count", "workflow_state", "updated_at"])
+            events.emit_stage_completed(recording, stage_name, stage_index, **run_identity(recording))
+            events.emit_stage(recording.id, stage_index + 1)
+            return
         _clear_awaiting(recording)
         recording.save(update_fields=["workflow_state", "updated_at"])
         _dlq(recording, stage=stage_name, reason="task_failed", detail=error)
@@ -733,14 +762,56 @@ def _finalize(recording: Recording) -> None:
     # without run identity — mint it here too if the run predates run ids
     # (which is why workflow_state is in update_fields).
     _ensure_run(recording)
+    recording.processing_latency_ms = _run_latency_ms(recording)
     # Save + terminal emit as one unit. run_stage() already holds the outer
     # transaction.atomic(); this nests as a savepoint (joins the outer txn,
     # events still leave only on outer commit) and keeps the pair atomic even
     # if a future caller invokes _finalize() outside run_stage.
     with mutate_and_emit():
-        recording.save(update_fields=["status", "workflow_state", "updated_at"])
+        recording.save(update_fields=[
+            "status", "workflow_state", "processing_latency_ms", "updated_at",
+        ])
         events.emit_completed(recording, **run_identity(recording))
     logger.info("pipeline: recording %s completed", recording.id)
+
+
+def _run_latency_ms(recording: Recording) -> int | None:
+    """Start of this run (``workflow_state.pipeline.started_at``) to now, or
+    ``None`` when the run's start was never recorded."""
+    from django.utils.dateparse import parse_datetime
+
+    raw = _pipeline_meta(recording).get("started_at")
+    started = parse_datetime(str(raw)) if raw else None
+    if started is None:
+        return None
+    return max(0, int((timezone.now() - started).total_seconds() * 1000))
+
+
+def close_recording(recording_id: str, *, reason: str, detail=None) -> bool:
+    """Take a recording out of the pipeline for good. True if it was in it.
+
+    For a decision made OUTSIDE the pipeline that no retry can change — an
+    operator closed it ("no speech", "source lost", "duplicate of …"). Until
+    this existed such a recording stayed in the retry ladder and every
+    re-drive paid the providers again for an answer already known. A
+    recording the pipeline still moves (queued, any in-pipeline status,
+    awaiting a task) goes to ``error`` with ``closed:<reason>`` through the
+    same DLQ path as any terminal failure, so ``recording.failed`` is emitted
+    once and a late task result for it is ignored. A terminal recording
+    (including one parked for payment) and one the client still uploads are
+    left alone.
+    """
+    with transaction.atomic():
+        recording = Recording.objects.select_for_update().filter(pk=recording_id).first()
+        if recording is None or recording.status in _TERMINAL:
+            return False
+        if recording.status in (RecordingStatus.CREATED, RecordingStatus.UPLOADING):
+            return False  # the client still holds it; nothing is running
+        stage = str(_pipeline_meta(recording).get("stage") or "") or "pipeline"
+        _clear_awaiting(recording)
+        recording.save(update_fields=["workflow_state", "updated_at"])
+        _dlq(recording, stage=stage, reason=f"closed:{reason}", detail=detail)
+    return True
 
 
 def _handle_retry(recording: Recording, stage_name: str, reason: str, detail=None) -> None:

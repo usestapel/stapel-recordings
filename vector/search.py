@@ -374,10 +374,30 @@ def _require_vector_search() -> None:
         )
 
 
+def _searchable_recordings(qs, prefix: str = ""):
+    """Only finished, live recordings are searchable.
+
+    Segments are written by the transcribe stage long before a run
+    completes — and a run can still park for payment or fail after that. A
+    transcript that the read endpoints withhold until ``completed`` must not
+    leak out as search snippets or answer citations either; and a
+    soft-deleted recording keeps its segment rows. One rule, applied to every
+    arm here, so no host has to remember to narrow ``recording_ids``.
+    """
+    from stapel_recordings.models import RecordingStatus
+
+    return qs.filter(
+        **{
+            f"{prefix}status": RecordingStatus.COMPLETED,
+            f"{prefix}deleted_at__isnull": True,
+        }
+    )
+
+
 def _scoped_segments(workspace_id, recording_ids):
     from stapel_recordings.models import Segment
 
-    qs = Segment.objects.exclude(text="")
+    qs = _searchable_recordings(Segment.objects.exclude(text=""), "recording__")
     if workspace_id is not None:
         qs = qs.filter(recording__workspace_id=workspace_id)
     if recording_ids is not None:
@@ -444,7 +464,7 @@ def _text_arm(query, workspace_id, recording_ids, limit, cfg) -> list[SearchHit]
     # Group candidate recordings by the FTS config their language maps to,
     # run one ranked query per config, merge. (No stored search column —
     # hosts wanting scale add their own GIN index / SearchVectorField.)
-    rec_qs = Recording.objects.all()
+    rec_qs = _searchable_recordings(Recording.objects.all())
     if workspace_id is not None:
         rec_qs = rec_qs.filter(workspace_id=workspace_id)
     if recording_ids is not None:
@@ -652,6 +672,7 @@ def _vector_arm(
     # re-embedding under a new scheme a background job and the switch
     # itself one setting, in either direction.
     qs = qs.filter(scheme=str(cfg.get("SEGMENT_SCHEME") or "segment"))
+    qs = _searchable_recordings(qs, "segment__recording__")
     scoped = False
     if workspace_id is not None:
         qs = qs.filter(segment__recording__workspace_id=workspace_id)

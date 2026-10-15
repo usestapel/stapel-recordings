@@ -420,6 +420,29 @@ def test_embed_short_vector_list_is_retryable(recording_with_segments, stub_embe
 # ─── Search: sqlite degradation contract ───────────────────────────────
 
 
+@pytest.mark.parametrize("status", ["transcribing", "merging", "needs_payment", "error"])
+def test_text_search_skips_a_recording_that_is_not_completed(make_recording, status):
+    """A client host, 2026-10-15: the transcript endpoints held segments back
+    until ``completed`` while search handed the same text out as snippets —
+    for runs that then parked for payment or failed."""
+    from stapel_recordings.models import Segment
+
+    rec = make_recording(status=status)
+    Segment.objects.create(recording=rec, sequence_num=0, start_time=0, end_time=1, text="charlie unpaid")
+
+    assert search_recordings("charlie", mode="text", limit=10) == []
+    assert search_recordings("charlie", mode="text", recording_ids=[rec.id], limit=10) == []
+
+
+def test_text_search_skips_a_soft_deleted_recording(recording_with_segments):
+    from django.utils import timezone
+
+    recording_with_segments.deleted_at = timezone.now()
+    recording_with_segments.save(update_fields=["deleted_at"])
+
+    assert search_recordings("charlie", mode="text", limit=10) == []
+
+
 @sqlite_harness_only
 def test_text_search_degrades_to_icontains_on_sqlite(recording_with_segments):
     hits = search_recordings("charlie", mode="text", limit=10)
