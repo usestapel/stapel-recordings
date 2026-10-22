@@ -10,9 +10,11 @@ The provider-facing ``from_normalized`` mapper is dropped because STT now
 lives in stapel-agent — recordings persists Segment rows directly from
 the ``llm.transcribe`` result dict (see ``stages.TranscribeStage``).
 
-Invariants (checked by ``run_qa``): monotonic start/end ms; no silent hole
-longer than :data:`MAX_SEGMENT_GAP_MS` between consecutive segments; max end
-<= duration (+tolerance); >=1 speaker when diarization requested.
+Invariants (checked by ``run_qa``): monotonic start/end ms; max end
+<= duration (+tolerance); >=1 speaker when diarization requested. Pauses
+longer than :func:`max_segment_gap_ms` between consecutive segments are
+reported as ``gap: WARN`` (timing only, never a failure), and
+``untranscribed_audio`` says whether the audio itself was evaluated.
 """
 from __future__ import annotations
 
@@ -25,11 +27,31 @@ from stapel_core.hashing import canonical_hash
 SCHEMA_VERSION = "1.0"
 PIPELINE_VERSION = "2.0.0"
 
-#: How much silence between two consecutive segments a continuous recording
-#: may contain before ``run_qa`` calls it a hole. Named here, not buried in a
-#: comparison, because it is the number an operator tunes when a deployment's
-#: recordings are genuinely quieter than this.
+#: The default pause between two consecutive segments that ``run_qa``
+#: reports under ``gap``. The live value is :func:`max_segment_gap_ms`.
 MAX_SEGMENT_GAP_MS = 5000
+
+#: The audio-aware hole check. Until a speech-activity map exists for a
+#: recording, its value is :data:`NO_AUDIO_EVIDENCE` — never a PASS.
+CHECK_UNTRANSCRIBED_AUDIO = "untranscribed_audio"
+NO_AUDIO_EVIDENCE = "WARN: no audio evidence"
+
+
+def max_segment_gap_ms() -> int:
+    """The ``gap`` threshold in ms, from ONE source for both packages.
+
+    With stapel-agent installed it is ``STAPEL_AGENT["STT_QA"]
+    ["MAX_GAP_SECONDS"]`` (the threshold the agent's own transcript QA
+    uses); without it, :data:`MAX_SEGMENT_GAP_MS`. 0 turns the check off.
+    """
+    try:
+        from stapel_agent.stt.qa import max_gap_seconds
+    except ImportError:
+        return MAX_SEGMENT_GAP_MS
+    try:
+        return int(round(float(max_gap_seconds()) * 1000))
+    except (TypeError, ValueError):
+        return MAX_SEGMENT_GAP_MS
 
 
 # ─── Schema dataclasses ────────────────────────────────────────────────
@@ -212,30 +234,28 @@ def run_qa(
     else:
         checks["monotonicity"] = "PASS"
 
-    # Holes between consecutive segments, in the transcript's own ordering.
-    # A hole means the transcription dropped audio, and it is the one defect
-    # nothing else here can see: the segments around it are monotonic, inside
-    # the duration, and plentiful.
-    #
-    # A TRIMMED OR SPLICED SOURCE would produce the same reading at its seam,
-    # and this schema carries nothing that says so — no offset, no trim
-    # marker, and ``duration_ms`` against the segment span describes only the
-    # TAIL, never an internal seam. The check stays anyway: a host that
-    # splices sources knows it does, while dropped audio has no other witness.
-    if len(segments) >= 2:
+    # Long pauses between consecutive segments, in the transcript's own
+    # ordering. Timing alone cannot tell a silent stretch from audio the
+    # transcription lost: measured on a client fleet, a 5-s rule fired on
+    # half of all recordings and on 94% of those over an hour, and the
+    # flagged gaps examined held silence. So the finding is a WARN that says
+    # where, and never clears ``passed``; a hole is decided against the
+    # audio, under CHECK_UNTRANSCRIBED_AUDIO.
+    limit = max_segment_gap_ms()
+    if len(segments) >= 2 and limit > 0:
         deltas = [nxt.start_ms - prev.end_ms for prev, nxt in zip(segments, segments[1:])]
         holes = [
             (delta, prev.id, nxt.id)
             for delta, prev, nxt in zip(deltas, segments, segments[1:])
-            if delta > MAX_SEGMENT_GAP_MS
+            if delta > limit
         ]
         if holes:
             delta, before, after = holes[0]
             checks["gap"] = (
-                f"FAIL: {len(holes)} gap(s) > {MAX_SEGMENT_GAP_MS}ms, "
-                f"first {delta}ms between seg {before} and seg {after}"
+                f"WARN: {len(holes)} gap(s) > {limit}ms, "
+                f"first {delta}ms between seg {before} and seg {after}, "
+                f"longest {max(h[0] for h in holes)}ms (timing only)"
             )
-            passed = False
         else:
             # Overlaps are negative deltas, and an overlap is not a gap.
             checks["gap"] = f"PASS: largest {max(max(deltas), 0)}ms"
@@ -262,7 +282,41 @@ def run_qa(
         checks["diarization_present"] = "SKIP"
 
     checks["segments_present"] = f"PASS: {len(segments)}" if segments else "WARN: 0 segments"
+    checks[CHECK_UNTRANSCRIBED_AUDIO] = NO_AUDIO_EVIDENCE
     return QAResult(passed=passed, checks=checks)
+
+
+def recompute_qa(data: dict, *, diarization_requested: bool) -> dict:
+    """``run_qa`` over a stored transcript dict (``UnifiedTranscript.to_dict``).
+
+    The stored ``qa`` is the verdict of the rules at merge time, and ``qa``
+    is outside :func:`transcript_hash`, so nothing rewrites it when the rules
+    change. A reader that serves a stored transcript calls this to serve the
+    current rules' verdict instead. Returns ``{"passed", "checks"}``.
+    """
+    segments = [
+        UnifiedSegment(
+            id=str(seg.get("id", "")),
+            start_ms=int(seg.get("start_ms") or 0),
+            end_ms=int(seg.get("end_ms") or 0),
+            speaker_id=seg.get("speaker_id"),
+            text=seg.get("text") or "",
+        )
+        for seg in (data.get("segments") or [])
+        if isinstance(seg, dict)
+    ]
+    speakers = [
+        UnifiedSpeaker(speaker_id=str(sp.get("speaker_id", "")))
+        for sp in (data.get("speakers") or [])
+        if isinstance(sp, dict)
+    ]
+    result = run_qa(
+        segments=segments,
+        speakers=speakers,
+        duration_ms=int(data.get("duration_ms") or 0),
+        diarization_requested=diarization_requested,
+    )
+    return asdict(result)
 
 
 # ─── LLM-ready views ───────────────────────────────────────────────────
@@ -444,6 +498,10 @@ __all__ = [
     "SCHEMA_VERSION",
     "PIPELINE_VERSION",
     "MAX_SEGMENT_GAP_MS",
+    "CHECK_UNTRANSCRIBED_AUDIO",
+    "NO_AUDIO_EVIDENCE",
+    "max_segment_gap_ms",
+    "recompute_qa",
     "UnifiedTranscript",
     "UnifiedSegment",
     "UnifiedSpeaker",

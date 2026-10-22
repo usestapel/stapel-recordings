@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.42.0] — 2026-10-22
+
+- **`gap` is a WARN, not a failure.** `run_qa` reports pauses between
+  consecutive segments over the threshold as `WARN: <n> gap(s) > <ms>ms,
+  first …, longest <ms>ms (timing only)` and no longer clears `passed`.
+  Timing cannot tell silence from lost audio; on a client fleet the 5-s rule
+  failed half of all recordings (94% of those over an hour) and the flagged
+  gaps examined were silence. Breaking for a reader that treated
+  `qa.passed is False` as "a hole".
+- **New check `untranscribed_audio`**, `WARN: no audio evidence` until a
+  speech-activity map exists for the recording (never a silent PASS).
+- **`recompute_qa(data, diarization_requested=)`** runs `run_qa` over a
+  stored transcript dict. `qa` is outside `transcript_hash`, so a stored
+  transcript keeps the verdict of the rules it was merged under; a reader
+  serving one calls this to serve today's verdict.
+- **One threshold source:** `max_segment_gap_ms()` reads
+  `STAPEL_AGENT["STT_QA"]["MAX_GAP_SECONDS"]` when stapel-agent is installed,
+  else `MAX_SEGMENT_GAP_MS` (5000). 0 turns the check off.
+
 ## [0.41.0] — 2026-10-15
 
 - **Search sees only finished, live recordings.** `vector.search` (text,
