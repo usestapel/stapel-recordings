@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.43.0] — 2026-11-04
+
+- **An all-empty STT chain is terminal `no_speech`, not user-retryable.**
+  `raise_for_transcribe_failure` turns the agent's `failure_class: "input"`
+  / `reason_code: "empty"` into `StageFatal("no_speech", …,
+  user_retryable=False)`; `recording.failed` carries `user_retryable: false`
+  and `last_error` records it. Breaking for a host that matched
+  `empty_transcript` on this path (an empty transcript over real audio that
+  the agent answered `ok` is still `empty_transcript`). `StageFatal` takes a
+  keyword `user_retryable` (default True); `NO_SPEECH` is exported.
+- **`task.completed` / `task.failed` reach the driver only for recordings
+  tasks.** Kinds `llm.transcribe` / `llm.summarize` (and events without a
+  kind) are routed as before; another kind is routed only when its
+  correlation id names a recording. A host task correlated by its own job id
+  no longer logs "recording … not found".
+- **The normalizer output is bit-exact** (`-fflags +bitexact -flags:a
+  +bitexact`). The Ogg muxer picked a random stream serial on every run, so
+  re-converting unchanged audio produced different bytes and every stage
+  fingerprinted on the audio re-ran.
+
 ## [0.42.0] — 2026-10-22
 
 - **`gap` is a WARN, not a failure.** `run_qa` reports pauses between

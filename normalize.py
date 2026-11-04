@@ -301,6 +301,12 @@ def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = N
         # containers.
         cmd += ["-t", f"{max_duration_seconds:.3f}"]
     cmd += ["-ac", str(profile.channels), "-ar", str(profile.sample_rate)]
+    # Bit-exact output: the same input converts to the same bytes. Without
+    # it the Ogg muxer picks a random stream serial on every run, so a
+    # re-conversion of unchanged audio hashed differently and every stage
+    # fingerprinted on the audio re-ran (and re-paid). -flags:a also drops
+    # the encoder version string, so an ffmpeg upgrade alone does not.
+    cmd += ["-fflags", "+bitexact", "-flags:a", "+bitexact"]
     if profile.codec == CODEC_OPUS:
         cmd += [
             "-c:a", "libopus", "-b:a", str(profile.bitrate_bps),

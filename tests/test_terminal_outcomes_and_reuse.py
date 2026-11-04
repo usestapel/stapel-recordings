@@ -40,12 +40,14 @@ class TestTranscribeFailureVerdict:
     def test_an_all_empty_chain_is_fatal(self):
         with pytest.raises(StageFatal) as caught:
             raise_for_transcribe_failure(ALL_EMPTY)
-        assert caught.value.reason == "empty_transcript"
+        assert caught.value.reason == "no_speech"
+        assert caught.value.user_retryable is False
 
     def test_another_input_refusal_is_fatal_too(self):
         with pytest.raises(StageFatal) as caught:
             raise_for_transcribe_failure({"status": "failure", "reason": "x", "failure_class": "input"})
         assert caught.value.reason == "transcribe_refused"
+        assert caught.value.user_retryable is True
 
     @pytest.mark.parametrize("result", [
         {"status": "failure", "reason": "timeout"},
@@ -60,6 +62,8 @@ class TestTranscribeFailureVerdict:
         raise_for_transcribe_failure({"status": "ok"})
 
     def test_the_pipeline_does_not_re_drive_it(self, ready_recording, use_fakes, stub_transcribe):
+        from stapel_core.django.outbox.models import OutboxEvent
+
         stub_transcribe.result = ALL_EMPTY
         rid = str(ready_recording.id)
         pipeline.run_stage(rid, 0)
@@ -67,7 +71,16 @@ class TestTranscribeFailureVerdict:
 
         r = Recording.objects.get(pk=rid)
         assert r.status == RecordingStatus.ERROR
-        assert r.workflow_state["last_error"]["reason"] == "empty_transcript"
+        assert r.workflow_state["last_error"]["reason"] == "no_speech"
+        assert r.workflow_state["last_error"]["user_retryable"] is False
+        import json
+
+        payloads = [
+            json.loads(e.event_json).get("payload") or {}
+            for e in OutboxEvent.objects.filter(topic="recording.failed")
+        ]
+        failed = [p for p in payloads if p.get("recording_id") == rid]
+        assert [p["user_retryable"] for p in failed] == [False]
         assert r.retry_count == 0
         assert len(stub_transcribe.calls) == 1
 

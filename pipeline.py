@@ -399,7 +399,8 @@ def run_stage(recording_id: str, stage_index: int) -> None:
             )
             return
         except StageFatal as exc:
-            _dlq(recording, stage=stage_name, reason=exc.reason, detail=exc.detail)
+            _dlq(recording, stage=stage_name, reason=exc.reason, detail=exc.detail,
+                 user_retryable=exc.user_retryable)
             return
         except StageRetryable as exc:
             _handle_retry(recording, stage_name, exc.reason, exc.detail)
@@ -474,7 +475,8 @@ def resume_stage(recording_id: str, task_id: str, result) -> None:
             )
             return
         except StageFatal as exc:
-            _dlq(recording, stage=stage_name, reason=exc.reason, detail=exc.detail)
+            _dlq(recording, stage=stage_name, reason=exc.reason, detail=exc.detail,
+                 user_retryable=exc.user_retryable)
             return
         except StageRetryable as exc:
             _clear_awaiting(recording)
@@ -888,10 +890,11 @@ def _reset_reconcile_redrives(recording: Recording) -> None:
         }
 
 
-def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_errored=False) -> None:
+def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_errored=False,
+         user_retryable: bool = True) -> None:
     recording.status = RecordingStatus.ERROR
     if not already_errored:
-        _set_last_error(recording, stage, reason, detail)
+        _set_last_error(recording, stage, reason, detail, user_retryable=user_retryable)
     _ensure_run(recording)  # a refund consumer needs to know WHICH run failed
     # Save + terminal DLQ emit as one unit. run_stage() already holds the outer
     # transaction.atomic(); this nests as a savepoint (joins the outer txn,
@@ -903,7 +906,7 @@ def _dlq(recording: Recording, *, stage: str, reason: str, detail=None, already_
             recording,
             stage=stage,
             reason=reason,
-            user_retryable=True,
+            user_retryable=user_retryable,
             **run_identity(recording),
         )
     logger.warning("pipeline: recording %s DLQ at stage %s (%s)", recording.id, stage, reason)
@@ -1099,7 +1102,8 @@ def _store_ctx(recording: Recording, ctx: dict) -> None:
     recording.workflow_state = state
 
 
-def _set_last_error(recording: Recording, stage: str, reason: str, detail=None) -> None:
+def _set_last_error(recording: Recording, stage: str, reason: str, detail=None, *,
+                    user_retryable: bool = True) -> None:
     state = dict(recording.workflow_state or {})
     state["last_error"] = {
         "stage": stage,
@@ -1107,6 +1111,8 @@ def _set_last_error(recording: Recording, stage: str, reason: str, detail=None) 
         "detail": (str(detail)[:500] if detail else None),
         "at": timezone.now().isoformat(),
     }
+    if not user_retryable:
+        state["last_error"]["user_retryable"] = False
     recording.workflow_state = state
 
 

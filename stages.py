@@ -83,6 +83,10 @@ TASK_TIMEOUT_KEY = "task_timeout_seconds"
 RESUMMARIZE_STAGE = "resummarize"
 
 
+#: Terminal reason when every STT provider returned an empty transcript.
+NO_SPEECH = "no_speech"
+
+
 # ─── Stage contract + signals ──────────────────────────────────────────
 
 
@@ -98,7 +102,18 @@ class StageRetryable(StageError):
 
 
 class StageFatal(StageError):
-    """Permanent failure — DLQ, no retry."""
+    """Permanent failure — DLQ, no retry.
+
+    ``user_retryable=False`` marks an outcome a retry cannot change for the
+    customer either (the audio holds no speech): ``recording.failed`` carries
+    it, so a host neither offers "try again" nor holds the source for
+    diagnosis.
+    """
+
+    def __init__(self, reason: str, detail: str | None = None, *,
+                 user_retryable: bool = True):
+        super().__init__(reason, detail)
+        self.user_retryable = bool(user_retryable)
 
 
 class StageNeedsPayment(StageError):
@@ -2083,7 +2098,8 @@ def raise_for_transcribe_failure(result) -> None:
     No-op for ``status: ok``. A failure the agent classifies as
     ``failure_class: "input"`` is :class:`StageFatal` — the request itself
     was answered (every provider returned an empty transcript, stapel-agent
-    >= 0.37.0), so the same request gets the same answer again and a retry
+    >= 0.37.0 — reason ``no_speech``, not user-retryable), so the same
+    request gets the same answer again and a retry
     only pays every provider once more. Measured on a client host
     (2026-10-13): a ten-minute file of non-speech was re-driven four times,
     both providers paid on every pass. Anything else stays
@@ -2099,11 +2115,12 @@ def raise_for_transcribe_failure(result) -> None:
         if isinstance(result, dict) else "transcribe_failed"
     )
     if isinstance(result, dict) and result.get("failure_class") == "input":
-        code = result.get("reason_code")
-        raise StageFatal(
-            "empty_transcript" if code == "empty" else "transcribe_refused",
-            str(reason),
-        )
+        if result.get("reason_code") == "empty":
+            # Every provider listened and heard nothing: the audio has no
+            # speech. A terminal OUTCOME, not a fault — no retry, by us or
+            # by the customer, hears anything different.
+            raise StageFatal(NO_SPEECH, str(reason), user_retryable=False)
+        raise StageFatal("transcribe_refused", str(reason))
     raise StageRetryable("transcribe_failed", str(reason))
 
 
@@ -2474,6 +2491,7 @@ def _as_stage(name: str, obj) -> Stage:
 
 
 __all__ = [
+    "NO_SPEECH",
     "Stage",
     "transcript_handoff_enabled",
     "handoff_key",

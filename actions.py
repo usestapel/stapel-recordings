@@ -165,10 +165,30 @@ def handle_user_merged(event):
 # here once the result arrives. This used to be a synchronous call that held
 # the whole system for as long as the model took.
 #
-# We don't filter by ``kind`` here: the ``task.completed`` subscription is
-# process-wide, so tasks from other modules pass through too. The recording
-# itself decides — matching ``task_id`` against what it's awaiting lives in
+# The ``task.completed`` subscription is process-wide, so tasks from other
+# modules pass through too (a host's export renderer correlates by its own
+# job id). Only the kinds this pipeline submits are routed to the driver; an
+# unknown kind is routed only when its correlation id names a recording (a
+# host stage that submits its own kind through ``submit_task``). Matching
+# ``task_id`` against what the recording awaits still lives in
 # ``resume_stage``.
+
+#: Task kinds the library's own stages submit.
+PIPELINE_TASK_KINDS = frozenset({"llm.transcribe", "llm.summarize"})
+
+
+def _is_pipeline_task(event, recording_id: str) -> bool:
+    kind = event.payload.get("kind")
+    if not kind or kind in PIPELINE_TASK_KINDS:
+        return True
+    from django.core.exceptions import ValidationError
+
+    from .models import Recording
+
+    try:
+        return Recording.objects.filter(pk=recording_id).exists()
+    except (ValueError, ValidationError):
+        return False
 
 
 def _recording_of(event):
@@ -186,6 +206,12 @@ def handle_task_completed(event):
     recording_id = _recording_of(event)
     task_id = event.payload.get("task_id")
     if not recording_id or not task_id:
+        return
+    if not _is_pipeline_task(event, recording_id):
+        logger.debug(
+            "task.completed: %s task %s is not a recordings task — ignored",
+            event.payload.get("kind"), task_id,
+        )
         return
     try:
         snapshot = status(task_id)
@@ -210,6 +236,8 @@ def handle_task_failed(event):
     recording_id = _recording_of(event)
     task_id = event.payload.get("task_id")
     if not recording_id or not task_id:
+        return
+    if not _is_pipeline_task(event, recording_id):
         return
     error = event.payload.get("error") or ""
     if fail_resummarize(recording_id, task_id, error):

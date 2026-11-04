@@ -185,3 +185,14 @@ def test_probe_duration_does_not_transcode(monkeypatch):
     monkeypatch.setattr(normalize, "_probe_audio", lambda path: (True, 2820.0))
     assert normalize.probe_duration("in.mp4") == 2820.0
     assert calls == [], "the probe triggered a transcode"
+
+
+def test_the_output_is_bit_exact(run):
+    """The Ogg muxer picks a random stream serial unless told to be
+    bit-exact, so the same audio converted twice hashed differently and
+    every audio-fingerprinted stage downstream re-ran."""
+    normalize.ffmpeg_normalize("in.mp4", "out.wav", max_duration_seconds=600)
+    cmd = run["cmd"]
+    assert cmd[cmd.index("-fflags") + 1] == "+bitexact"
+    assert cmd[cmd.index("-flags:a") + 1] == "+bitexact"
+    assert cmd.index("-fflags") > cmd.index("in.mp4"), "an OUTPUT option"
