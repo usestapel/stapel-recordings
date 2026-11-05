@@ -18,6 +18,7 @@
   "error.409.recording_upload_parts_missing": "Aún no han llegado {count} partes de la subida: {missing}",
   "error.413.recording_too_large": "La subida de {size} bytes supera el tamaño máximo permitido de {limit} bytes",
   "error.415.recording_unsupported_media": "El tipo de archivo subido no es compatible",
+  "error.423.share_unlock_disabled": "Demasiados códigos incorrectos: pide uno nuevo al propietario",
   "error.429.share_unlock_throttled": "Demasiados intentos: inténtalo de nuevo más tarde",
   "error.503.recording_media_unavailable": "La entrega de archivos multimedia no está disponible",
   "error.503.recording_summarize_unavailable": "Los resúmenes no están disponibles",

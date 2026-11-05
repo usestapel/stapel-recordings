@@ -188,6 +188,17 @@ class Recording(models.Model):
     confidence_avg = models.FloatField(null=True, blank=True)
 
     provider_used = models.CharField(max_length=64, null=True, blank=True)
+    #: The wire model id the STT provider was asked for (``scribe_v2``), as
+    #: the transcribe reply reported it — ``provider_used`` is the
+    #: registration name. Null when the reply did not say (an older agent,
+    #: a checkpoint written before the agent recorded models).
+    asr_model = models.CharField(max_length=128, null=True, blank=True)
+    #: The separate diarizer's model, when one ran; null when the STT model
+    #: diarized itself.
+    diar_model = models.CharField(max_length=128, null=True, blank=True)
+    #: Where ``asr_model`` came from: ``recorded`` (the reply) or another
+    #: source a backfill names (``config``). Null with no model.
+    asr_model_source = models.CharField(max_length=16, null=True, blank=True)
     provider_override = models.CharField(max_length=64, null=True, blank=True)
     fallback_used = models.BooleanField(default=False)
     processing_latency_ms = models.IntegerField(null=True, blank=True)

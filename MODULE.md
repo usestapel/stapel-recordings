@@ -165,6 +165,7 @@ env var → default. Lazy; caches invalidate on `setting_changed`.
 | `TRANSCRIBE_TIMEOUT_SECONDS` | `1800` | value | Passed to `llm.transcribe` |
 | `SUMMARIZE_ENABLED` | `True` | value | Toggle the summarize step |
 | `SUMMARIZE_MODEL` | `"medium"` | value | Model size for `llm.summarize` |
+| `SUMMARIZE_SPEAKER_NAMES` | `False` | value | Ask `llm.summarize` for stated speaker names (`speaker_names.py`; agent >= 0.39.0) |
 | `SUMMARY_PURPOSE_PROVIDER` | `None` | **replace** (dotted path, `no_env`) | Per-recording purpose texts for `llm.summarize` — see "Summary seams" below |
 | `SUMMARY_SKIP_POLICY` | `None` | **replace** (dotted path, `no_env`) | Decline a summary with a stored reason — see "Summary seams" below |
 | `UPLOAD_SESSION_TTL_SECONDS` | `900` | value | Single-PUT session TTL |
@@ -887,7 +888,11 @@ These were app-specific in the source origin and are intentionally
   recording play from a **private** bucket. What stays app-layer is the
   rate limit in front of them and any richer payload (subclass the view's
   serializer seam). A host that wants a different mount remounts the
-  views.
+  views. Guessing is paced (`SHARE_UNLOCK_MAX_ATTEMPTS` per
+  `SHARE_UNLOCK_LOCKOUT_SECONDS`) and capped: `SHARE_UNLOCK_FAILURE_CAP`
+  (100) consecutive failures raise `ShareUnlockDisabled`
+  (`error.423.share_unlock_disabled`) even for the right passcode until
+  `set_share_passcode` runs.
 - A **real diarizer** (pyannote, etc.) — register a `diarize` stage handler.
 
 ## App-layer override vs upstream contribution — rule of thumb

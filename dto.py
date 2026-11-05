@@ -26,6 +26,11 @@ class RecordingDTO:
     of a generic stall. Only the reason crosses the wire — the park's
     ``detail`` can carry balance internals and stays in ``workflow_state``,
     which is the same line the error seam draws.
+
+    ``asr_model`` is the STT wire model (``provider_used`` is the
+    registration name); ``summary_model`` / ``summary_generated_at`` come
+    from the stamp written with the current summary text. All three are
+    null when nothing recorded them — never a guess.
     """
 
     id: str
@@ -46,6 +51,9 @@ class RecordingDTO:
     is_processing: bool
     poll_after_seconds: Optional[int]
     needs_payment_reason: Optional[str]
+    asr_model: Optional[str] = None
+    summary_model: Optional[str] = None
+    summary_generated_at: Optional[str] = None
 
 
 @dataclass
@@ -326,7 +334,22 @@ def recording_to_dto(recording) -> RecordingDTO:
         is_processing=poll_after is not None,
         poll_after_seconds=poll_after,
         needs_payment_reason=needs_payment_reason(recording),
+        asr_model=recording.asr_model,
+        **summary_model_fields(recording),
     )
+
+
+def summary_model_fields(recording) -> dict:
+    """``{summary_model, summary_generated_at}`` from the stamp stored with
+    the current summary; both null when there is none (no summary, or a
+    summary stored before stamps existed)."""
+    from .stages import summary_stamp
+
+    stamp = summary_stamp(recording) or {}
+    return {
+        "summary_model": stamp.get("model"),
+        "summary_generated_at": stamp.get("at"),
+    }
 
 
 def job_to_dto(job) -> JobDTO:

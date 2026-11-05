@@ -1,8 +1,8 @@
-# stapel-recordings 0.43.0
+# stapel-recordings 0.44.0
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 86 · extension points 7 · operations 18 · error codes 65.
+Contract: axes 1 · surface 89 · extension points 7 · operations 18 · error codes 66.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -104,6 +104,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   Read an llm.summarize result and answer with the summary text or None. One truthiness rule for 'a summary was produced', shared by the merge stage and the standalone re-summary — two hand-rolled checks are how one caller starts storing an empty string as a summary while the other reports a failure.
 - summary_skipped — stapel_recordings.stages.summary_skipped
   The stored SUMMARY_SKIP_POLICY outcome {reason, at}, or None.
+- summary_stamp — stapel_recordings.stages.summary_stamp
+  Which model wrote the summary on screen (stored with the text), or None; read it instead of inferring from run rows.
 - transcript_handoff_enabled — stapel_recordings.stages.transcript_handoff_enabled
   Whether this deployment asks llm.transcribe to WRITE the transcript to storage and answer with a key instead of the body. Reach for it when a host stage builds its own transcribe payload: 'auto' (default) answers from the storage backend's signs_put_urls, so the question is settled by configuration once, never by how big a given transcript came out.
 - was_requested — stapel_recordings.duplicates.was_requested
@@ -193,6 +195,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The one sanctioned way to persist a produced summary: writes the text AND pins it to the version key of the transcript it was built from, so 'is this summary still current' is computed instead of guessed. Assigning recording.summary yourself leaves the previous transcript's key in place, and a freshly regenerated summary then reads as stale forever — the key outlives the flag.
 - stranded_handoff — stapel_recordings.stages.stranded_handoff
   An llm.transcribe result assembled from a handoff object that is sitting in this deployment's own bucket with no segments to show for it — a transcription that happened, was paid for, and whose reply never got home. Reach for it before submitting the priced task in any host transcribe stage: the key is addressed by THIS side, so a lost reply is an unread transcript rather than a lost one, and adopting it is the difference between collecting paid work and buying it twice.
+- stt_models_from_result — stapel_recordings.stages.stt_models_from_result
+  The STT wire model out of an llm.transcribe reply, for a host stage that persists the transcript itself; nulls when the reply names none.
 - submit_task — stapel_recordings.stages.submit_task
   instead of: stapel_core.comm.call
   Submit long-running work (transcription, summary) as a task and return control right away: a result comes back only under synchronous dispatch, otherwise StageAwaiting is raised and the stage resumes in Stage.resume on task.completed. Unlike comm.call, a synchronous call would hold the worker for the model's entire runtime and requires guessing a timeout that a queue makes unguessable.
@@ -200,6 +204,8 @@ This is the answer to "does Stapel already have something for X?". `instead of` 
   The MOST llm.summarize calls one recording's merge stage can cause: MAX_STAGE_RETRIES x SUMMARIZE_TASK_MAX_ATTEMPTS. The sibling of transcribe_attempt_ceiling, and read for the same reason before raising either setting; every call after the first is free only because _summarize_payload passes the transcript hash as the agent's idempotency key.
 - summarize_budget_seconds — stapel_recordings.stages.summarize_budget_seconds
   How long ONE llm.summarize call may take for THIS recording: the flat SUMMARIZE_TIMEOUT_SECONDS plus the meeting's own length, clamped at SUMMARIZE_TIMEOUT_MAX_SECONDS. Use it instead of reading the flat setting whenever a budget has to cover a map-reduce whose work grows with the transcript.
+- summary_stamp_from_reply — stapel_recordings.stages.summary_stamp_from_reply
+  The model stamp of the summarize reply that wrote a summary, from that reply's own metering; pass it to store_summary.
 - task_deadline_seconds — stapel_recordings.stages.task_deadline_seconds
   The task deadline that lets a task actually USE the attempts it declares: one attempt's budget x max_attempts + TASK_DEADLINE_HEADROOM_SECONDS. Call it wherever a stage passes both deadline_seconds and max_attempts to submit_task, because setting the deadline to one attempt's budget makes every later attempt unreachable ('deadline exceeded' before attempt two).
 - tolerance_seconds — stapel_recordings.duplicates.tolerance_seconds
@@ -258,7 +264,7 @@ Paths are relative to `/recordings/api/v1/`.
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (65) — the StapelError envelope
+## Error codes (66) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -316,6 +322,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.415.unsupported_media_type [415] retry
 - error.422.unprocessable_entity [422] wait_and_retry
 - error.423.locked [423] wait_and_retry
+- error.423.share_unlock_disabled [423] wait_and_retry
 - error.423.verification_locked [423] wait_and_retry
 - error.429.rate_limit [429] wait_and_retry {retry_after_minutes}
 - error.429.share_unlock_throttled [429] wait_and_retry

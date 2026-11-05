@@ -1,6 +1,6 @@
 {
   "module": "stapel-recordings",
-  "version": "0.43.0",
+  "version": "0.44.0",
   "provides": "An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.",
   "axes": [
     {
@@ -568,6 +568,12 @@
       "intent": "An llm.transcribe result assembled from a handoff object that is sitting in this deployment's own bucket with no segments to show for it — a transcription that happened, was paid for, and whose reply never got home. Reach for it before submitting the priced task in any host transcribe stage: the key is addressed by THIS side, so a lost reply is an unread transcript rather than a lost one, and adopting it is the difference between collecting paid work and buying it twice."
     },
     {
+      "name": "stt_models_from_result",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.stt_models_from_result",
+      "intent": "The STT wire model out of an llm.transcribe reply, for a host stage that persists the transcript itself; nulls when the reply names none."
+    },
+    {
       "name": "submit_task",
       "kind": "factory",
       "path": "stapel_recordings.stages.submit_task",
@@ -599,6 +605,18 @@
       "kind": "predicate",
       "path": "stapel_recordings.stages.summary_skipped",
       "intent": "The stored SUMMARY_SKIP_POLICY outcome {reason, at}, or None."
+    },
+    {
+      "name": "summary_stamp",
+      "kind": "predicate",
+      "path": "stapel_recordings.stages.summary_stamp",
+      "intent": "Which model wrote the summary on screen (stored with the text), or None; read it instead of inferring from run rows."
+    },
+    {
+      "name": "summary_stamp_from_reply",
+      "kind": "factory",
+      "path": "stapel_recordings.stages.summary_stamp_from_reply",
+      "intent": "The model stamp of the summarize reply that wrote a summary, from that reply's own metering; pass it to store_summary."
     },
     {
       "name": "task_deadline_seconds",

@@ -18,6 +18,7 @@
   "error.409.recording_upload_parts_missing": "Ещё не получено частей загрузки: {count} ({missing})",
   "error.413.recording_too_large": "Загрузка объёмом {size} байт превышает максимально допустимый размер в {limit} байт",
   "error.415.recording_unsupported_media": "Тип загружаемого файла не поддерживается",
+  "error.423.share_unlock_disabled": "Слишком много неверных кодов — попросите у владельца новый",
   "error.429.share_unlock_throttled": "Слишком много попыток — повторите позже",
   "error.503.recording_media_unavailable": "Выдача медиа недоступна",
   "error.503.recording_summarize_unavailable": "Краткий пересказ недоступен",

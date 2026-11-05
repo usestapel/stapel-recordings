@@ -114,6 +114,11 @@ def test_no_purpose_payload_is_byte_identical(transcribed):
             assert stages._summary_purpose(transcribed) is None
 
 
+def _receipt(r):
+    """The summary's version receipt without its model stamp."""
+    return {k: v for k, v in r.metadata["derived"]["summary"].items() if k != "stamp"}
+
+
 def test_no_hook_pipeline_sends_the_old_key_and_records_nothing(
     ready_recording, stub_transcribe, stub_summarize, drain
 ):
@@ -123,7 +128,7 @@ def test_no_hook_pipeline_sends_the_old_key_and_records_nothing(
     r = Recording.objects.get(pk=ready_recording.id)
     assert payload["idempotency_key"] == f"summary:{_hash(r)}"
     assert "purpose_guidance" not in payload and "purpose_label" not in payload
-    assert r.metadata["derived"]["summary"] == {"transcript_hash": _hash(r)}
+    assert _receipt(r) == {"transcript_hash": _hash(r)}
     assert stages.SUMMARY_PURPOSE_KEY not in r.workflow_state
 
 
@@ -139,7 +144,7 @@ def test_hook_payload_key_and_summary_record(
     assert payload["purpose_guidance"] == GUIDANCE
     assert payload["purpose_label"] == LABEL
     assert payload["idempotency_key"] == f"summary:{_hash(r)}:{DIGEST}"
-    assert r.metadata["derived"]["summary"] == {
+    assert _receipt(r) == {
         "transcript_hash": _hash(r),
         "purpose_prompt_version": "texts_v1",
         "purpose_prompt_digest": DIGEST,

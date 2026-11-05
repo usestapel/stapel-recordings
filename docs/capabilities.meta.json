@@ -546,6 +546,18 @@
     "reusable_original": {
       "kind": "gate_function",
       "intent": "The completed original whose transcript this run may reuse: only for a charge-waived, server-verified duplicate of the same owner transcribed under the same parameters. None otherwise."
+    },
+    "stt_models_from_result": {
+      "kind": "factory",
+      "intent": "The STT wire model out of an llm.transcribe reply, for a host stage that persists the transcript itself; nulls when the reply names none."
+    },
+    "summary_stamp_from_reply": {
+      "kind": "factory",
+      "intent": "The model stamp of the summarize reply that wrote a summary, from that reply's own metering; pass it to store_summary."
+    },
+    "summary_stamp": {
+      "kind": "predicate",
+      "intent": "Which model wrote the summary on screen (stored with the text), or None; read it instead of inferring from run rows."
     }
   }
 }

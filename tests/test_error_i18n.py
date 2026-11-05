@@ -120,6 +120,8 @@ _MACHINE_RU = {
         "Эта ссылка не даёт такого права",
     "error.429.share_unlock_throttled":
         "Слишком много попыток — повторите позже",
+    "error.423.share_unlock_disabled":
+        "Слишком много неверных кодов — попросите у владельца новый",
 }
 
 _MACHINE_ES = {
@@ -171,6 +173,8 @@ _MACHINE_ES = {
         "Este enlace de acceso no concede ese permiso",
     "error.429.share_unlock_throttled":
         "Demasiados intentos: inténtalo de nuevo más tarde",
+    "error.423.share_unlock_disabled":
+        "Demasiados códigos incorrectos: pide uno nuevo al propietario",
 }
 
 #: language -> machine-translation table, consulted for the keys the curated

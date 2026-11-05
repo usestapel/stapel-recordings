@@ -16,9 +16,13 @@ never holds a working link, and no code path compares the secret itself.
 
 **Passcode** — human-chosen and therefore low entropy, so it goes through
 Django's configured password hasher (a slow KDF) and is guarded by a
-counter: :data:`SHARE_UNLOCK_MAX_ATTEMPTS` failures lock unlocking for
-``SHARE_UNLOCK_LOCKOUT_SECONDS``. Without that pair, a four-digit passcode
-is an afternoon's work.
+counter: every :data:`SHARE_UNLOCK_MAX_ATTEMPTS` consecutive failures lock
+unlocking for ``SHARE_UNLOCK_LOCKOUT_SECONDS``, and the count is never
+reset by a lock, so ``SHARE_UNLOCK_FAILURE_CAP`` consecutive failures
+disable the passcode until its owner sets one again
+(:func:`set_share_passcode`). A pacing lock alone admits the same number
+of guesses every window for as long as the link lives; the cap bounds the
+guesses per passcode, ever.
 
 **Unlock token** — what the client presents after passing the passcode. It
 is a signed, purpose-salted, time-limited token carrying the share id, the
@@ -63,6 +67,7 @@ from .errors import (
     ERR_401_SHARE_PASSCODE_REQUIRED,
     ERR_403_SHARE_PERMISSION_DENIED,
     ERR_404_SHARE_NOT_FOUND,
+    ERR_423_SHARE_UNLOCK_DISABLED,
     ERR_429_SHARE_THROTTLED,
 )
 from .models import Recording, RecordingShare, RecordingStatus
@@ -122,6 +127,17 @@ class ShareThrottled(ShareError):
     def __init__(self, retry_after_seconds: int = 0):
         super().__init__(f"unlock locked out for {retry_after_seconds}s")
         self.retry_after_seconds = retry_after_seconds
+
+
+class ShareUnlockDisabled(ShareError):
+    """The passcode has failed ``SHARE_UNLOCK_FAILURE_CAP`` times in a row.
+
+    Even the right passcode is refused until the owner sets a passcode
+    again (:func:`set_share_passcode`). There is no ``retry_after``: waiting
+    does not reopen it."""
+
+    error_key = ERR_423_SHARE_UNLOCK_DISABLED
+    status_code = 423
 
 
 class SharePermissionDenied(ShareError):
@@ -305,8 +321,10 @@ def unlock_share(share: RecordingShare, passcode: str, *, now=None) -> str:
         # unlocks first works against both kinds of share.
         return issue_unlock_token(share)
 
+    if failure_cap_reached(share):
+        raise ShareUnlockDisabled("passcode disabled after repeated failures")
     if share.locked_until and share.locked_until > now:
-        raise ShareThrottled(int((share.locked_until - now).total_seconds()))
+        raise ShareThrottled(max(1, int((share.locked_until - now).total_seconds())))
 
     if check_password(passcode or "", share.passcode_hash):
         RecordingShare.objects.filter(pk=share.pk).update(
@@ -320,15 +338,23 @@ def unlock_share(share: RecordingShare, passcode: str, *, now=None) -> str:
     raise SharePasscodeRequired("invalid passcode")
 
 
+def failure_cap_reached(share: RecordingShare) -> bool:
+    """True when the passcode has failed ``SHARE_UNLOCK_FAILURE_CAP`` times in
+    a row (0 turns the cap off)."""
+    cap = int(_setting("SHARE_UNLOCK_FAILURE_CAP", 100))
+    return cap > 0 and int(share.failed_unlock_count or 0) >= cap
+
+
 def _register_failed_unlock(share: RecordingShare, *, now) -> None:
-    max_attempts = int(_setting("SHARE_UNLOCK_MAX_ATTEMPTS", 5))
+    max_attempts = max(1, int(_setting("SHARE_UNLOCK_MAX_ATTEMPTS", 5)))
     lockout = int(_setting("SHARE_UNLOCK_LOCKOUT_SECONDS", 300))
     with transaction.atomic():
         locked = RecordingShare.objects.select_for_update().get(pk=share.pk)
+        # Counted, never reset by a lock: the count is what the failure cap
+        # reads. Only a correct passcode or a new one clears it.
         locked.failed_unlock_count = (locked.failed_unlock_count or 0) + 1
-        if locked.failed_unlock_count >= max_attempts:
+        if locked.failed_unlock_count % max_attempts == 0:
             locked.locked_until = now + timedelta(seconds=lockout)
-            locked.failed_unlock_count = 0
         locked.save(update_fields=["failed_unlock_count", "locked_until", "updated_at"])
     share.refresh_from_db(fields=["failed_unlock_count", "locked_until"])
 
@@ -383,6 +409,8 @@ __all__ = [
     "SharePasscodeRequired",
     "SharePermissionDenied",
     "ShareThrottled",
+    "ShareUnlockDisabled",
+    "failure_cap_reached",
     "create_share",
     "revoke_share",
     "set_share_passcode",

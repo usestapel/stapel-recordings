@@ -137,6 +137,87 @@ def test_successful_unlock_clears_the_counter(make_recording):
     assert RecordingShare.objects.get(pk=share.pk).failed_unlock_count == 0
 
 
+def _fail(share, times, *, now):
+    for _ in range(times):
+        with pytest.raises((shares.SharePasscodeRequired, shares.ShareThrottled)):
+            shares.unlock_share(share, "0000", now=now)
+
+
+def test_a_lock_does_not_reset_the_failure_count(make_recording):
+    share, _link = _protected(make_recording)
+    now = timezone.now()
+    with override_settings(STAPEL_RECORDINGS={"SHARE_UNLOCK_MAX_ATTEMPTS": 5}):
+        _fail(share, 5, now=now)
+    share.refresh_from_db()
+    assert share.failed_unlock_count == 5
+    assert share.locked_until is not None
+
+
+def test_a_guess_during_a_lock_is_not_counted(make_recording):
+    share, _link = _protected(make_recording)
+    now = timezone.now()
+    with override_settings(STAPEL_RECORDINGS={"SHARE_UNLOCK_MAX_ATTEMPTS": 5}):
+        _fail(share, 5, now=now)
+        with pytest.raises(shares.ShareThrottled) as exc:
+            shares.unlock_share(share, "0000", now=now)
+    assert exc.value.retry_after_seconds > 0
+    share.refresh_from_db()
+    assert share.failed_unlock_count == 5
+
+
+def _fail_across_locks(share, failures):
+    """*failures* wrong passcodes, each window waited out (simulated time)."""
+    now = timezone.now()
+    for _ in range(failures):
+        share.refresh_from_db()
+        if share.locked_until and share.locked_until > now:
+            now = share.locked_until + timezone.timedelta(seconds=1)
+        with pytest.raises(shares.SharePasscodeRequired):
+            shares.unlock_share(share, "0000", now=now)
+    share.refresh_from_db()
+    return share.locked_until + timezone.timedelta(seconds=1) if share.locked_until else now
+
+
+def test_one_hundred_failures_disable_even_the_right_passcode(make_recording):
+    share, _link = _protected(make_recording)
+    later = _fail_across_locks(share, 100)
+    assert share.failed_unlock_count == 100
+    with pytest.raises(shares.ShareUnlockDisabled) as exc:
+        shares.unlock_share(share, "1234", now=later + timezone.timedelta(days=30))
+    assert exc.value.status_code == 423
+    assert exc.value.error_key == "error.423.share_unlock_disabled"
+    # A refused attempt past the cap is not counted either.
+    share.refresh_from_db()
+    assert share.failed_unlock_count == 100
+    # The owner sets a passcode again: the count, the lock and the old
+    # unlock tokens go, the link stays.
+    shares.set_share_passcode(share, "87654321")
+    assert share.failed_unlock_count == 0
+    assert shares.unlock_share(share, "87654321", now=later)
+
+
+def test_a_correct_passcode_after_99_failures_resets_the_count(make_recording):
+    share, _link = _protected(make_recording)
+    later = _fail_across_locks(share, 99)
+    assert share.failed_unlock_count == 99
+    assert shares.unlock_share(share, "1234", now=later)
+    share.refresh_from_db()
+    assert share.failed_unlock_count == 0
+    assert share.locked_until is None
+
+
+def test_the_failure_cap_is_a_setting_and_zero_turns_it_off(make_recording):
+    share, _link = _protected(make_recording)
+    with override_settings(STAPEL_RECORDINGS={"SHARE_UNLOCK_FAILURE_CAP": 0}):
+        later = _fail_across_locks(share, 101)
+        assert shares.unlock_share(share, "1234", now=later)
+    share2, _ = _protected(make_recording)
+    with override_settings(STAPEL_RECORDINGS={"SHARE_UNLOCK_FAILURE_CAP": 7}):
+        later = _fail_across_locks(share2, 7)
+        with pytest.raises(shares.ShareUnlockDisabled):
+            shares.unlock_share(share2, "1234", now=later)
+
+
 # ── the recording's lifecycle outranks the link ──────────────────────────
 
 

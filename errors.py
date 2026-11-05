@@ -34,6 +34,7 @@ ERR_404_SHARE_NOT_FOUND = "error.404.share_not_found"
 ERR_401_SHARE_PASSCODE_REQUIRED = "error.401.share_passcode_required"
 ERR_403_SHARE_PERMISSION_DENIED = "error.403.share_permission_denied"
 ERR_429_SHARE_THROTTLED = "error.429.share_unlock_throttled"
+ERR_423_SHARE_UNLOCK_DISABLED = "error.423.share_unlock_disabled"
 # Authorized media delivery. "Not stored" is the caller's state (no object
 # yet); "unavailable" is the deployment's (the storage backend cannot mint an
 # expiring URL, and this module will not substitute a permanent one).
@@ -77,6 +78,7 @@ STAPEL_RECORDINGS_ERRORS = {
     ERR_401_SHARE_PASSCODE_REQUIRED: "This share link requires a passcode",
     ERR_403_SHARE_PERMISSION_DENIED: "This share link does not grant that",
     ERR_429_SHARE_THROTTLED: "Too many attempts — try again later",
+    ERR_423_SHARE_UNLOCK_DISABLED: "Too many wrong passcodes — ask the owner for a new one",
     ERR_409_MEDIA_NOT_STORED: "This recording has no media file",
     ERR_503_MEDIA_UNAVAILABLE: "Media delivery is not available",
     ERR_503_UPLOAD_UNVERIFIABLE: "Upload could not be verified",
@@ -117,6 +119,7 @@ __all__ = [
     "ERR_401_SHARE_PASSCODE_REQUIRED",
     "ERR_403_SHARE_PERMISSION_DENIED",
     "ERR_429_SHARE_THROTTLED",
+    "ERR_423_SHARE_UNLOCK_DISABLED",
     "ERR_409_MEDIA_NOT_STORED",
     "ERR_503_MEDIA_UNAVAILABLE",
     "ERR_503_UPLOAD_UNVERIFIABLE",

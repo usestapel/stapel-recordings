@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.44.0] — 2026-11-05
+
+- **Passcode guessing is capped per passcode.** A lock no longer resets the
+  failure count: every `SHARE_UNLOCK_MAX_ATTEMPTS`-th consecutive failure
+  still locks for `SHARE_UNLOCK_LOCKOUT_SECONDS`, and at
+  `SHARE_UNLOCK_FAILURE_CAP` (default 100, 0 = off) consecutive failures
+  `unlock_share` raises the new `ShareUnlockDisabled`
+  (`error.423.share_unlock_disabled`, 423, en/es/ru) even for the right
+  passcode, until `set_share_passcode` (which clears the count and the lock
+  and ends old unlock tokens). A correct passcode before the cap clears the
+  count; a guess during a lock is still not counted. `failure_cap_reached()`
+  is exported. Breaking for a host that read `failed_unlock_count == 0`
+  after a lock.
+- **The recording names its STT wire model.** Migration `0009` adds
+  `Recording.asr_model`, `diar_model`, `asr_model_source`. The transcribe
+  stage stores the reply's `model` / `diar_model` (stapel-agent 0.39.0+;
+  `stt_models_from_result()` for host stages that call
+  `_persist_transcript`, which takes them as keywords) with the transcript
+  and replaces them with it; a reply without a model stores nulls. The
+  transcript header's `engine` gains `asr_provider`, `diar_model_id` and
+  `asr_model_source`; `asr_model_id` is the wire model when known, else the
+  registration name as before. `engine` stays outside the version key.
+- **The summary's model is stamped with the summary.** `store_summary(…,
+  stamp=)` writes `{model, provider, fallback_used, at, origin, run_id}`
+  into `metadata["derived"]["summary"]["stamp"]` in the same save as the
+  text; the merge stage and the re-summary build it from THEIR reply's
+  metering (`summary_stamp_from_reply`), so a reply without metering stamps
+  `model: null` and a failed or skipped summary changes nothing. A
+  re-summary job's `provider_used` (read as `model_used`) is that model.
+  `summary_stamp()` reads it; `RecordingDTO` gains `asr_model`,
+  `summary_model` and `summary_generated_at`.
+- **Speaker-name suggestions** (`SUMMARIZE_SPEAKER_NAMES`, default off; needs
+  stapel-agent 0.39.0+). On, the summarize payload asks for
+  `speaker_names`; the reply's guesses are checked by
+  `speaker_names.checked_guesses` — label of an unnamed speaker of this
+  transcript, evidence verbatim in one segment (whose times become the
+  guess's), the name inside the quote, one per label — and stored with the
+  summary with drop counts by reason. `speaker_names.speaker_name_guesses()`
+  reads the ones still worth showing (confidence floor, speaker still
+  unnamed). Off, the payload is unchanged.
+
 ## [0.43.0] — 2026-11-04
 
 - **An all-empty STT chain is terminal `no_speech`, not user-retryable.**

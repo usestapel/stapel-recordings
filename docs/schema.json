@@ -1205,7 +1205,7 @@
       },
       "RecordingDTO": {
         "type": "object",
-        "description": "A recording as seen by the API.\n\n``is_processing`` / ``poll_after_seconds`` are the module's answer to\n\"when do I ask again\": this module serves no socket, so a client learns\nthat a recording moved by re-reading it, and the two fields say whether\nthat is worth doing and how soon. ``poll_after_seconds`` is ``None``\nexactly when ``is_processing`` is false — the status is terminal, or the\nclient itself is holding the next move — which is how the payload says\n*stop* as explicitly as it says *ask again*. The same number travels as\nthe ``Retry-After`` header for callers that read HTTP rather than the\nbody.\n\n``needs_payment_reason`` is set exactly when ``status`` is\n``needs_payment``: the machine-readable code the park carries\n(``insufficient_credits``, ``free_minutes_exhausted``), so a client can\nrender \"top up to finish this recording\" with the right sentence instead\nof a generic stall. Only the reason crosses the wire — the park's\n``detail`` can carry balance internals and stays in ``workflow_state``,\nwhich is the same line the error seam draws.",
+        "description": "A recording as seen by the API.\n\n``is_processing`` / ``poll_after_seconds`` are the module's answer to\n\"when do I ask again\": this module serves no socket, so a client learns\nthat a recording moved by re-reading it, and the two fields say whether\nthat is worth doing and how soon. ``poll_after_seconds`` is ``None``\nexactly when ``is_processing`` is false — the status is terminal, or the\nclient itself is holding the next move — which is how the payload says\n*stop* as explicitly as it says *ask again*. The same number travels as\nthe ``Retry-After`` header for callers that read HTTP rather than the\nbody.\n\n``needs_payment_reason`` is set exactly when ``status`` is\n``needs_payment``: the machine-readable code the park carries\n(``insufficient_credits``, ``free_minutes_exhausted``), so a client can\nrender \"top up to finish this recording\" with the right sentence instead\nof a generic stall. Only the reason crosses the wire — the park's\n``detail`` can carry balance internals and stays in ``workflow_state``,\nwhich is the same line the error seam draws.\n\n``asr_model`` is the STT wire model (``provider_used`` is the\nregistration name); ``summary_model`` / ``summary_generated_at`` come\nfrom the stamp written with the current summary text. All three are\nnull when nothing recorded them — never a guess.",
         "properties": {
           "id": {
             "type": "string"
@@ -1266,6 +1266,18 @@
             "nullable": true
           },
           "needs_payment_reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "asr_model": {
+            "type": "string",
+            "nullable": true
+          },
+          "summary_model": {
+            "type": "string",
+            "nullable": true
+          },
+          "summary_generated_at": {
             "type": "string",
             "nullable": true
           }

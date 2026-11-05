@@ -486,6 +486,14 @@
     "owner": "stapel_core"
   },
   {
+    "code": "error.423.share_unlock_disabled",
+    "status": 423,
+    "params": [],
+    "remediation": "wait_and_retry",
+    "en": "Too many wrong passcodes — ask the owner for a new one",
+    "owner": "stapel_recordings"
+  },
+  {
     "code": "error.423.verification_locked",
     "status": 423,
     "params": [],

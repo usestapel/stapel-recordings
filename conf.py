@@ -340,6 +340,11 @@ DEFAULTS = {
         # characters in practice); without a bound it is not a secret.
         "SHARE_UNLOCK_MAX_ATTEMPTS": 5,
         "SHARE_UNLOCK_LOCKOUT_SECONDS": 5 * 60,
+        # Consecutive failed passcodes after which the passcode is disabled
+        # until the owner sets one again (set_share_passcode). The lock above
+        # paces guessing; this bounds it per passcode (NIST SP 800-63B: at
+        # most 100 consecutive failures). 0 turns the cap off.
+        "SHARE_UNLOCK_FAILURE_CAP": 100,
         # TTL of the media URL handed to a share that carries the "media"
         # permission. Short: the URL leaves the trust boundary.
         "SHARE_MEDIA_URL_TTL_SECONDS": 5 * 60,
@@ -497,6 +502,12 @@ DEFAULTS = {
         "EMPTY_TRANSCRIPT_MIN_AUDIO_SECONDS": 5.0,
         "SUMMARIZE_ENABLED": True,
         "SUMMARIZE_MODEL": "medium",
+        # Ask llm.summarize, in the same call, for the names the transcript
+        # states for its speaker labels (stapel-agent >= 0.39.0, whose
+        # schema accepts ``speaker_names``). The guesses are checked
+        # (speaker_names.py) and stored with the summary they came with.
+        # Off, the payload is exactly the previous one.
+        "SUMMARIZE_SPEAKER_NAMES": False,
         # How long to WAIT for llm.summarize. Without an explicit argument
         # the call falls back to FUNCTION_TIMEOUT (default 5s), and a
         # meeting summary doesn't get written in five seconds — the failure

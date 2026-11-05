@@ -93,9 +93,23 @@ class LanguageMeta:
 
 @dataclass
 class EngineMeta:
+    """Which engines produced the transcript (provenance, outside the key).
+
+    ``asr_model_id`` is the wire model the STT provider was asked for
+    (``scribe_v2``) when the transcribe reply named it, else the provider's
+    registration name as before; ``asr_provider`` is always the registration
+    name. ``diar_model_id`` is a separate diarizer's model, null when the STT
+    model diarized itself. ``asr_model_source`` says where the model came
+    from (``recorded``, or a backfill's ``config``); null when
+    ``asr_model_id`` is only the provider name.
+    """
+
     asr_model_id: str
     pipeline_version: str
     fallback_used: bool
+    asr_provider: Optional[str] = None
+    diar_model_id: Optional[str] = None
+    asr_model_source: Optional[str] = None
 
 
 @dataclass
@@ -184,10 +198,16 @@ def from_db_segments(recording) -> UnifiedTranscript:
         detected=lang,
         path="B" if metadata.get("user_selected_language") else "A",
     )
+    asr_model = getattr(recording, "asr_model", None)
     engine_meta = EngineMeta(
-        asr_model_id=recording.provider_used or "unknown",
+        asr_model_id=asr_model or recording.provider_used or "unknown",
         pipeline_version=PIPELINE_VERSION,
         fallback_used=bool(recording.fallback_used),
+        asr_provider=recording.provider_used or None,
+        diar_model_id=getattr(recording, "diar_model", None) or None,
+        asr_model_source=(
+            getattr(recording, "asr_model_source", None) if asr_model else None
+        ),
     )
     qa_result = run_qa(
         segments=segments,

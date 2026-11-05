@@ -1101,6 +1101,7 @@ class TranscribeStage(Stage):
             transcript,
             provider_used=result.get("provider_used"),
             fallback_used=bool(result.get("fallback_used")),
+            **stt_models_from_result(result),
         )
         # A POSTBOX, NOT AN ARTIFACT. transcript.raw.json exists to get the
         # answer off the wire; the transcript's permanent home is the
@@ -1255,7 +1256,17 @@ class MergeStage(Stage):
                 # provider can answer. The driver saves workflow_state.
                 summary_repair.mark_pending_from(recording, result, save=False)
         else:
-            store_summary(recording, summary, purpose=_sent_purpose(recording))
+            from .pipeline import run_identity
+
+            store_summary(
+                recording,
+                summary,
+                purpose=_sent_purpose(recording),
+                stamp=summary_stamp_from_reply(
+                    result, origin="merge", run_id=run_identity(recording).get("run_id")
+                ),
+                speaker_name_guesses=_reply_guesses(result),
+            )
         return ctx
 
 
@@ -1353,6 +1364,8 @@ def _summarize_payload(
     if purpose is not None:
         payload["purpose_guidance"] = purpose.guidance
         payload["purpose_label"] = purpose.label
+    if recordings_settings.SUMMARIZE_SPEAKER_NAMES:
+        payload["speaker_names"] = True
     if budget_seconds:
         payload[TASK_TIMEOUT_KEY] = int(budget_seconds)
     payload_language = _transcript_language(recording, transcript)
@@ -1606,8 +1619,65 @@ def summary_from_result(result):
     return summary if summary else None
 
 
+#: Key of the summary's model stamp inside ``metadata["derived"]["summary"]``.
+SUMMARY_STAMP_KEY = "stamp"
+
+
+def summary_stamp_from_reply(reply, *, origin: str, run_id=None) -> dict:
+    """The stamp of the ``llm.summarize`` reply that produced a summary.
+
+    ``{model, provider, fallback_used, at, origin, run_id}``, read from THIS
+    reply's own ``metering`` — never from ``workflow_state["metering"]``,
+    which is filled before it is known whether a summary came back and can
+    hold an earlier run's entry. A reply without metering stamps
+    ``model: None``: an unknown model is null, never an older value.
+    """
+    from django.utils import timezone
+
+    reply = reply if isinstance(reply, dict) else {}
+    metering = reply.get("metering") if isinstance(reply.get("metering"), dict) else {}
+
+    def _text(value):
+        value = str(value).strip() if value is not None else ""
+        return value[:128] or None
+
+    return {
+        "model": _text(metering.get("model")),
+        "provider": _text(metering.get("provider") or reply.get("provider_used")),
+        "fallback_used": bool(metering.get("fallback_used") or reply.get("fallback_used")),
+        "at": timezone.now().isoformat(),
+        "origin": origin,
+        "run_id": str(run_id) if run_id else None,
+    }
+
+
+def _reply_guesses(result):
+    """The reply's ``speaker_name_guesses`` when it carries the key, else
+    None (not asked, or an agent that does not know the flag)."""
+    if isinstance(result, dict) and "speaker_name_guesses" in result:
+        guesses = result.get("speaker_name_guesses")
+        return guesses if isinstance(guesses, list) else []
+    return None
+
+
+def summary_stamp(recording) -> dict | None:
+    """The stamp stored with the recording's current summary, or ``None``
+    (no summary, or one stored before stamps existed)."""
+    if not recording.summary:
+        return None
+    derived = (recording.metadata or {}).get("derived") or {}
+    stamp = (derived.get(DERIVED_SUMMARY) or {}).get(SUMMARY_STAMP_KEY)
+    return dict(stamp) if isinstance(stamp, dict) else None
+
+
 def store_summary(
-    recording, summary: str, *, transcript=None, purpose: dict | None = None
+    recording,
+    summary: str,
+    *,
+    transcript=None,
+    purpose: dict | None = None,
+    stamp: dict | None = None,
+    speaker_name_guesses: list | None = None,
 ) -> None:
     """Persist a produced summary AND pin it to the transcript behind it.
 
@@ -1623,6 +1693,16 @@ def store_summary(
     *purpose* (``{purpose_prompt_version, purpose_prompt_digest}``, see
     :func:`_sent_purpose`) is recorded beside the version key. A produced
     summary also replaces a stored skip outcome.
+
+    *stamp* (:func:`summary_stamp_from_reply`) is written in the same save
+    and the same row as the text, so a whole-row save restores text and
+    stamp together. Without one the stamp is cleared: the model of a
+    previous summary must not be read as this one's.
+
+    *speaker_name_guesses* is the reply's list when it was asked for one
+    (``SUMMARIZE_SPEAKER_NAMES``); it is checked
+    (:func:`stapel_recordings.speaker_names.checked_guesses`) and stored
+    with this summary. ``None`` stores no block.
     """
     from . import transcript_schema
 
@@ -1634,7 +1714,14 @@ def store_summary(
     derived[DERIVED_SUMMARY] = {
         "transcript_hash": transcript_schema.transcript_hash(transcript),
         **(purpose or {}),
+        **({SUMMARY_STAMP_KEY: dict(stamp)} if stamp else {}),
     }
+    if speaker_name_guesses is not None:
+        from . import speaker_names
+
+        derived[DERIVED_SUMMARY][speaker_names.SPEAKER_NAMES_KEY] = speaker_names.record(
+            recording, transcript, speaker_name_guesses
+        )
     metadata["derived"] = derived
     staleness = dict(metadata.get("staleness") or {})
     staleness.pop(DERIVED_SUMMARY, None)
@@ -1902,12 +1989,23 @@ def _apply_summary_result(recording, job, result) -> bool:
             summary_repair.mark_pending_from(recording, result)
         return False
 
-    store_summary(recording, summary, purpose=_sent_purpose(recording))
+    stamp = summary_stamp_from_reply(result, origin=RESUMMARIZE_STAGE, run_id=job.id)
+    store_summary(
+        recording,
+        summary,
+        purpose=_sent_purpose(recording),
+        stamp=stamp,
+        speaker_name_guesses=_reply_guesses(result),
+    )
     job.status = JobStatus.COMPLETED
     job.progress_percent = 100
     job.completed_at = timezone.now()
     job.result = {"summary_chars": len(summary)}
-    job.save(update_fields=["status", "progress_percent", "completed_at", "result"])
+    # JobResponse.model_used reads provider_used: the model that wrote it.
+    job.provider_used = stamp["model"][:64] if stamp["model"] else None
+    job.save(update_fields=[
+        "status", "progress_percent", "completed_at", "result", "provider_used",
+    ])
     # Emitted INSIDE the same transaction as the write (outbox discipline):
     # a host that debits for this must never be told about a summary that
     # rolled back, and must always be told about one that did not.
@@ -2177,7 +2275,38 @@ def refuse_empty_transcript(recording, transcript: dict, result: dict) -> None:
     raise StageFatal("empty_transcript", detail)
 
 
-def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_used) -> None:
+def stt_models_from_result(result) -> dict:
+    """``{"asr_model", "diar_model"}`` of an ``llm.transcribe`` reply, for
+    :func:`_persist_transcript`.
+
+    ``model`` is the wire model the provider was asked for (stapel-agent
+    0.39.0+); ``diar_model`` is a separate diarizer's, null when the STT
+    model diarized itself. A reply that names neither (an older agent)
+    stores nulls, never the registration name: a label naming the wrong
+    model is worse than none.
+    """
+    if not isinstance(result, dict):
+        return {"asr_model": None, "diar_model": None}
+
+    def _clean(value):
+        value = str(value).strip() if value is not None else ""
+        return value[:128] or None
+
+    return {
+        "asr_model": _clean(result.get("model")),
+        "diar_model": _clean(result.get("diar_model")),
+    }
+
+
+def _persist_transcript(
+    recording,
+    transcript: dict,
+    *,
+    provider_used,
+    fallback_used,
+    asr_model=None,
+    diar_model=None,
+) -> None:
     """Write Speaker/Segment rows from an ``llm.transcribe`` result dict and
     denormalize counters onto the Recording.
 
@@ -2257,12 +2386,17 @@ def _persist_transcript(recording, transcript: dict, *, provider_used, fallback_
         recording.speakers_count = len(speaker_map)
         recording.word_count = word_count
         recording.provider_used = provider_used
+        # Replaced with the transcript: a model of the PREVIOUS transcript
+        # left beside this one would name the wrong engine.
+        recording.asr_model = asr_model
+        recording.asr_model_source = "recorded" if asr_model else None
+        recording.diar_model = diar_model
         recording.fallback_used = fallback_used
         recording.confidence_avg = _mean_confidence(o.confidence for o in objs)
         recording.save(update_fields=[
             "language", "duration_seconds", "segments_count", "speakers_count",
-            "word_count", "provider_used", "fallback_used", "confidence_avg",
-            "updated_at",
+            "word_count", "provider_used", "asr_model", "asr_model_source",
+            "diar_model", "fallback_used", "confidence_avg", "updated_at",
         ])
 
 
@@ -2319,11 +2453,15 @@ def copy_transcript(source, recording) -> None:
         recording.speakers_count = len(speaker_map)
         recording.word_count = sum(o.word_count or 0 for o in objs)
         recording.provider_used = source.provider_used
+        recording.asr_model = source.asr_model
+        recording.asr_model_source = source.asr_model_source
+        recording.diar_model = source.diar_model
         recording.fallback_used = source.fallback_used
         recording.confidence_avg = _mean_confidence(o.confidence for o in objs)
         recording.save(update_fields=[
             "language", "segments_count", "speakers_count", "word_count",
-            "provider_used", "fallback_used", "confidence_avg", "updated_at",
+            "provider_used", "asr_model", "asr_model_source", "diar_model",
+            "fallback_used", "confidence_avg", "updated_at",
         ])
 
 
@@ -2516,6 +2654,10 @@ __all__ = [
     "stage_dedupe_key",
     "stage_input_dedupe_key",
     "summary_from_result",
+    "stt_models_from_result",
+    "summary_stamp",
+    "summary_stamp_from_reply",
+    "SUMMARY_STAMP_KEY",
     "store_summary",
     "start_resummarize",
     "resume_resummarize",
