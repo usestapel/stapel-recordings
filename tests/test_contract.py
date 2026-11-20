@@ -97,7 +97,7 @@ CANONICAL_PREFIX = "/recordings/api/v1/"
 # landed it at 9135/9000. And to 11000 once 0.39.0's duplicate guard landed
 # it at 10518/10000. And to 12000 once 0.44.0's model stamps landed it at
 # 11035/11000.
-ARTIFACTS = TRIAD + ("capabilities.json", "llms.txt")
+ARTIFACTS = TRIAD + ("schema.v2.json", "capabilities.json", "llms.txt")
 LLMS_TXT_BUDGET = "12000"
 
 

@@ -119,7 +119,7 @@ jobs:
         run: python -c "import stapel_recordings; print('import OK')"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.9.1,<1"
+        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.84.0,<1"
 
       # tests/test_normalize_live_webm.py needs a real ffmpeg (see ci.yml) —
       # a missing binary must fail this release gate red, never skip.

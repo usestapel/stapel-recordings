@@ -1,8 +1,8 @@
-# stapel-recordings 0.44.0
+# stapel-recordings 0.44.1
 
 An audio service, not a video host. Recording lifecycle: upload of any media container (presigned single-PUT and multipart), from which the audio track is extracted, downmixed to mono and stored — the container itself is never kept and never served back — then a configurable processing pipeline (convert, transcribe, diarize, merge) producing a unified speaker-attributed transcript, optional automatic summaries, and a watchdog that recovers stuck or abandoned recordings. Storage therefore scales with hours of speech (~10.8 MB/hour at the default Opus profile), not with what the recording was made on.
 
-Contract: axes 1 · surface 89 · extension points 7 · operations 18 · error codes 66.
+Contract: axes 1 · surface 89 · extension points 7 · operations 18 · error codes 67.
 Generated from docs/capabilities.json by `stapel-llms-txt` — do not edit; drift-gated by `make contract-check`.
 
 ## Configuration axes — what a product switches on
@@ -264,7 +264,7 @@ Paths are relative to `/recordings/api/v1/`.
 - GET /shares/{link_token} — recordings_api_v1_shares_retrieve
 - POST /shares/{link_token}/unlock — recordings_api_v1_shares_unlock_create
 
-## Error codes (66) — the StapelError envelope
+## Error codes (67) — the StapelError envelope
 Render `t(code, params)`; branch UX on the remediation. Localized text lives in docs/errors.<lang>.md, not here.
 - error.400.bad_request [400] fix_input
 - error.400.captcha_invalid [400] retry
@@ -285,6 +285,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.400.recording_invalid_state [400] fix_input
 - error.400.recording_multipart_parts_invalid [400] fix_input {max_parts}
 - error.400.recording_upload_size_invalid [400] fix_input {limit}
+- error.400.too_many_ids [400] fix_input {requested,limit}
 - error.400.validation_error [400] fix_input
 - error.400.verification_failed [400] verify
 - error.400.verification_invalid_factor [400] verify
@@ -324,7 +325,7 @@ Render `t(code, params)`; branch UX on the remediation. Localized text lives in 
 - error.423.locked [423] wait_and_retry
 - error.423.share_unlock_disabled [423] wait_and_retry
 - error.423.verification_locked [423] wait_and_retry
-- error.429.rate_limit [429] wait_and_retry {retry_after_minutes}
+- error.429.rate_limit [429] wait_and_retry {retry_after_display,retry_after,retry_after_minutes}
 - error.429.share_unlock_throttled [429] wait_and_retry
 - error.429.too_many_requests [429] wait_and_retry
 - error.500.internal [500] contact_support

@@ -33,14 +33,14 @@ jobs:
 
       - name: migration-lint (expand/contract gate, release-management.md §3)
         run: |
-          pip install "stapel-tools>=0.9.1,<1" --quiet
+          pip install "stapel-tools>=0.84.0,<1" --quiet
           stapel-migration-lint . --strict
 
       - name: Import check
         run: python -c "import stapel_recordings; print('import OK')"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.9.1,<1"
+        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.84.0,<1"
 
       # tests/test_normalize_live_webm.py builds its fixture from a REAL
       # ffmpeg (live-muxed .webm, exactly what a browser's MediaRecorder
@@ -50,6 +50,10 @@ jobs:
       # STAPEL_RECORDINGS_SKIP_FFMPEG=1 opt-out (never set in CI).
       - name: Install ffmpeg (tests/test_normalize_live_webm.py needs a real one)
         run: sudo apt-get update -qq && sudo apt-get install -y ffmpeg
+
+      - name: Contract drift (make contract-check, emitted on 3.12)
+        if: matrix.python-version == '3.12'
+        run: make contract-check PYTHON=python
 
       - name: Tests with coverage
         run: |
@@ -108,14 +112,14 @@ jobs:
 
       - name: migration-lint (expand/contract gate, release-management.md §3)
         run: |
-          pip install "stapel-tools>=0.9.1,<1" --quiet
+          pip install "stapel-tools>=0.84.0,<1" --quiet
           stapel-migration-lint . --strict
 
       - name: Import check
         run: python -c "import stapel_recordings; print('import OK')"
 
       - name: Install test dependencies
-        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.9.1,<1"
+        run: pip install pytest pytest-django pytest-cov "stapel-tools>=0.84.0,<1"
 
       # See the "test" job above: tests/test_normalize_live_webm.py needs a
       # real ffmpeg, and a missing one must fail red, not skip.

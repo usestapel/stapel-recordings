@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stapel-recordings"
-version = "0.44.0"
+version = "0.44.1"
 description = "Recording lifecycle and transcription for the Stapel framework"
 readme = "README.md"
 license = { text = "MIT" }
@@ -40,7 +40,7 @@ dependencies = [
     # protocol now lives in core (`register_gdpr_owner`, called from
     # apps.ready()), and 0.85.1 is where the provider bridge yields to it.
     # An older core has no such symbol, so it is an ImportError at startup.
-    "stapel-core>=0.85.1,<1.0",
+    "stapel-core>=0.99.3,<1.0",
 ]
 
 [project.urls]

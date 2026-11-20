@@ -65,7 +65,7 @@ contract-check:
 	$(PYTHON) -m stapel_recordings._capabilities --out "$$tmp" || { rm -rf "$$tmp"; exit 1; }; \
 	$(PYTHON) -m stapel_tools.llms_txt . --out "$$tmp" --budget 12000 || { rm -rf "$$tmp"; exit 1; }; \
 	rc=0; \
-	for f in schema.json flows.json errors.json capabilities.json llms.txt; do \
+	for f in schema.json schema.v2.json flows.json errors.json capabilities.json llms.txt; do \
 		if ! diff -q "docs/$$f" "$$tmp/$$f" >/dev/null 2>&1; then \
 			echo "DRIFT: docs/$$f is stale — run 'make contract' and commit it"; \
 			diff "docs/$$f" "$$tmp/$$f" | head -20; rc=1; \
@@ -73,7 +73,7 @@ contract-check:
 	done; \
 	rm -rf "$$tmp"; \
 	$(PYTHON) -m stapel_tools.readme . --check || rc=1; \
-	if [ $$rc -eq 0 ]; then echo "contract-check: docs/{schema,flows,errors,capabilities,llms.txt} + README.md up to date"; fi; \
+	if [ $$rc -eq 0 ]; then echo "contract-check: docs/{schema,schema.v2,flows,errors,capabilities,llms.txt} + README.md up to date"; fi; \
 	exit $$rc
 
 

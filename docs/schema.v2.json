@@ -1,0 +1,2502 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "",
+    "version": "0.0.0",
+    "x-stapel-contract": 2
+  },
+  "paths": {
+    "/recordings/api/v1/recordings": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_list",
+        "description": "Create a recording and open its upload session, or list recordings.\n\n``POST`` creates the recording inside the workspace its payload names,\nwhich requires membership of that workspace (verified against the\nworkspaces module; non-members get 403 and nothing is created).\n\n``GET`` lists what ``RECORDING_POLICY`` makes visible to you (default:\nyour own recordings); pass ``?workspace_id=<uuid>`` to narrow that to one\nworkspace you are a member of (membership is verified against the\nworkspaces module; non-members get 403). The workspace listing goes\nthrough the same object policy as the per-recording endpoints, so it\nnever lists a recording those would refuse; a deployment that wants\nevery member to see every recording in the workspace says so with\n``WORKSPACE_LISTING_MEMBERS_SEE_ALL``.\n\nPass ``?resource_key=<opaque-token>`` to narrow the listing to the single\nrecording that token references. The key is the opaque, signed handle\ncarried in every recording payload (``resolve_resource_key``); it composes\nwith ``workspace_id`` (workspace scope stays membership-gated) or with the\ndefault owner scope. A missing/forged/tampered key resolves to nothing, so\nthe listing comes back **empty** rather than 400 — the token is\ntamper-evident and opaque by design, so we neither leak whether a token is\ngenuine nor surface a distinct error for a value the client only ever\nobtains from a prior server response.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "resource_key",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Narrow the listing to the single recording this opaque resource_key references. A missing/forged key yields an empty listing."
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Narrow the listing to this workspace (requires membership). What it returns inside the workspace is still what RECORDING_POLICY makes visible."
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RecordingDTO"
+                  }
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-stapel-errors": [
+              "error.403.recording_workspace_forbidden"
+            ]
+          }
+        }
+      },
+      "post": {
+        "operationId": "recordings_api_v1_recordings_create",
+        "description": "Create a recording and open its upload session, or list recordings.\n\n``POST`` creates the recording inside the workspace its payload names,\nwhich requires membership of that workspace (verified against the\nworkspaces module; non-members get 403 and nothing is created).\n\n``GET`` lists what ``RECORDING_POLICY`` makes visible to you (default:\nyour own recordings); pass ``?workspace_id=<uuid>`` to narrow that to one\nworkspace you are a member of (membership is verified against the\nworkspaces module; non-members get 403). The workspace listing goes\nthrough the same object policy as the per-recording endpoints, so it\nnever lists a recording those would refuse; a deployment that wants\nevery member to see every recording in the workspace says so with\n``WORKSPACE_LISTING_MEMBERS_SEE_ALL``.\n\nPass ``?resource_key=<opaque-token>`` to narrow the listing to the single\nrecording that token references. The key is the opaque, signed handle\ncarried in every recording payload (``resolve_resource_key``); it composes\nwith ``workspace_id`` (workspace scope stays membership-gated) or with the\ndefault owner scope. A missing/forged/tampered key resolves to nothing, so\nthe listing comes back **empty** rather than 400 — the token is\ntamper-evident and opaque by design, so we neither leak whether a token is\ngenuine nor surface a distinct error for a value the client only ever\nobtains from a prior server response.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecordingRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecordingRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRecordingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateRecordingResponse"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-stapel-errors": [
+              "error.400.recording_multipart_parts_invalid",
+              "error.400.recording_upload_size_invalid"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-stapel-errors": [
+              "error.403.recording_workspace_forbidden"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_upload_duplicate"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "x-stapel-errors": [
+              "error.413.recording_too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Unsupported Media Type",
+            "x-stapel-errors": [
+              "error.415.recording_unsupported_media"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_retrieve",
+        "description": "Fetch a single recording.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/finalize": {
+      "post": {
+        "operationId": "recordings_api_v1_recordings_finalize_create",
+        "description": "Finalize the upload and enqueue the pipeline.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeUploadRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeUploadRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/FinalizeUploadRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-stapel-errors": [
+              "error.400.recording_multipart_parts_invalid"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_invalid_state",
+              "error.409.recording_upload_part_mismatch",
+              "error.409.recording_upload_parts_missing"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "x-stapel-errors": [
+              "error.413.recording_too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Unsupported Media Type",
+            "x-stapel-errors": [
+              "error.415.recording_unsupported_media"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-stapel-errors": [
+              "error.503.recording_upload_unverifiable"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/media": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_media_retrieve",
+        "description": "Issue a short-lived, authorized URL to a recording's media object.\n\nThis endpoint is how bytes are reached — it exists so that the bucket\ndoes not have to be readable by anyone holding an object key (audit\nSTORE-01). The object policy answers ``can_read`` for *this* recording\nfirst; only then is a presigned GET minted, with\n``MEDIA_URL_TTL_SECONDS`` on it.\n\n``?redirect=1`` answers ``302`` to the URL (drop-in for an ``<audio\nsrc>``); the default JSON body carries the expiry so a client can\nrefresh before playback dies. ``503`` means the deployment's storage\nbackend cannot sign — no permanent URL is substituted.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "redirect",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Answer 302 to the media URL instead of a JSON body."
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaURLDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_media_not_stored"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-stapel-errors": [
+              "error.503.recording_media_unavailable"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/multipart": {
+      "post": {
+        "operationId": "recordings_api_v1_recordings_multipart_create",
+        "description": "Start a multipart upload.\n\nWithout ``fingerprint``: every part URL comes back in ``parts`` (legacy).\nWith ``fingerprint`` (v1): a VERIFIED upload — ``parts`` is empty; mint\npart URLs bound to each part's SHA-256 with ``POST …/parts``.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartStartRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartStartRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultipartStartDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-stapel-errors": [
+              "error.400.recording_multipart_parts_invalid",
+              "error.400.recording_upload_size_invalid"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_invalid_state",
+              "error.409.recording_upload_duplicate"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "x-stapel-errors": [
+              "error.413.recording_too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Unsupported Media Type",
+            "x-stapel-errors": [
+              "error.415.recording_unsupported_media"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "x-stapel-errors": [
+              "error.500.internal"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/multipart/{upload_id}/abort": {
+      "delete": {
+        "operationId": "recordings_api_v1_recordings_multipart_abort_destroy",
+        "description": "Abort a multipart upload and drop its stored parts.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No response body"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_invalid_state"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/multipart/{upload_id}/complete": {
+      "post": {
+        "operationId": "recordings_api_v1_recordings_multipart_complete_create",
+        "description": "Complete a multipart upload and enqueue the pipeline.\n\nBody ``{parts: [{part_number, etag, sha256?}]}``. A verified upload is\nchecked against the store first: ``409 recording_upload_parts_missing``\n(``{count, missing}``) or ``409 recording_upload_part_mismatch``\n(``{part_number}``, 0 = the whole-file fingerprint) leave the upload\nopen to re-send and complete again. Idempotent: a completed upload\nanswers 200 with its recording.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartCompleteRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartCompleteRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartCompleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-stapel-errors": [
+              "error.400.recording_multipart_parts_invalid"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_invalid_state",
+              "error.409.recording_upload_expired",
+              "error.409.recording_upload_part_mismatch",
+              "error.409.recording_upload_parts_missing"
+            ]
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Request Entity Too Large",
+            "x-stapel-errors": [
+              "error.413.recording_too_large"
+            ]
+          },
+          "415": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Unsupported Media Type",
+            "x-stapel-errors": [
+              "error.415.recording_unsupported_media"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-stapel-errors": [
+              "error.503.recording_upload_unverifiable"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/multipart/{upload_id}/parts": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_multipart_parts_retrieve",
+        "description": "Part URLs and the store's manifest for one multipart upload.\n\n``POST`` (verified uploads): ``{parts: [{part_number, sha256}]}``, at\nmost 100 per call → URLs signed over each hash plus the exact\n``headers`` the PUT must send.\n\n``GET``: what the store holds (``uploaded_parts``) and what is\n``missing``. ``?mint=none`` returns the manifest alone; for a legacy\nupload ``mint=missing`` (default) or ``mint=1,2`` also mints unbound URLs.\nFor a verified upload ``parts`` is always empty.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mint",
+            "schema": {
+              "type": "string"
+            },
+            "description": "none | missing (default) | comma list of part numbers. Legacy uploads only; a verified upload never mints here."
+          },
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultipartManifestDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-stapel-errors": [
+              "error.400.recording_multipart_parts_invalid"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_invalid_state",
+              "error.409.recording_upload_expired"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-stapel-errors": [
+              "error.503.recording_upload_unverifiable"
+            ]
+          }
+        }
+      },
+      "post": {
+        "operationId": "recordings_api_v1_recordings_multipart_parts_create",
+        "description": "Part URLs and the store's manifest for one multipart upload.\n\n``POST`` (verified uploads): ``{parts: [{part_number, sha256}]}``, at\nmost 100 per call → URLs signed over each hash plus the exact\n``headers`` the PUT must send.\n\n``GET``: what the store holds (``uploaded_parts``) and what is\n``missing``. ``?mint=none`` returns the manifest alone; for a legacy\nupload ``mint=missing`` (default) or ``mint=1,2`` also mints unbound URLs.\nFor a verified upload ``parts`` is always empty.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          },
+          {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartMintRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartMintRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/MultipartMintRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MultipartMintDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "x-stapel-errors": [
+              "error.400.recording_multipart_parts_invalid"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_invalid_state",
+              "error.409.recording_upload_expired"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/reprocess": {
+      "post": {
+        "operationId": "recordings_api_v1_recordings_reprocess_create",
+        "description": "Re-run the whole pipeline for a finished recording (``completed → queued``).\n\nExposes the ``pipeline.reprocess_recording`` transition: the progress cursor\nis cleared and every stage re-runs from stage 0 (distinct from the\nresume-in-place retry). Allowed **only** from ``completed`` — from any other\nstatus the transition is a no-op and the endpoint answers ``409``\n(``error.409.recording_invalid_state``). Owner-scoped, like every other\nper-recording verb; an unknown/foreign/deleted recording is ``404``.\n\nAuthority is the object policy's ``can_reprocess``. A policy that\nanswers with a :class:`~stapel_recordings.policy.PolicyDecision` names\nthe status and error key of its own refusal (``402`` for an unpaid\nbalance, say); a bare ``bool`` keeps the ``404``.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-stapel-errors": [
+              "error.403.recording_action_denied"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_invalid_state"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/resummarize": {
+      "post": {
+        "operationId": "recordings_api_v1_recordings_resummarize_create",
+        "description": "Regenerate the summary of ONE recording — no STT, no diarization.\n\nThe cheap half of :class:`ReprocessRecordingView`. Reprocess re-runs the\nwhole pipeline (a second transcription, a second bill) and is the wrong\ntool for the case that actually happens: the transcript is right — often\nbecause a human just corrected it — and the summary built from the older\ntranscript is the only thing out of date. Where reprocess is a staff\nverb, this is the user's own: it re-runs the same ``llm.summarize`` call\nthe ``merge`` stage makes, stores the result the same way, and re-pins\nthe summary to the transcript it was built from so the staleness marker\nclears.\n\n``202`` with a :class:`~stapel_recordings.dto.JobDTO` — the work is\naccepted, not finished. **Idempotent**: while a re-summary for this\nrecording is in flight, every further POST answers ``202`` with the SAME\njob instead of paying for a second summary, so a double-clicked button\ncosts one summary.\n\n``409`` (``error.409.recording_no_transcript``) when there is nothing to\nsummarize yet; ``503`` (``error.503.recording_summarize_unavailable``)\nwhen the deployment has summaries switched off or the bus refused the\nwork. ``404`` for an unknown, foreign or deleted recording.\n\nAuthority is the object policy's ``can_resummarize`` — which defaults to\nwhatever the policy says about ``can_reprocess``, so a host that already\nnarrowed reprocess does not have to discover a second verb, while a host\nthat wants \"users may re-summarize, only staff may reprocess\" overrides\none method.\n\nA denial answers with the policy's OWN status and error key when it\nreturns a :class:`~stapel_recordings.policy.PolicyDecision`: a metered\nhost refuses an out-of-credit re-summary with ``402`` and a key its UI\ncan turn into a top-up prompt, instead of the ``404`` that says the\nrecording does not exist. A policy that answers with a bare ``bool``\nkeeps the ``404``.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-stapel-errors": [
+              "error.403.recording_action_denied"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_no_transcript"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-stapel-errors": [
+              "error.503.recording_summarize_unavailable"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/{recording_id}/transcript": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_transcript_retrieve",
+        "description": "Read the OWNER's own speaker-attributed transcript.\n\nThe gap this closes: segments used to leave this module through exactly\none door — ``SharedRecordingDTO.segments`` on a public share link — so an\nowner could read their transcript only by publishing it to the internet\nfirst. ``RecordingDTO.transcript_storage_key`` was not an alternative: it\nis a raw object key, and nothing signs it (the media endpoint signs the\n*media* object, not the transcript).\n\nSame authority as every other per-recording read: owner-scoped through\n``_owned_qs`` and then the object policy's ``can_read``, so an unknown,\nforeign or deleted recording is a ``404`` and a widened\n``RECORDING_POLICY`` widens this with it. Same wire shape as the share\npath — :class:`~stapel_recordings.dto.TranscriptSegmentDTO` — so a\ntranscript renderer is written once and serves both doors.\n\nPaginated, anchored on ``sequence_num`` (:class:`TranscriptPagination`):\na meeting-length transcript is thousands of segments, and the anchor is\nwhat keeps a page stable while the pipeline is still appending to the end.\n\nA recording that has no segments yet answers ``200`` with an empty page,\nnot an error — \"not transcribed yet\" is a stage of a normal lifecycle,\nand while the pipeline is mid-flight the response carries the same\n``Retry-After`` the recording read does, so the client is told when to\ncome back rather than left to guess.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "anchor",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "sequence_num to page from, exclusive. Omit for the first page; pass the previous page's next_anchor to continue."
+          },
+          {
+            "in": "query",
+            "name": "direction",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "center",
+                "next",
+                "prev"
+              ],
+              "default": "next"
+            },
+            "description": "next = later segments (the reading direction), prev = earlier, center = the window around the anchor."
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Segments per page (default TRANSCRIPT_PAGE_SIZE, capped at TRANSCRIPT_MAX_PAGE_SIZE)."
+          },
+          {
+            "in": "path",
+            "name": "recording_id",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptPage"
+                }
+              }
+            },
+            "description": ""
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.recording_not_found"
+            ]
+          }
+        },
+        "x-stapel-pagination": {
+          "style": "anchor",
+          "items": "items",
+          "params": [
+            "anchor",
+            "direction",
+            "limit"
+          ]
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/upload-limits": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_upload_limits_retrieve",
+        "description": "The upload ceilings, before the first byte.\n\n``MAX_UPLOAD_BYTES`` (the ``413`` line), the multipart part size and\npart cap, and the extension allowlist (the ``415`` line) — the numbers a\nfrontend needs to refuse a file locally and to phrase the refusal with\nthe real limit. Same door as creating a recording: an account, not a\nguest session.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadLimitsDTO"
+                }
+              }
+            },
+            "description": ""
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/recordings/uploads/lookup": {
+      "get": {
+        "operationId": "recordings_api_v1_recordings_uploads_lookup_retrieve",
+        "description": "Is this file already here? Looked up by its fingerprint v1.\n\n``found: false`` — start a new upload. ``state: complete`` — the\nrecording already holds this file (``upload_id`` is null).\n``state: in_progress`` — resume ``upload_id``; ``uploaded_parts`` and\n``missing`` are what the STORE holds. Workspace members only, and only\nrecordings the caller may open are considered.\n\n**Permissions:** `IsNotAnonymousUser`",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "fingerprint",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "workspace_id",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {
+            "JWTCookieAuth": []
+          },
+          {
+            "JWTBearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadLookupDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-stapel-errors": [
+              "error.403.recording_workspace_forbidden"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_invalid_state"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-stapel-errors": [
+              "error.503.recording_upload_unverifiable"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/shares/{link_token}": {
+      "get": {
+        "operationId": "recordings_api_v1_shares_retrieve",
+        "description": "Read a recording through a public share link.\n\nAnonymous by design: the link token in the path IS the credential, and\n``shares.access_share`` is what verifies it — revocation, expiry, the\nrecording's own lifecycle, and (for a passcode-protected share) a\n*verified* unlock token from the ``X-Share-Unlock-Token`` header. The\nprojection then renders only what the share grants.\n\n**Permissions:** `AllowAny`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "link_token",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharedRecordingDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-stapel-errors": [
+              "error.401.share_passcode_required"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.share_not_found"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/shares/{link_token}/media": {
+      "get": {
+        "operationId": "recordings_api_v1_shares_media_retrieve",
+        "description": "Media URL for a share link that carries the ``media`` permission.\n\nThe public half of STORE-01: a shared recording plays without the bucket\nbeing anonymously readable. The share is verified on every call, the\n``media`` grant is required explicitly (a share that only grants ``view``\ngets 403), and the URL is minted with ``SHARE_MEDIA_URL_TTL_SECONDS`` —\nshorter than the owner's, because this one leaves the trust boundary.\n\n**Permissions:** `AllowAny`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "link_token",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "redirect",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Answer 302 to the media URL instead of a JSON body."
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "security": [
+          {}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaURLDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-stapel-errors": [
+              "error.401.share_passcode_required"
+            ]
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "x-stapel-errors": [
+              "error.403.share_permission_denied"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.share_not_found"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Conflict",
+            "x-stapel-errors": [
+              "error.409.recording_media_not_stored"
+            ]
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "x-stapel-errors": [
+              "error.503.recording_media_unavailable"
+            ]
+          }
+        }
+      }
+    },
+    "/recordings/api/v1/shares/{link_token}/unlock": {
+      "post": {
+        "operationId": "recordings_api_v1_shares_unlock_create",
+        "description": "Exchange a share's passcode for a time-limited unlock token.\n\nThe token is signed and bound to the share, its generation and a TTL —\npresenting *any* nonempty value here is what SHARE-01 was. Guessing is\nbounded by the persisted lockout in ``shares.unlock_share``.\n\n**Permissions:** `AllowAny`",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "link_token",
+            "schema": {
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "tags": [
+          "Recordings"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareUnlockRequest"
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareUnlockRequest"
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareUnlockRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareUnlockDTO"
+                }
+              }
+            },
+            "description": ""
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "x-stapel-errors": [
+              "error.401.share_passcode_required"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Not Found",
+            "x-stapel-errors": [
+              "error.404.share_not_found"
+            ]
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Locked",
+            "x-stapel-errors": [
+              "error.423.share_unlock_disabled"
+            ]
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StapelError"
+                }
+              }
+            },
+            "description": "Too Many Requests",
+            "x-stapel-errors": [
+              "error.429.share_unlock_throttled"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CompletedPart": {
+        "type": "object",
+        "properties": {
+          "part_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "etag": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "etag",
+          "part_number"
+        ]
+      },
+      "CreateRecordingRequest": {
+        "type": "object",
+        "description": "Incoming payload to create a recording + open an upload session.",
+        "properties": {
+          "workspace_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "source_type": {
+            "type": "string",
+            "maxLength": 32
+          },
+          "language": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 10
+          },
+          "diarization_enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "filename": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "allow_duplicate": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "filename",
+          "title",
+          "workspace_id"
+        ]
+      },
+      "CreateRecordingResponse": {
+        "type": "object",
+        "description": "CreateRecordingResponse(recording: 'RecordingDTO', upload: 'UploadSessionDTO')",
+        "properties": {
+          "recording": {
+            "$ref": "#/components/schemas/RecordingDTO"
+          },
+          "upload": {
+            "$ref": "#/components/schemas/UploadSessionDTO"
+          }
+        },
+        "required": [
+          "recording",
+          "upload"
+        ]
+      },
+      "FinalizeUploadRequest": {
+        "type": "object",
+        "properties": {
+          "file_size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "JobDTO": {
+        "type": "object",
+        "description": "A background job this module accepted — the receipt for a 202.\n\nDeliberately not the whole Job row: a caller needs to know WHICH run was\naccepted (so it can poll, and so it can recognize its own retry landing\non the same one) and what state it is in. ``recording_id`` is here\nbecause the job reference travels on its own once the client stores it.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "recording_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "queued_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "queued_at",
+          "recording_id",
+          "status",
+          "type",
+          "workspace_id"
+        ]
+      },
+      "MediaURLDTO": {
+        "type": "object",
+        "description": "A short-lived, authorized URL to a recording's media object.\n\nThe expiry travels *with* the URL because the client has to plan around\nit: the URL stops working, and a player that cached it has to come back\nhere rather than retry a dead link forever.",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expires_at",
+          "expires_in",
+          "url"
+        ]
+      },
+      "MultipartCompleteRequest": {
+        "type": "object",
+        "properties": {
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompletedPart"
+            }
+          }
+        },
+        "required": [
+          "parts"
+        ]
+      },
+      "MultipartManifestDTO": {
+        "type": "object",
+        "description": "What the store holds for an upload, and what is still missing.",
+        "properties": {
+          "upload_id": {
+            "type": "string"
+          },
+          "recording_id": {
+            "type": "string"
+          },
+          "part_size_bytes": {
+            "type": "integer"
+          },
+          "total_parts": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "uploaded_parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoredPartDTO"
+            }
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MultipartPartURLDTO"
+            }
+          }
+        },
+        "required": [
+          "expires_at",
+          "missing",
+          "part_size_bytes",
+          "parts",
+          "recording_id",
+          "total_parts",
+          "upload_id",
+          "uploaded_parts"
+        ]
+      },
+      "MultipartMintDTO": {
+        "type": "object",
+        "description": "MultipartMintDTO(parts: 'list[MultipartPartURLDTO]', expires_at: 'str')",
+        "properties": {
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MultipartPartURLDTO"
+            }
+          },
+          "expires_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "parts"
+        ]
+      },
+      "MultipartMintRequest": {
+        "type": "object",
+        "properties": {
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartHash"
+            }
+          }
+        },
+        "required": [
+          "parts"
+        ]
+      },
+      "MultipartPartURLDTO": {
+        "type": "object",
+        "description": "A presigned part URL. ``headers`` are the headers the PUT must send\nexactly (the checksum a verified part URL is signed over); empty for a\nlegacy part.",
+        "properties": {
+          "part_number": {
+            "type": "integer"
+          },
+          "presigned_url": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "headers",
+          "part_number",
+          "presigned_url"
+        ]
+      },
+      "MultipartStartDTO": {
+        "type": "object",
+        "description": "A started multipart upload. ``parts`` carries every part URL for a\nlegacy upload and is empty for a verified (fingerprint) one — those are\nminted bound to each part's hash.",
+        "properties": {
+          "upload_id": {
+            "type": "string"
+          },
+          "recording_id": {
+            "type": "string"
+          },
+          "storage_key": {
+            "type": "string"
+          },
+          "part_size_bytes": {
+            "type": "integer"
+          },
+          "total_parts": {
+            "type": "integer"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MultipartPartURLDTO"
+            }
+          },
+          "expires_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "part_size_bytes",
+          "parts",
+          "recording_id",
+          "storage_key",
+          "total_parts",
+          "upload_id"
+        ]
+      },
+      "MultipartStartRequest": {
+        "type": "object",
+        "properties": {
+          "file_size_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 255
+          },
+          "filename": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "fingerprint": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "allow_duplicate": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "file_size_bytes"
+        ]
+      },
+      "PartHash": {
+        "type": "object",
+        "properties": {
+          "part_number": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "part_number",
+          "sha256"
+        ]
+      },
+      "RecordingDTO": {
+        "type": "object",
+        "description": "A recording as seen by the API.\n\n``is_processing`` / ``poll_after_seconds`` are the module's answer to\n\"when do I ask again\": this module serves no socket, so a client learns\nthat a recording moved by re-reading it, and the two fields say whether\nthat is worth doing and how soon. ``poll_after_seconds`` is ``None``\nexactly when ``is_processing`` is false — the status is terminal, or the\nclient itself is holding the next move — which is how the payload says\n*stop* as explicitly as it says *ask again*. The same number travels as\nthe ``Retry-After`` header for callers that read HTTP rather than the\nbody.\n\n``needs_payment_reason`` is set exactly when ``status`` is\n``needs_payment``: the machine-readable code the park carries\n(``insufficient_credits``, ``free_minutes_exhausted``), so a client can\nrender \"top up to finish this recording\" with the right sentence instead\nof a generic stall. Only the reason crosses the wire — the park's\n``detail`` can carry balance internals and stays in ``workflow_state``,\nwhich is the same line the error seam draws.\n\n``asr_model`` is the STT wire model (``provider_used`` is the\nregistration name); ``summary_model`` / ``summary_generated_at`` come\nfrom the stamp written with the current summary text. All three are\nnull when nothing recorded them — never a guess.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "resource_key": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "source_type": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "nullable": true
+          },
+          "duration_seconds": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "segments_count": {
+            "type": "integer"
+          },
+          "speakers_count": {
+            "type": "integer"
+          },
+          "word_count": {
+            "type": "integer"
+          },
+          "provider_used": {
+            "type": "string",
+            "nullable": true
+          },
+          "transcript_storage_key": {
+            "type": "string",
+            "nullable": true
+          },
+          "summary": {
+            "type": "string",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "is_processing": {
+            "type": "boolean"
+          },
+          "poll_after_seconds": {
+            "type": "integer",
+            "nullable": true
+          },
+          "needs_payment_reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "asr_model": {
+            "type": "string",
+            "nullable": true
+          },
+          "summary_model": {
+            "type": "string",
+            "nullable": true
+          },
+          "summary_generated_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "created_at",
+          "duration_seconds",
+          "id",
+          "is_processing",
+          "language",
+          "needs_payment_reason",
+          "poll_after_seconds",
+          "provider_used",
+          "resource_key",
+          "segments_count",
+          "source_type",
+          "speakers_count",
+          "status",
+          "summary",
+          "title",
+          "transcript_storage_key",
+          "word_count",
+          "workspace_id"
+        ]
+      },
+      "ShareUnlockDTO": {
+        "type": "object",
+        "description": "The token a client presents after passing a share's passcode.",
+        "properties": {
+          "unlock_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expires_in",
+          "unlock_token"
+        ]
+      },
+      "ShareUnlockRequest": {
+        "type": "object",
+        "description": "Passcode presented to a share's unlock endpoint.",
+        "properties": {
+          "passcode": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      },
+      "SharedRecordingDTO": {
+        "type": "object",
+        "description": "A recording as seen through a public share link.\n\nField presence follows the share's granted permissions, not the\ncaller's request: ``summary``, ``segments`` and ``media_url`` stay empty\nunless the link grants them. The recording's internal identifiers\n(workspace, storage keys, provider) are not part of this payload at\nall — a public link is not a window into the tenant.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "language": {
+            "type": "string",
+            "nullable": true
+          },
+          "duration_seconds": {
+            "type": "number",
+            "format": "double",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "summary": {
+            "type": "string",
+            "nullable": true
+          },
+          "media_url": {
+            "type": "string",
+            "nullable": true
+          },
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptSegmentDTO"
+            }
+          }
+        },
+        "required": [
+          "created_at",
+          "duration_seconds",
+          "id",
+          "language",
+          "media_url",
+          "permissions",
+          "segments",
+          "status",
+          "summary",
+          "title"
+        ]
+      },
+      "StapelError": {
+        "type": "object",
+        "description": "Structured error returned by all Stapel API endpoints.",
+        "properties": {
+          "localizable_error": {
+            "type": "string",
+            "description": "Translation key for client-side localization",
+            "example": "error.404.not_found"
+          },
+          "error": {
+            "type": "string",
+            "description": "Human-readable fallback/debug message — not reliably English,"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Context values for template placeholders",
+            "example": {
+              "retry_after": 30
+            }
+          },
+          "error_language": {
+            "type": "string",
+            "description": "The language `error` is written in (e.g. 'en', 'ru'),"
+          }
+        },
+        "required": [
+          "error",
+          "localizable_error"
+        ]
+      },
+      "StoredPartDTO": {
+        "type": "object",
+        "description": "A part the STORE holds; ``sha256`` is the store's own digest (hex),\n``None`` on a backend that does not report one.",
+        "properties": {
+          "part_number": {
+            "type": "integer"
+          },
+          "etag": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "etag",
+          "part_number",
+          "sha256",
+          "size"
+        ]
+      },
+      "TranscriptPage": {
+        "type": "object",
+        "description": "The anchor-paginated envelope one transcript page arrives in.\n\nWritten out rather than left to the paginator's generic schema so the\ngenerated client gets a *typed* page: without it ``items`` emits as an\nuntyped list and every consumer re-declares the segment shape by hand,\nwhich is how the two ends drift.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TranscriptSegmentDTO"
+            }
+          },
+          "next_anchor": {
+            "type": "integer",
+            "nullable": true
+          },
+          "prev_anchor": {
+            "type": "integer",
+            "nullable": true
+          },
+          "has_next": {
+            "type": "boolean"
+          },
+          "has_prev": {
+            "type": "boolean"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count",
+          "has_next",
+          "has_prev",
+          "items",
+          "next_anchor",
+          "prev_anchor"
+        ],
+        "x-stapel-pagination": {
+          "style": "anchor",
+          "items": "items"
+        }
+      },
+      "TranscriptSegmentDTO": {
+        "type": "object",
+        "description": "One speaker-attributed transcript segment.\n\nONE shape for both readers — the owner's paginated transcript read and\nthe projection inside a share link — because they are the same thing\nseen from two doors, and a client that renders a transcript must not\nhave to write it twice. What differs between the doors is *whether* the\nsegments are reachable at all (the share needs the ``transcript``\ngrant), never their shape.",
+        "properties": {
+          "sequence_num": {
+            "type": "integer"
+          },
+          "start_time": {
+            "type": "number",
+            "format": "double"
+          },
+          "end_time": {
+            "type": "number",
+            "format": "double"
+          },
+          "speaker": {
+            "type": "string",
+            "nullable": true
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "end_time",
+          "sequence_num",
+          "speaker",
+          "start_time",
+          "text"
+        ]
+      },
+      "UploadLimitsDTO": {
+        "type": "object",
+        "description": "The upload ceilings, and what will be kept, readable before the first\nbyte is sent.\n\n``max_upload_bytes`` is what ``error.413.recording_too_large`` enforces;\n``multipart_part_size`` / ``max_multipart_parts`` bound the multipart\nflow; ``allowed_extensions`` is what ``error.415.recording_unsupported_media``\nenforces. A client that reads this can refuse a file locally and phrase\nthe refusal with the real numbers instead of discovering them from a\nrejected request.\n\nThe ``audio_only_ingest`` / ``stored_audio_*`` half says what the\nservice does with an accepted file: extracts its audio track, downmixes\nto mono, keeps that and nothing else. It is why ``max_upload_bytes`` can\nbe much larger than ``max_stored_bytes`` — and\n``stored_bytes_per_hour`` is what a UI multiplies to tell someone what\nan hour of recording will cost them.",
+        "properties": {
+          "max_upload_bytes": {
+            "type": "integer"
+          },
+          "max_stored_bytes": {
+            "type": "integer"
+          },
+          "audio_only_ingest": {
+            "type": "boolean"
+          },
+          "stored_audio_codec": {
+            "type": "string"
+          },
+          "stored_audio_channels": {
+            "type": "integer"
+          },
+          "stored_audio_sample_rate": {
+            "type": "integer"
+          },
+          "stored_bytes_per_hour": {
+            "type": "integer"
+          },
+          "multipart_part_size": {
+            "type": "integer"
+          },
+          "max_multipart_parts": {
+            "type": "integer"
+          },
+          "allowed_extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "allowed_extensions",
+          "audio_only_ingest",
+          "max_multipart_parts",
+          "max_stored_bytes",
+          "max_upload_bytes",
+          "multipart_part_size",
+          "stored_audio_channels",
+          "stored_audio_codec",
+          "stored_audio_sample_rate",
+          "stored_bytes_per_hour"
+        ]
+      },
+      "UploadLookupDTO": {
+        "type": "object",
+        "description": "Is this file (by fingerprint) already here?\n\n``found`` false: nothing to resume, start a new upload. ``state``\n``complete``: the recording already has it. ``in_progress``: resume\n``upload_id`` — ``uploaded_parts`` / ``missing`` are the store's view.",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string",
+            "nullable": true
+          },
+          "recording_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "upload_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "part_size_bytes": {
+            "type": "integer",
+            "nullable": true
+          },
+          "total_parts": {
+            "type": "integer",
+            "nullable": true
+          },
+          "uploaded_parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoredPartDTO"
+            }
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "expires_at": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "expires_at",
+          "found",
+          "missing",
+          "part_size_bytes",
+          "recording_id",
+          "state",
+          "total_parts",
+          "upload_id",
+          "uploaded_parts"
+        ]
+      },
+      "UploadSessionDTO": {
+        "type": "object",
+        "description": "A single-PUT upload session.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "presigned_url": {
+            "type": "string"
+          },
+          "storage_key": {
+            "type": "string"
+          },
+          "max_size_bytes": {
+            "type": "integer"
+          },
+          "expires_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expires_at",
+          "id",
+          "max_size_bytes",
+          "presigned_url",
+          "storage_key"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "JWTBearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT access token in the `Authorization: Bearer <token>` header — the credential a native client sends. When the JWT cookie is also present, the cookie wins."
+      },
+      "JWTCookieAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "stapel_jwt",
+        "description": "JWT token stored in cookie. Login via /auth/admin/ to get the cookie."
+      }
+    }
+  }
+}
