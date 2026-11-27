@@ -175,6 +175,23 @@ class NormalizeFatal(Exception):
         self.detail = detail
 
 
+class NormalizeTransient(NormalizeFatal):
+    """ffmpeg/ffprobe did not finish: timed out, or killed by a signal.
+
+    That says nothing about the input — a loaded host or the OOM killer
+    produces it for a healthy file — so ``convert`` retries it, bounded by
+    ``MAX_STAGE_RETRIES``. A subclass of :class:`NormalizeFatal` so a
+    handler that only knows the base class still stops.
+    """
+
+
+def _process_failure(tool: str, returncode: int, stderr: str) -> NormalizeFatal:
+    """The exception for a non-zero exit. Negative = ended by a signal."""
+    if returncode < 0:
+        return NormalizeTransient(f"{tool}_killed", f"signal {-returncode}: {stderr}")
+    return NormalizeFatal(f"{tool}_failed", f"rc={returncode}: {stderr}")
+
+
 class NormalizePaymentRequired(NormalizeFatal):
     """The wallet cannot buy this recording — park it, don't fail it.
 
@@ -323,10 +340,10 @@ def _run_ffmpeg(src: str, dst: str, *, max_duration_seconds: Optional[float] = N
     except FileNotFoundError as exc:
         raise NormalizeFatal("ffmpeg_missing", str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
-        raise NormalizeFatal("ffmpeg_timeout", f"exceeded {timeout}s") from exc
+        raise NormalizeTransient("ffmpeg_timeout", f"exceeded {timeout}s") from exc
     if proc.returncode != 0:
         stderr = (proc.stderr or b"").decode(errors="replace")[:500]
-        raise NormalizeFatal("ffmpeg_failed", f"rc={proc.returncode}: {stderr}")
+        raise _process_failure("ffmpeg", proc.returncode, stderr)
 
 
 PROBE_MAX_STREAMS = 8
@@ -398,10 +415,10 @@ def _probe_audio(path: str) -> tuple[bool, Optional[float]]:
     except FileNotFoundError as exc:
         raise NormalizeFatal("ffprobe_missing", str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
-        raise NormalizeFatal("ffprobe_timeout", "exceeded 30s") from exc
+        raise NormalizeTransient("ffprobe_timeout", "exceeded 30s") from exc
     if proc.returncode != 0:
         stderr = (proc.stderr or b"").decode(errors="replace")[:300]
-        raise NormalizeFatal("ffprobe_failed", f"rc={proc.returncode}: {stderr}")
+        raise _process_failure("ffprobe", proc.returncode, stderr)
 
     try:
         payload = json.loads(proc.stdout.decode("utf-8") or "{}")
@@ -501,9 +518,9 @@ def _scan_duration_by_packets(path: str) -> Optional[float]:
             proc.stdout.close()
 
     if timed_out:
-        raise NormalizeFatal("duration_unprobeable", f"packet scan exceeded {timeout}s")
+        raise NormalizeTransient("duration_unprobeable", f"packet scan exceeded {timeout}s")
     if proc.returncode != 0:
-        raise NormalizeFatal("ffprobe_failed", f"rc={proc.returncode}: {stderr_tail}")
+        raise _process_failure("ffprobe", proc.returncode, stderr_tail)
     if not last_line:
         return None
     parts = last_line.split(",")
@@ -523,6 +540,7 @@ __all__ = [
     "CODEC_OPUS",
     "CODEC_WAV",
     "NormalizeFatal",
+    "NormalizeTransient",
     "NormalizePaymentRequired",
     "audio_only_ingest_active",
     "audio_profile",

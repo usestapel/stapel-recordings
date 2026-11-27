@@ -533,7 +533,12 @@ class ConvertStage(Stage):
         recording.save(update_fields=["metadata", "updated_at"])
 
     def run(self, recording, ctx):
-        from .normalize import NormalizeFatal, NormalizePaymentRequired, audio_profile
+        from .normalize import (
+            NormalizeFatal,
+            NormalizePaymentRequired,
+            NormalizeTransient,
+            audio_profile,
+        )
 
         if recording.normalized_storage_key and not self.is_stale(recording, ctx):
             # Idempotent, but NOT a bare return: a re-drive after a failed
@@ -573,6 +578,9 @@ class ConvertStage(Stage):
             # or the base-class handler below turns "top up" into "failed".
             except NormalizePaymentRequired as exc:
                 raise StageNeedsPayment(exc.reason, exc.detail, extra=exc.extra) from exc
+            # Transient before Fatal: it is a subclass.
+            except NormalizeTransient as exc:
+                raise StageRetryable(exc.reason, exc.detail) from exc
             except NormalizeFatal as exc:
                 raise StageFatal(exc.reason, exc.detail) from exc
 

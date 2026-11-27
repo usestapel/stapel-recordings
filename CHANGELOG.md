@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.44.2] — 2026-11-27
+
+Patch. No migration, no consumer edit.
+
+- **A conversion that did not finish is retried.** `ffmpeg_timeout`,
+  `ffprobe_timeout`, `duration_unprobeable` (scan timeout) and an
+  ffmpeg/ffprobe ended by a signal (new reasons `ffmpeg_killed`,
+  `ffprobe_killed`) were fatal on the first attempt, although none of them
+  says anything about the file. They raise the new `NormalizeTransient`
+  (a `NormalizeFatal` subclass) and `convert` maps it to `StageRetryable`,
+  bounded by `MAX_STAGE_RETRIES`. An ffmpeg error exit stays fatal.
+
 ## [0.44.1] — 2026-11-20
 
 Patch. No migration. Requires stapel-core 0.99.3.
