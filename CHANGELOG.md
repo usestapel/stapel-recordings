@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.45.0] — 2026-11-27
+
+Minor. No migration. A host with its own recording DTO adds the field.
+
+- **A file cut inside its index is processed as far as it can be read.** An
+  MP4/M4A whose `moov` runs past the end of the file used to fail outright,
+  although its audio is whole. When `convert`'s normalizer refuses such a
+  file (one AAC-LC track, part of the sample-size table surviving), the head
+  those sizes cover is rebuilt, has to decode strictly with no error, and
+  goes through the same normalizer, so a host's cap and billing see only the
+  recovered audio. Anything else fails as before.
+- `RecordingDTO.partial_source` (`{reason: "truncated_index",
+  recovered_seconds, expected_seconds}`, null otherwise): show it, and ask
+  the user to check the original file.
+- Such a recording **keeps its upload** despite `AUDIO_ONLY_INGEST`.
+- New: `SALVAGE_DAMAGED_SOURCE` (default on), the `ConvertStage.salvage_source`
+  hook, `stapel_recordings.salvage.salvage_truncated_mp4`.
+
 ## [0.44.2] — 2026-11-27
 
 Patch. No migration, no consumer edit.

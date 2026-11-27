@@ -57,6 +57,7 @@ every upload, whatever its size.
 | Key | Source | Purpose | Required | Default |
 |-----|--------|---------|----------|---------|
 | AUDIO_ONLY_INGEST | env | keep only the extracted audio and delete the uploaded container. **Not read from the environment** (`no_env`). Off is a documented exception: the upload becomes the stored object and the accepted ceiling drops to MAX_UPLOAD_BYTES. | no | true |
+| SALVAGE_DAMAGED_SOURCE | env | process the readable head of an MP4/M4A whose index was cut off (AAC-LC, strictly decoded). The recording reports `partial_source` and keeps the upload. | no | true |
 | AUDIO_CHANNELS | env | channels of the stored object. Mono unless a host's provider separates speakers BY CHANNEL. | no | 1 |
 | AUDIO_SAMPLE_RATE | env | sample rate of the stored object (Hz). | no | 16000 |
 | AUDIO_CODEC | env | `opus` (Ogg/Opus, ~10.8 MB/hour) or `wav` (16-bit PCM, ~115 MB/hour). | no | opus |

@@ -143,6 +143,8 @@ The five built-ins:
 | `merge` | `merging` | Build + store the unified transcript JSON, then `llm.summarize` | **stapel-agent** |
 | `embed` | — (keeps prior) | **No-op unless** the opt-in vector app is installed AND `VECTOR["ENABLED"]` (the diarize pattern); then batches segment texts + the chunked summary through `llm.embed` and upserts embedding rows (content-hashed, idempotent) | **stapel-agent** |
 
+**Damaged sources.** When the normalizer refuses an MP4/M4A whose `moov` runs past the end of the file, `convert` rebuilds the AAC-LC head the surviving sample sizes cover (`salvage.py`), requires it to decode strictly, and sends it through the same normalizer. The recording then reports `partial_source` and keeps its upload. Switch: `SALVAGE_DAMAGED_SOURCE`; seam: `ConvertStage.salvage_source`.
+
 ### Settings — `STAPEL_RECORDINGS` namespace (`conf.py`)
 
 Resolution per key: `settings.STAPEL_RECORDINGS[key]` → flat Django setting →

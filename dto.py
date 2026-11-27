@@ -6,6 +6,21 @@ from typing import Optional
 
 
 @dataclass
+class PartialSourceDTO:
+    """Only part of the uploaded file could be read.
+
+    Attributes:
+        reason: Why. Example: truncated_index
+        recovered_seconds: Audio that was processed. Example: 244.6
+        expected_seconds: Audio the file says it held. Example: 615.4
+    """
+
+    reason: str
+    recovered_seconds: float
+    expected_seconds: float
+
+
+@dataclass
 class RecordingDTO:
     """A recording as seen by the API.
 
@@ -54,6 +69,7 @@ class RecordingDTO:
     asr_model: Optional[str] = None
     summary_model: Optional[str] = None
     summary_generated_at: Optional[str] = None
+    partial_source: Optional[PartialSourceDTO] = None
 
 
 @dataclass
@@ -335,8 +351,17 @@ def recording_to_dto(recording) -> RecordingDTO:
         poll_after_seconds=poll_after,
         needs_payment_reason=needs_payment_reason(recording),
         asr_model=recording.asr_model,
+        partial_source=partial_source(recording),
         **summary_model_fields(recording),
     )
+
+
+def partial_source(recording) -> Optional[PartialSourceDTO]:
+    """The ``partial_source`` block ``convert`` wrote, or ``None``."""
+    from .stages import PARTIAL_SOURCE_KEY
+
+    block = (recording.workflow_state or {}).get(PARTIAL_SOURCE_KEY)
+    return PartialSourceDTO(**block) if block else None
 
 
 def summary_model_fields(recording) -> dict:

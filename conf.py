@@ -244,6 +244,10 @@ DEFAULTS = {
         # with it off the accepted-upload ceiling drops to what the host is
         # willing to STORE (see MAX_UPLOAD_BYTES below).
         "AUDIO_ONLY_INGEST": True,
+        # A refused MP4/M4A whose index was cut off is processed as far as
+        # its audio can be located and strictly decodes; the recording says
+        # so in ``partial_source`` and keeps the upload.
+        "SALVAGE_DAMAGED_SOURCE": True,
         # The stored object's profile. Mono, because these are recordings
         # of speech and every downstream consumer (STT, diarization,
         # embeddings) reads a single mixed track — the module has downmixed

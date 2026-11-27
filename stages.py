@@ -67,9 +67,13 @@ from typing import Callable
 
 from .conf import recordings_settings
 from .models import RecordingStatus, Segment, Speaker
+from .salvage import REASON_TRUNCATED_INDEX, salvage_truncated_mp4
 from .storage import get_storage
 
 logger = logging.getLogger(__name__)
+
+#: ``workflow_state`` block set when only part of the upload could be read.
+PARTIAL_SOURCE_KEY = "partial_source"
 
 #: Payload key carrying one task's call budget to this package's task
 #: delegate (``task_delegates``), which pops it before the Function call.
@@ -511,6 +515,18 @@ class ConvertStage(Stage):
         """
         return False
 
+    def salvage_source(self, recording, path: str, head_path: str):  # noqa: ARG002
+        """Recover the readable part of a source the normalizer refused.
+
+        A hook returning a :class:`~stapel_recordings.salvage.Salvage` with
+        the audio written to ``head_path``, or ``None`` to fail as refused.
+        """
+        from .conf import flag
+
+        if not flag("SALVAGE_DAMAGED_SOURCE"):
+            return None
+        return salvage_truncated_mp4(path, head_path)
+
     def probe_source(self, recording, path: str) -> dict | None:  # noqa: ARG002
         """The summary of the uploaded file kept as ``metadata["probe"]``.
 
@@ -572,8 +588,21 @@ class ConvertStage(Stage):
             # case where what was sent matters most.
             self._store_probe(recording, raw_path)
 
+            salvaged = None
             try:
-                duration = normalizer(raw_path, out_path)
+                try:
+                    duration = normalizer(raw_path, out_path)
+                except (NormalizePaymentRequired, NormalizeTransient):
+                    raise
+                except NormalizeFatal as failure:
+                    # A damaged file may still have a readable head. It goes
+                    # through the same normalizer, so a host's cap and
+                    # affordability gate measure what was recovered.
+                    head_path = os.path.join(workdir, "salvaged.m4a")
+                    salvaged = self.salvage_source(recording, raw_path, head_path)
+                    if salvaged is None:
+                        raise failure
+                    duration = normalizer(head_path, out_path)
             # The host's affordability gate speaks here: NeedsPayment first,
             # or the base-class handler below turns "top up" into "failed".
             except NormalizePaymentRequired as exc:
@@ -630,6 +659,19 @@ class ConvertStage(Stage):
                 **(recording.workflow_state or {}),
                 "audio_content_hash": _file_content_hash(out_path),
             }
+            if salvaged is None:
+                recording.workflow_state.pop(PARTIAL_SOURCE_KEY, None)
+            else:
+                recording.workflow_state[PARTIAL_SOURCE_KEY] = {
+                    "reason": REASON_TRUNCATED_INDEX,
+                    "recovered_seconds": salvaged.recovered_seconds,
+                    "expected_seconds": salvaged.expected_seconds,
+                }
+                logger.warning(
+                    "convert: source of recording %s is damaged, processing %.0fs "
+                    "of %.0fs", recording.id, salvaged.recovered_seconds,
+                    salvaged.expected_seconds,
+                )
             recording.save(update_fields=[
                 "normalized_storage_key", "stored_size_bytes",
                 "duration_seconds", "workflow_state", "updated_at",
@@ -663,6 +705,10 @@ class ConvertStage(Stage):
         if not key or key == recording.normalized_storage_key:
             return
         if not audio_only_ingest_active():
+            return
+        if (recording.workflow_state or {}).get(PARTIAL_SOURCE_KEY):
+            # Only the readable head was converted: the upload is the one copy
+            # of the rest.
             return
         if self.keep_source(recording, ctx or {}):
             logger.info(
